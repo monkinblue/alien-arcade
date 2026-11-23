@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="ALIEN ARCADE — Retro-futuristic 1979 MU-TH-UR 6000 CRT Terminal Hub hosting 4 vector arcade simulations: Lunar Lander, Hadley's Perimeter, Flak Net, and Derelict Trench.">
+  <meta name="theme-color" content="#030A05">
+  <link rel="canonical" href="https://alienarcade.net/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ALIEN ARCADE">
+  <meta property="og:url" content="https://alienarcade.net/">
+  <meta property="og:title" content="ALIEN ARCADE // MU-TH-UR 6000 CRT TERMINAL">
+  <meta property="og:description" content="Retro-futuristic 1979 cassette-futurism CRT arcade hub featuring Lunar Lander, Hadley's Perimeter, Orbital Intercept Flak Net, and Derelict Trench Vector Run.">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="ALIEN ARCADE // MU-TH-UR 6000 CRT TERMINAL">
+  <meta name="twitter:description" content="Retro-futuristic 1979 MU-TH-UR 6000 CRT arcade hub with 4 playable vector simulations at alienarcade.net.">
+  <title>ALIEN ARCADE // MU-TH-UR 6000 CRT TERMINAL</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+
+  <!-- Early TLS & DNS handshakes for 1979 terminal typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Share+Tech+Mono&display=swap"
+    rel="stylesheet"
+  >
+
+  <!-- Inline critical styles to prevent flash of unstyled background -->
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background-color: #030A05;
+      color: #33FF66;
+      font-family: 'Share Tech Mono', 'JetBrains Mono', monospace;
+      overflow: hidden;
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+  </style>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <main id="console-shell" class="console-shell">
+    <h1 class="sr-only">ALIEN ARCADE — MU-TH-UR 6000 CRT Terminal Hub</h1>
+    <div id="sr-telemetry-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+    <!-- Full-screen CRT viewport WebGL curved phosphor post-processor -->
+    <canvas id="crt-webgl-canvas" aria-label="Alien Arcade MU-TH-UR 6000 CRT Vector Monitor">
+      ALIEN ARCADE requires HTML5 Canvas and WebGL support.
+    </canvas>
+
+    <!-- Native mobile virtual-keyboard bridge for Callsign Uplink on phones -->
+    <input
+      id="mobile-callsign-input"
+      type="text"
+      maxlength="16"
+      autocapitalize="characters"
+      autocomplete="off"
+      autocorrect="off"
+      spellcheck="false"
+      enterkeyhint="send"
+      aria-label="Pilot Callsign Input"
+    >
+    <div id="safe-area-probe" aria-hidden="true"></div>
+
+    <!-- Keyboard-accessible mirror buttons for console OSD switches (WCAG Audio & Control Parity) -->
+    <nav class="sr-only" aria-label="Console Hardware Switches">
+      <button type="button" id="a11y-sas-toggle">Toggle SAS 50% Gentle Roll Authority</button>
+      <button type="button" id="a11y-zoom-toggle">Toggle Auto-Zoom Approach</button>
+      <button type="button" id="a11y-crt-step">Cycle CRT Glass and Bloom Intensity</button>
+      <button type="button" id="a11y-mute-toggle">Toggle Intercom and Audio Bus Mute</button>
+      <button type="button" id="a11y-logs-toggle">Toggle MU-TH-UR 6000 Flight Logs</button>
+    </nav>
+  </main>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

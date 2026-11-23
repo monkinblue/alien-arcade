@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "generatedAt": "2026-11-23T00:58:49.930Z",
+  "voiceId": null,
+  "assets": {
+    "f16_turbine_loop": {
+      "path": "/audio/trench/f16_turbine_loop.mp3",
+      "category": "loop",
+      "bytes": 160957
+    },
+    "f16_afterburner_roar": {
+      "path": "/audio/trench/f16_afterburner_roar.mp3",
+      "category": "loop",
+      "bytes": 129192
+    },
+    "m61_vulcan_burst": {
+      "path": "/audio/trench/m61_vulcan_burst.mp3",
+      "category": "sfx",
+      "bytes": 33061
+    },
+    "aim9_missile_launch": {
+      "path": "/audio/trench/aim9_missile_launch.mp3",
+      "category": "sfx",
+      "bytes": 24702
+    },
+    "cmds_flare_pop": {
+      "path": "/audio/trench/cmds_flare_pop.mp3",
+      "category": "sfx",
+      "bytes": 18433
+    },
+    "hull_impact_thud": {
+      "path": "/audio/trench/hull_impact_thud.mp3",
+      "category": "sfx",
+      "bytes": 21358
+    },
+    "trench_cannon_fire_01": {
+      "path": "/audio/trench/trench_cannon_fire_01.mp3",
+      "category": "sfx",
+      "bytes": 11327
+    },
+    "trench_cannon_fire_02": {
+      "path": "/audio/trench/trench_cannon_fire_02.mp3",
+      "category": "sfx",
+      "bytes": 11327
+    },
+    "trench_conduit_blast": {
+      "path": "/audio/trench/trench_conduit_blast.mp3",
+      "category": "sfx",
+      "bytes": 36405
+    },
+    "trench_graze_whoosh": {
+      "path": "/audio/trench/trench_graze_whoosh.mp3",
+      "category": "sfx",
+      "bytes": 12581
+    },
+    "trench_rcs_roll": {
+      "path": "/audio/trench/trench_rcs_roll.mp3",
+      "category": "sfx",
+      "bytes": 10492
+    },
+    "trench_boost_gate": {
+      "path": "/audio/trench/trench_boost_gate.mp3",
+      "category": "sfx",
+      "bytes": 18433
+    },
+    "trench_hull_impact": {
+      "path": "/audio/trench/trench_hull_impact.mp3",
+      "category": "sfx",
+      "bytes": 26792
+    },
+    "trench_low_hull_alarm": {
+      "path": "/audio/trench/trench_low_hull_alarm.mp3",
+      "category": "sfx",
+      "bytes": 23030
+    }
+  }
+}

@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "generatedAt": "2026-11-23T00:58:49.925Z",
+  "voiceId": null,
+  "assets": {
+    "flak_launch_light_01": {
+      "path": "/audio/flak/flak_launch_light_01.mp3",
+      "category": "sfx",
+      "bytes": 24702
+    },
+    "flak_launch_light_02": {
+      "path": "/audio/flak/flak_launch_light_02.mp3",
+      "category": "sfx",
+      "bytes": 24702
+    },
+    "flak_launch_light_03": {
+      "path": "/audio/flak/flak_launch_light_03.mp3",
+      "category": "sfx",
+      "bytes": 24702
+    },
+    "flak_launch_emp": {
+      "path": "/audio/flak/flak_launch_emp.mp3",
+      "category": "sfx",
+      "bytes": 28046
+    },
+    "flak_detonate_airburst_01": {
+      "path": "/audio/flak/flak_detonate_airburst_01.mp3",
+      "category": "sfx",
+      "bytes": 41838
+    },
+    "flak_detonate_airburst_02": {
+      "path": "/audio/flak/flak_detonate_airburst_02.mp3",
+      "category": "sfx",
+      "bytes": 41838
+    },
+    "flak_detonate_airburst_03": {
+      "path": "/audio/flak/flak_detonate_airburst_03.mp3",
+      "category": "sfx",
+      "bytes": 41838
+    },
+    "flak_detonate_emp": {
+      "path": "/audio/flak/flak_detonate_emp.mp3",
+      "category": "sfx",
+      "bytes": 45182
+    },
+    "battery_reload_clank": {
+      "path": "/audio/flak/battery_reload_clank.mp3",
+      "category": "sfx",
+      "bytes": 9238
+    },
+    "battery_reload_clank_02": {
+      "path": "/audio/flak/battery_reload_clank_02.mp3",
+      "category": "sfx",
+      "bytes": 9238
+    },
+    "dome_breach_impact": {
+      "path": "/audio/flak/dome_breach_impact.mp3",
+      "category": "sfx",
+      "bytes": 88650
+    },
+    "radar_ping_lock": {
+      "path": "/audio/flak/radar_ping_lock.mp3",
+      "category": "sfx",
+      "bytes": 12163
+    },
+    "dome_lock_alarm": {
+      "path": "/audio/flak/dome_lock_alarm.mp3",
+      "category": "sfx",
+      "bytes": 26792
+    },
+    "mirv_split_warning": {
+      "path": "/audio/flak/mirv_split_warning.mp3",
+      "category": "sfx",
+      "bytes": 29300
+    },
+    "wave_incoming_klaxon": {
+      "path": "/audio/flak/wave_incoming_klaxon.mp3",
+      "category": "sfx",
+      "bytes": 40585
+    },
+    "ion_jammer_loop": {
+      "path": "/audio/flak/ion_jammer_loop.mp3",
+      "category": "loop",
+      "bytes": 112892
+    },
+    "meteor_deflect_impact": {
+      "path": "/audio/flak/meteor_deflect_impact.mp3",
+      "category": "sfx",
+      "bytes": 23030
+    },
+    "orbital_droppod_restore": {
+      "path": "/audio/flak/orbital_droppod_restore.mp3",
+      "category": "sfx",
+      "bytes": 41838
+    },
+    "boss_arrival_horn": {
+      "path": "/audio/flak/boss_arrival_horn.mp3",
+      "category": "sfx",
+      "bytes": 52287
+    },
+    "boss_salvo_fire": {
+      "path": "/audio/flak/boss_salvo_fire.mp3",
+      "category": "sfx",
+      "bytes": 26792
+    },
+    "boss_hull_hit": {
+      "path": "/audio/flak/boss_hull_hit.mp3",
+      "category": "sfx",
+      "bytes": 18433
+    },
+    "boss_destroyed": {
+      "path": "/audio/flak/boss_destroyed.mp3",
+      "category": "sfx",
+      "bytes": 67752
+    }
+  }
+}

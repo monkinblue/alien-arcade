@@ -1,0 +1,95 @@
+# ALIEN ARCADE // MU-TH-UR 6000 CRT TERMINAL HUB
+
+A retro-futuristic 1979 cassette-futurism CRT arcade hub hosted at **[alienarcade.net](https://alienarcade.net)**, built as a static zero-backend Vite + TypeScript + WebGL web application. Boot into the **MU-TH-UR 6000** terminal to launch four isolated vector arcade simulations running inside a shared curved P39 phosphor CRT shader pipeline:
+
+1. **LV-426 Lunar Lander** — 60Hz rigid-body orbital descent telemetry with RCS thrusters, LIDAR sweeps, wind shear, and emergency pyrotechnic abort.
+2. **Hadley's Perimeter** — Tactical corridor defense with UA 571-C Pulse Sentries, weldable blast doors, motion relays, and M40 strobe flares.
+3. **Orbital Intercept // Flak Net** — Surface-to-orbit airburst defense with heavy meteor shockwave billiards, Mk-IV EMP mortars, boss waves, and an interactive 5-stage tactical demo.
+4. **Derelict Trench // Vector Run** — First-person 3D wireframe valley jet strike simulator with terrain-following radar, RWR, AIM-9 locks, 20mm Vulcan cannon, and CMDS countermeasures.
+
+---
+
+## Architecture Highlights
+
+- **Dual-Stage High-DPI Rendering Pipeline**:
+  1. **Offscreen 2D Vector CAD Canvas**: Renders razor-sharp high-DPI skeletal shuttle geometry with articulating spring-damper landing struts, gimbaled main rocket plumes, cold-gas RCS attitude puffs, multi-layered seismic rock strata, enclosed cavern ceilings, blinking pad beacons, flight-space prograde/retrograde markers, and Nostromo corner-bracket HUD vernier gauges scaled to `window.devicePixelRatio`.
+  2. **Full-Screen WebGL Curved CRT Post-Processor**: Warps the 2D telemetry feed onto curved P39 phosphor monitor glass with corner specular highlights, multi-tap phosphor halation/bloom, ultra-fine high-DPI aperture grille scanlines, 60Hz phosphor persistence, and dynamic analog signal tear, snow, and chromatic fringe driven by EM ion storms, hard landings, and thruster overdrive.
+- **Tactile Hardware Bezel UI**: Mouse-interactive mechanical toggle switches and rotary potentiometer dial mounted outside the curved CRT glass (`SAS ATTITUDE DAMPENER`, `AUTO-ZOOM APPROACH`, `CRT GLASS & BLOOM INTENSITY`, `INTERCOM / AUDIO BUS MUTE`, and `MU-TH-UR FLIGHT LOGS`).
+- **Fixed-Timestep 60Hz Rigid-Body Physics**: Propellant mass-depletion dynamically increases thrust-to-weight ratio (TWR) and rotational responsiveness as tanks empty; includes main engine spool inertia, emergency overdrive burn, altitude-layered wind shear, vertical thermal updraft vents, intermediate refueling depots, raycast nose spotlight, and 4-second decaying active LIDAR sweeps.
+- **Hybrid ElevenLabs + Web Audio DSP Engine**: Offline CLI asset pipeline (`npm run generate:audio`) for ElevenLabs Sound Generation & MU-TH-UR 6000 TTS callouts, paired with real-time Web Audio filter/pitch modulation, stereo RCS panning, a 350Hz–3400Hz soft-clipped shipboard intercom chain, and a 100% zero-crash procedural Web Audio synthesizer fallback when MP3s are absent.
+
+---
+
+## Flight Deck Controls
+
+### Keyboard Controls
+| Key | System Function |
+| :--- | :--- |
+| `W` or `Up Arrow` | **Main Descent Engine Throttle** (smooth turbopump spool-up/down inertia) |
+| `Shift` + `W` / `Up` | **Emergency Max Overdrive Burn** (`135%` thrust at higher propellant burn rate) |
+| `A` / `D` or `Left` / `Right` | **RCS Cold-Gas Attitude Thrusters** (high-authority roll speed with preserved rotational momentum) |
+| `S` or `Down Arrow` | **Retro-Stabilizer Assist** (damps spin, uprights attitude, and arrests lateral drift) |
+| `Spacebar` | **One-Time Emergency Solid-Rocket Thrust Pulse** (single-use high-G pyrotechnic abort kick **once per game**) |
+| `Tab` | **In-Screen CRT TV & Avionics Adjustments OSD** (`CRT Glass & Bloom`, `SAS`, `Auto-Zoom`, `Audio Mute`) |
+| `R` | **Instant Sector Quick-Retry** |
+| `Esc` | **MU-TH-UR 6000 Command Interrupt / Pause Overlay** |
+
+### Mouse Controls
+| Action | System Function |
+| :--- | :--- |
+| **Mouse Move (in CRT)** | Steers directional **Shuttle Nose Spotlight & Narrow-Beam Rangefinder** |
+| **Left-Click (in CRT)** | Fires a **Directional Radar Sweep** toward cursor (**3 discrete cells** per sector) |
+| **Mouse Scroll Wheel** | Manual tactical camera zoom (`1.0x` Sector Macro Overview to `3.5x` Precision Approach) |
+| **Top-Right CRT Pills** | Instant 1-click toggles for **SAS**, **Auto-Zoom**, **Audio Mute**, **TV OSD**, and **Crew Logs** |
+
+---
+
+## Local Development
+
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Start Vite development server
+npm run dev
+
+# 3. Typecheck client + CLI scripts and build production bundle into dist/
+npm run build
+
+# 4. Preview production build locally
+npm run preview
+```
+
+---
+
+## ElevenLabs Audio Generation Pipeline (Optional)
+
+The game runs **out-of-the-box with zero console errors** using its built-in procedural Web Audio DSP synthesizer. To generate and bundle high-fidelity ElevenLabs rocket loops, mechanical cockpit SFX, and clinical **MU-TH-UR 6000** voice callouts:
+
+1. Copy `.env.example` to `.env` (`.env` is gitignored so your API key never leaks to the repository or Vite client bundle):
+   ```bash
+   cp .env.example .env
+   ```
+2. Add your ElevenLabs API key to `.env`:
+   ```ini
+   ELEVENLABS_API_KEY=your_api_key_here
+   # Optional: specify a custom clinical female voice ID (auto-selected via /v1/voices if omitted)
+   # ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
+   ```
+3. Run the audio asset generator CLI:
+   ```bash
+   npm run generate:audio
+   ```
+   - Existing `.mp3` files in `public/audio/` are automatically skipped to conserve ElevenLabs API credits.
+   - Pass `--force` (`npm run generate:audio -- --force`) to regenerate all 17 audio assets and rewrite `public/audio/manifest.json`.
+
+---
+
+## Static Deployment to `alienarcade.net` (GitHub Pages)
+
+This repository includes [`public/CNAME`](./public/CNAME) (`alienarcade.net`) and an automated GitHub Actions workflow in [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml) that builds `./dist` on every push to `main` and deploys via `actions/deploy-pages@v4`.
+
+### Deployment Steps
+1. Push changes to `main` (generated `public/audio/*.mp3` and `public/audio/manifest.json` are committed directly so CI never needs your `ELEVENLABS_API_KEY`; `.env` remains excluded via `.gitignore`).
+2. In GitHub **Settings -> Pages**, set **Build and deployment -> Source** to **GitHub Actions**.
+3. Configure DNS `A` / `CNAME` records for `alienarcade.net` pointing to GitHub Pages.

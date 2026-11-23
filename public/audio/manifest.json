@@ -1,0 +1,267 @@
+{
+  "version": 2,
+  "generatedAt": "2026-11-23T00:58:01.354Z",
+  "voiceId": null,
+  "assets": {
+    "ambient_crt_buzz": {
+      "path": "/audio/ambient_crt_buzz.mp3",
+      "category": "loop",
+      "bytes": 160957
+    },
+    "alien_eerie_ambience": {
+      "path": "/audio/alien_eerie_ambience.mp3",
+      "category": "loop",
+      "bytes": 193140
+    },
+    "thruster_main_loop": {
+      "path": "/audio/thruster_main_loop.mp3",
+      "category": "loop",
+      "bytes": 129192
+    },
+    "thruster_rcs_loop": {
+      "path": "/audio/thruster_rcs_loop.mp3",
+      "category": "loop",
+      "bytes": 81127
+    },
+    "lv426_wind_loop": {
+      "path": "/audio/lv426_wind_loop.mp3",
+      "category": "loop",
+      "bytes": 160957
+    },
+    "nostromo_boot_sequence": {
+      "path": "/audio/nostromo_boot_sequence.mp3",
+      "category": "sfx",
+      "bytes": 88650
+    },
+    "computer_telemetry_chirp": {
+      "path": "/audio/computer_telemetry_chirp.mp3",
+      "category": "sfx",
+      "bytes": 36405
+    },
+    "tape_drive_servo": {
+      "path": "/audio/tape_drive_servo.mp3",
+      "category": "sfx",
+      "bytes": 41838
+    },
+    "ui_keyclick": {
+      "path": "/audio/ui_keyclick.mp3",
+      "category": "sfx",
+      "bytes": 13835
+    },
+    "ui_keyclick_alt": {
+      "path": "/audio/ui_keyclick_alt.mp3",
+      "category": "sfx",
+      "bytes": 13835
+    },
+    "thruster_ignite": {
+      "path": "/audio/thruster_ignite.mp3",
+      "category": "sfx",
+      "bytes": 23030
+    },
+    "emergency_thrust_pulse": {
+      "path": "/audio/emergency_thrust_pulse.mp3",
+      "category": "sfx",
+      "bytes": 48944
+    },
+    "computer_transition_dark": {
+      "path": "/audio/computer_transition_dark.mp3",
+      "category": "sfx",
+      "bytes": 39331
+    },
+    "computer_sector_engage": {
+      "path": "/audio/computer_sector_engage.mp3",
+      "category": "sfx",
+      "bytes": 33061
+    },
+    "computer_touchdown_confirm": {
+      "path": "/audio/computer_touchdown_confirm.mp3",
+      "category": "sfx",
+      "bytes": 39331
+    },
+    "button_latch_lock": {
+      "path": "/audio/button_latch_lock.mp3",
+      "category": "sfx",
+      "bytes": 15089
+    },
+    "keypress_return": {
+      "path": "/audio/keypress_return.mp3",
+      "category": "sfx",
+      "bytes": 17179
+    },
+    "lidar_ping": {
+      "path": "/audio/lidar_ping.mp3",
+      "category": "sfx",
+      "bytes": 48944
+    },
+    "alien_motion_ping": {
+      "path": "/audio/alien_motion_ping.mp3",
+      "category": "sfx",
+      "bytes": 15089
+    },
+    "proximity_klaxon": {
+      "path": "/audio/proximity_klaxon.mp3",
+      "category": "sfx",
+      "bytes": 24702
+    },
+    "landing_soft_mech": {
+      "path": "/audio/landing_soft_mech.mp3",
+      "category": "sfx",
+      "bytes": 40585
+    },
+    "landing_hard_thud": {
+      "path": "/audio/landing_hard_thud.mp3",
+      "category": "sfx",
+      "bytes": 36405
+    },
+    "landing_strut_thud": {
+      "path": "/audio/landing_strut_thud.mp3",
+      "category": "sfx",
+      "bytes": 29300
+    },
+    "hull_explosion": {
+      "path": "/audio/hull_explosion.mp3",
+      "category": "sfx",
+      "bytes": 72767
+    },
+    "incinerator_whoosh": {
+      "path": "/audio/incinerator_whoosh.mp3",
+      "category": "sfx",
+      "bytes": 29300
+    },
+    "napalm_burn_loop": {
+      "path": "/audio/napalm_burn_loop.mp3",
+      "category": "loop",
+      "bytes": 112892
+    },
+    "alien_screech_01": {
+      "path": "/audio/alien_screech_01.mp3",
+      "category": "sfx",
+      "bytes": 33061
+    },
+    "alien_screech_02": {
+      "path": "/audio/alien_screech_02.mp3",
+      "category": "sfx",
+      "bytes": 26792
+    },
+    "alien_screech_03": {
+      "path": "/audio/alien_screech_03.mp3",
+      "category": "sfx",
+      "bytes": 36405
+    },
+    "alien_screech_04": {
+      "path": "/audio/alien_screech_04.mp3",
+      "category": "sfx",
+      "bytes": 36405
+    },
+    "alien_screech_05": {
+      "path": "/audio/alien_screech_05.mp3",
+      "category": "sfx",
+      "bytes": 29300
+    },
+    "alien_screech_06": {
+      "path": "/audio/alien_screech_06.mp3",
+      "category": "sfx",
+      "bytes": 39331
+    },
+    "alien_screech_07": {
+      "path": "/audio/alien_screech_07.mp3",
+      "category": "sfx",
+      "bytes": 45182
+    },
+    "alien_screech_08": {
+      "path": "/audio/alien_screech_08.mp3",
+      "category": "sfx",
+      "bytes": 30972
+    },
+    "sentry_rearm_belt": {
+      "path": "/audio/sentry_rearm_belt.mp3",
+      "category": "sfx",
+      "bytes": 45182
+    },
+    "core_breach_alert": {
+      "path": "/audio/core_breach_alert.mp3",
+      "category": "sfx",
+      "bytes": 48944
+    },
+    "sentry_deploy_tripod": {
+      "path": "/audio/sentry_deploy_tripod.mp3",
+      "category": "sfx",
+      "bytes": 23030
+    },
+    "hardware_deploy_mount": {
+      "path": "/audio/hardware_deploy_mount.mp3",
+      "category": "sfx",
+      "bytes": 18433
+    },
+    "homeade_computer_start": {
+      "path": "/audio/homeade_computer_start.m4a",
+      "category": "sfx",
+      "bytes": 225049
+    },
+    "voice_boot": {
+      "path": "/audio/voice_boot.mp3",
+      "category": "voice",
+      "bytes": 86560
+    },
+    "voice_wind": {
+      "path": "/audio/voice_wind.mp3",
+      "category": "voice",
+      "bytes": 51452
+    },
+    "voice_interference": {
+      "path": "/audio/voice_interference.mp3",
+      "category": "voice",
+      "bytes": 69424
+    },
+    "voice_fuel_low": {
+      "path": "/audio/voice_fuel_low.mp3",
+      "category": "voice",
+      "bytes": 58139
+    },
+    "voice_proximity": {
+      "path": "/audio/voice_proximity.mp3",
+      "category": "voice",
+      "bytes": 20941
+    },
+    "voice_pull_up": {
+      "path": "/audio/voice_pull_up.mp3",
+      "category": "voice",
+      "bytes": 13835
+    },
+    "voice_bank_angle": {
+      "path": "/audio/voice_bank_angle.mp3",
+      "category": "voice",
+      "bytes": 18015
+    },
+    "voice_lateral_drift": {
+      "path": "/audio/voice_lateral_drift.mp3",
+      "category": "voice",
+      "bytes": 22612
+    },
+    "voice_minimums": {
+      "path": "/audio/voice_minimums.mp3",
+      "category": "voice",
+      "bytes": 17597
+    },
+    "voice_obstacle": {
+      "path": "/audio/voice_obstacle.mp3",
+      "category": "voice",
+      "bytes": 16761
+    },
+    "voice_wind_shear_short": {
+      "path": "/audio/voice_wind_shear_short.mp3",
+      "category": "voice",
+      "bytes": 18015
+    },
+    "voice_touchdown": {
+      "path": "/audio/voice_touchdown.mp3",
+      "category": "voice",
+      "bytes": 54377
+    },
+    "voice_hull_breach": {
+      "path": "/audio/voice_hull_breach.mp3",
+      "category": "voice",
+      "bytes": 45600
+    }
+  }
+}
