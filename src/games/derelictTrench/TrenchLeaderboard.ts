@@ -10,6 +10,14 @@ import {
   type Timestamp,
   type Unsubscribe,
 } from 'firebase/firestore';
+import {
+  checkSubmissionGate,
+  maskCallsignForDisplay,
+  recordSubmissionTimestamp,
+  sanitizeCallsignDraft,
+  SCORE_CAPS,
+  validateCallsignForSubmit,
+} from '../../services/callsignGuard';
 import { getSharedFirestore, type UplinkConnectionStatus } from '../../services/leaderboard';
 import type { TrenchScoreEntry } from './types';
 
@@ -106,19 +114,19 @@ export class TrenchLeaderboardService {
     if (typeof raw.callsign !== 'string' || typeof raw.score !== 'number') return null;
     if (!Number.isFinite(raw.score)) return null;
 
-    const callsign = raw.callsign.trim().slice(0, 16).toUpperCase() || 'PILOT';
-    const score = Math.max(1, Math.min(5_000_000, Math.round(raw.score)));
+    const callsign = maskCallsignForDisplay(raw.callsign, 'PILOT');
+    const score = Math.max(1, Math.min(SCORE_CAPS.trench.score, Math.round(raw.score)));
     const distance =
       typeof raw.distance === 'number' && Number.isFinite(raw.distance)
-        ? Math.max(0, Math.min(999_999, Math.round(raw.distance)))
+        ? Math.max(0, Math.min(SCORE_CAPS.trench.distance, Math.round(raw.distance)))
         : 0;
     const maxMach =
       typeof raw.maxMach === 'number' && Number.isFinite(raw.maxMach)
-        ? Math.round(Math.max(0, Math.min(20, raw.maxMach)) * 10) / 10
+        ? Math.round(Math.max(0, Math.min(SCORE_CAPS.trench.maxMach, raw.maxMach)) * 10) / 10
         : 1.0;
     const grazes =
       typeof raw.grazes === 'number' && Number.isFinite(raw.grazes)
-        ? Math.max(0, Math.min(9999, Math.round(raw.grazes)))
+        ? Math.max(0, Math.min(SCORE_CAPS.trench.grazes, Math.round(raw.grazes)))
         : 0;
 
     let dateStr = new Date().toISOString().slice(0, 10);
@@ -184,8 +192,9 @@ export class TrenchLeaderboardService {
   public getSavedCallsign(): string {
     try {
       const saved = window.localStorage.getItem(CALLSIGN_STORAGE_KEY);
-      if (saved && saved.trim().length > 0) {
-        return saved.trim().toUpperCase().slice(0, 16);
+      const clean = saved ? sanitizeCallsignDraft(saved) : '';
+      if (clean.length > 0) {
+        return clean;
       }
     } catch {
       // Ignore
@@ -194,7 +203,7 @@ export class TrenchLeaderboardService {
   }
 
   public saveCallsign(callsign: string): void {
-    const clean = callsign.trim().toUpperCase().slice(0, 16);
+    const clean = sanitizeCallsignDraft(callsign);
     if (!clean) return;
     try {
       window.localStorage.setItem(CALLSIGN_STORAGE_KEY, clean);
@@ -209,20 +218,47 @@ export class TrenchLeaderboardService {
     distance: number;
     maxMach: number;
     grazes: number;
-  }): Promise<{ ok: boolean; online: boolean; rank: number; docId?: string; error?: string }> {
-    const cleanCallsign =
-      params.callsign
-        .replace(/[^A-Za-z0-9 _-]/g, '')
-        .trim()
-        .toUpperCase()
-        .slice(0, 16) || 'PILOT';
+    playtimeSec?: number;
+  }): Promise<{
+    ok: boolean;
+    online: boolean;
+    rank: number;
+    docId?: string;
+    error?: string;
+    rejectedReason?: string;
+  }> {
+    const validation = validateCallsignForSubmit(params.callsign);
+    if (!validation.ok) {
+      return {
+        ok: false,
+        online: false,
+        rank: 1,
+        rejectedReason: validation.error,
+      };
+    }
 
-    const cleanScore = Math.max(1, Math.min(5_000_000, Math.round(params.score)));
-    const cleanDistance = Math.max(0, Math.min(999_999, Math.round(params.distance)));
-    const cleanMaxMach = Math.round(Math.max(0, Math.min(20, params.maxMach)) * 10) / 10;
-    const cleanGrazes = Math.max(0, Math.min(9999, Math.round(params.grazes)));
+    const gate = checkSubmissionGate('trench', params.playtimeSec ?? 999);
+    if (!gate.allowed) {
+      return {
+        ok: false,
+        online: false,
+        rank: 1,
+        rejectedReason: gate.reason,
+      };
+    }
+
+    const cleanCallsign = validation.callsign;
+    const cleanScore = Math.max(1, Math.min(SCORE_CAPS.trench.score, Math.round(params.score)));
+    const cleanDistance = Math.max(
+      0,
+      Math.min(SCORE_CAPS.trench.distance, Math.round(params.distance))
+    );
+    const cleanMaxMach =
+      Math.round(Math.max(0, Math.min(SCORE_CAPS.trench.maxMach, params.maxMach)) * 10) / 10;
+    const cleanGrazes = Math.max(0, Math.min(SCORE_CAPS.trench.grazes, Math.round(params.grazes)));
 
     this.saveCallsign(cleanCallsign);
+    recordSubmissionTimestamp('trench');
 
     const localId = `local-${Date.now()}`;
     const localEntry: TrenchScoreEntry = {

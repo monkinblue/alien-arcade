@@ -1,3 +1,8 @@
+import {
+  CALLSIGN_CHAR_REGEX,
+  CALLSIGN_MAX_LEN,
+  sanitizeCallsignDraft,
+} from '../../services/callsignGuard';
 import type {
   Cartridge,
   CrtShaderFrameParams,
@@ -87,6 +92,7 @@ export class DerelictTrenchCartridge implements Cartridge {
   private glitchIntensity = 0;
 
   private callsignDraft = 'VECTOR-04';
+  private runPlaytimeSec = 0;
   private callsignEditing = false;
   private callsignOverwriteOnNextKey = false;
   private scoreSubmitted = false;
@@ -434,13 +440,14 @@ export class DerelictTrenchCartridge implements Cartridge {
               return;
             }
             if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-              if (/^[A-Za-z0-9 _-]$/.test(e.key)) {
+              if (CALLSIGN_CHAR_REGEX.test(e.key)) {
                 if (this.callsignOverwriteOnNextKey) {
                   this.callsignDraft = e.key.toUpperCase();
                   this.callsignOverwriteOnNextKey = false;
-                } else if (this.callsignDraft.length < 16) {
+                } else if (this.callsignDraft.length < CALLSIGN_MAX_LEN) {
                   this.callsignDraft += e.key.toUpperCase();
                 }
+                this.submitResultBanner = null;
                 this.host.audio.playSfx('ui_keyclick', { pitch: 0.98 + Math.random() * 0.1 });
               }
               return;
@@ -826,9 +833,42 @@ export class DerelictTrenchCartridge implements Cartridge {
       },
       { signal }
     );
+
+    const mobileInput = document.getElementById('mobile-callsign-input') as HTMLInputElement | null;
+    if (mobileInput) {
+      mobileInput.addEventListener(
+        'input',
+        () => {
+          if (this.sim.phase !== 'GAME_OVER' || this.scoreSubmitted) return;
+          this.callsignDraft = sanitizeCallsignDraft(mobileInput.value);
+          mobileInput.value = this.callsignDraft;
+        },
+        { signal }
+      );
+      mobileInput.addEventListener(
+        'keydown',
+        (ev) => {
+          ev.stopPropagation();
+          if (
+            ev.key === 'Enter' &&
+            this.sim.phase === 'GAME_OVER' &&
+            this.sim.gameOverLockoutTimer <= 0 &&
+            !this.scoreSubmitted
+          ) {
+            ev.preventDefault();
+            this.callsignEditing = false;
+            this.callsignOverwriteOnNextKey = false;
+            mobileInput.blur();
+            void this.submitScoreNow();
+          }
+        },
+        { signal }
+      );
+    }
   }
 
   private startSortie(lockPointer: boolean): void {
+    this.runPlaytimeSec = 0;
     this.osdMenuOpen = false;
     this.manifestOpen = false;
     this.callsignEditing = false;
@@ -872,12 +912,7 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.submittingScore = true;
     this.submitResultBanner = 'TRANSMITTING TO TRENCH_SCORES...';
 
-    const cleanCallsign =
-      this.callsignDraft
-        .replace(/[^A-Za-z0-9 _-]/g, '')
-        .trim()
-        .toUpperCase()
-        .slice(0, 16) || 'PILOT';
+    const cleanCallsign = sanitizeCallsignDraft(this.callsignDraft);
     const finalScore = Math.max(1, Math.round(this.sim.score));
     const finalDist = Math.max(0, Math.round(this.sim.distanceFlownM));
     const finalMach = Math.round(this.sim.maxMach * 10) / 10;
@@ -889,13 +924,20 @@ export class DerelictTrenchCartridge implements Cartridge {
       distance: finalDist,
       maxMach: finalMach,
       grazes: finalKills,
+      playtimeSec: this.runPlaytimeSec,
     });
 
     this.submittingScore = false;
+    if (res.rejectedReason) {
+      this.submitResultBanner = res.rejectedReason;
+      this.host.audio.playMutedAvionicsIndicatorBeep(false);
+      return;
+    }
     this.scoreSubmitted = true;
+    this.callsignDraft = this.leaderboard.getSavedCallsign();
     this.lastSubmittedRun = {
       docId: res.docId,
-      callsign: cleanCallsign,
+      callsign: this.callsignDraft,
       score: finalScore,
       distance: finalDist,
       maxMach: finalMach,
@@ -1151,6 +1193,9 @@ export class DerelictTrenchCartridge implements Cartridge {
     }
 
     const flyingActive = this.sim.phase === 'FLYING' && !this.sim.paused;
+    if (flyingActive && !this.osdMenuOpen && !this.manifestOpen) {
+      this.runPlaytimeSec += clampedDt;
+    }
     this.trenchAudio.updateCockpitEngine(
       flyingActive,
       this.sim.throttle,

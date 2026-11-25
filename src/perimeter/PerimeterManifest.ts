@@ -10,6 +10,14 @@ import {
   type Timestamp,
   type Unsubscribe,
 } from 'firebase/firestore';
+import {
+  checkSubmissionGate,
+  maskCallsignForDisplay,
+  recordSubmissionTimestamp,
+  sanitizeCallsignDraft,
+  SCORE_CAPS,
+  validateCallsignForSubmit,
+} from '../services/callsignGuard';
 import { getSharedFirestore, type UplinkConnectionStatus } from '../services/leaderboard';
 import type { PerimeterManifestEntry, PerimeterMode } from './types';
 
@@ -144,13 +152,13 @@ export class PerimeterManifest {
                 : 'SECTOR_01';
             const waves =
               typeof raw.waves === 'number' && Number.isFinite(raw.waves)
-                ? Math.max(1, Math.min(999, Math.round(raw.waves)))
+                ? Math.max(1, Math.min(SCORE_CAPS.perimeter.waves, Math.round(raw.waves)))
                 : 1;
             const kills =
               typeof raw.kills === 'number' && Number.isFinite(raw.kills)
-                ? Math.max(0, Math.min(100000, Math.round(raw.kills)))
+                ? Math.max(0, Math.min(SCORE_CAPS.perimeter.kills, Math.round(raw.kills)))
                 : 0;
-            const score = Math.max(1, Math.min(5000000, Math.round(raw.score)));
+            const score = Math.max(1, Math.min(SCORE_CAPS.perimeter.score, Math.round(raw.score)));
 
             let dateStr = 'LIVE';
             if (raw.createdAt && typeof raw.createdAt.toDate === 'function') {
@@ -163,7 +171,7 @@ export class PerimeterManifest {
 
             list.push({
               id: docSnap.id,
-              callsign: raw.callsign.trim().slice(0, 16).toUpperCase() || 'MARINE-01',
+              callsign: maskCallsignForDisplay(raw.callsign, 'MARINE-01'),
               waves,
               kills,
               score,
@@ -201,10 +209,12 @@ export class PerimeterManifest {
 
   public getSavedCallsign(): string {
     try {
-      const shared = window.localStorage.getItem(SHARED_CALLSIGN_KEY)?.trim().toUpperCase();
-      if (shared && shared.length > 0) return shared.slice(0, 16);
-      const legacy = window.localStorage.getItem(LEGACY_PERIMETER_CALLSIGN_KEY)?.trim().toUpperCase();
-      if (legacy && legacy.length > 0) return legacy.slice(0, 16);
+      const shared = window.localStorage.getItem(SHARED_CALLSIGN_KEY);
+      const cleanShared = shared ? sanitizeCallsignDraft(shared) : '';
+      if (cleanShared.length > 0) return cleanShared;
+      const legacy = window.localStorage.getItem(LEGACY_PERIMETER_CALLSIGN_KEY);
+      const cleanLegacy = legacy ? sanitizeCallsignDraft(legacy) : '';
+      if (cleanLegacy.length > 0) return cleanLegacy;
     } catch {
       // Ignore
     }
@@ -212,7 +222,7 @@ export class PerimeterManifest {
   }
 
   public saveCallsign(raw: string): string {
-    const cleanSign = raw.trim().toUpperCase().slice(0, 16) || 'MARINE-01';
+    const cleanSign = sanitizeCallsignDraft(raw) || 'MARINE-01';
     try {
       window.localStorage.setItem(SHARED_CALLSIGN_KEY, cleanSign);
       window.localStorage.setItem(LEGACY_PERIMETER_CALLSIGN_KEY, cleanSign);
@@ -250,18 +260,43 @@ export class PerimeterManifest {
    * Submits a finalized Hadley's Perimeter run to Firestore `perimeter_scores` with EXACTLY
    * the 6 required keys (`callsign`, `score`, `waves`, `kills`, `mode`, `createdAt`) and mirrors locally.
    */
-  public async submitScore(entry: Omit<PerimeterManifestEntry, 'date'>): Promise<{
+  public async submitScore(
+    entry: Omit<PerimeterManifestEntry, 'date'> & { playtimeSec?: number }
+  ): Promise<{
     ok: boolean;
     rank: number;
     offlineFallback: boolean;
     docId?: string;
+    rejectedReason?: string;
   }> {
-    const callsign = this.saveCallsign(entry.callsign);
-    const score = Math.max(1, Math.min(5000000, Math.round(entry.score)));
-    const waves = Math.max(1, Math.min(999, Math.round(entry.waves)));
-    const kills = Math.max(0, Math.min(100000, Math.round(entry.kills)));
+    const validation = validateCallsignForSubmit(entry.callsign);
+    if (!validation.ok) {
+      return {
+        ok: false,
+        rank: 1,
+        offlineFallback: false,
+        rejectedReason: validation.error,
+      };
+    }
+
+    const gate = checkSubmissionGate('perimeter', entry.playtimeSec ?? 999);
+    if (!gate.allowed) {
+      return {
+        ok: false,
+        rank: 1,
+        offlineFallback: false,
+        rejectedReason: gate.reason,
+      };
+    }
+
+    const callsign = this.saveCallsign(validation.callsign);
+    const score = Math.max(1, Math.min(SCORE_CAPS.perimeter.score, Math.round(entry.score)));
+    const waves = Math.max(1, Math.min(SCORE_CAPS.perimeter.waves, Math.round(entry.waves)));
+    const kills = Math.max(0, Math.min(SCORE_CAPS.perimeter.kills, Math.round(entry.kills)));
     const firestoreMode: 'CAMPAIGN' | 'ENDLESS' =
       entry.mode === 'ENDLESS_SIEGE' ? 'ENDLESS' : 'CAMPAIGN';
+
+    recordSubmissionTimestamp('perimeter');
 
     // Always mirror locally as offline fallback
     const localId = `local-${Date.now()}`;
@@ -284,8 +319,8 @@ export class PerimeterManifest {
     }
 
     try {
-      // EXACT 6-key Firestore document schema (ZERO extra keys, no profanity filter):
-      // callsign (1-16), score (1..5000000), waves (1..999), kills (0..100000), mode ('CAMPAIGN' | 'ENDLESS'), createdAt
+      // EXACT 6-key Firestore document schema:
+      // callsign (^[A-Z0-9_-]{1,12}$), score (1..1000000), waves (1..200), kills (0..25000), mode ('CAMPAIGN' | 'ENDLESS'), createdAt
       const docRef = await addDoc(collection(this.db, 'perimeter_scores'), {
         callsign,
         score,

@@ -1,3 +1,8 @@
+import {
+  CALLSIGN_CHAR_REGEX,
+  CALLSIGN_MAX_LEN,
+  sanitizeCallsignDraft,
+} from '../services/callsignGuard';
 import type { Cartridge, CrtShaderFrameParams, HostEnvironment } from '../shell/Cartridge';
 import type { Vec2, ViewportRect } from '../types';
 import {
@@ -67,6 +72,7 @@ export class PerimeterCartridge implements Cartridge {
   private osdMenuOpen = false;
   private manifestOpen = false;
   private callsignDraft = 'HICKS-01';
+  private runPlaytimeSec = 0;
   private scoreSubmitted = false;
   private submittingScore = false;
   private submitResultBanner: string | null = null;
@@ -188,6 +194,7 @@ export class PerimeterCartridge implements Cartridge {
   }
 
   private resetSubmissionState(): void {
+    this.runPlaytimeSec = 0;
     this.scoreSubmitted = false;
     this.submittingScore = false;
     this.submitResultBanner = null;
@@ -209,8 +216,14 @@ export class PerimeterCartridge implements Cartridge {
       kills: finalKills,
       score: finalScore,
       mode: finalMode,
+      playtimeSec: this.runPlaytimeSec,
     });
     this.submittingScore = false;
+    if (res.rejectedReason) {
+      this.submitResultBanner = res.rejectedReason;
+      this.host.audio.playMutedAvionicsIndicatorBeep(false);
+      return;
+    }
     this.scoreSubmitted = true;
     this.callsignDraft = this.manifest.getSavedCallsign();
     this.lastSubmittedRun = {
@@ -322,7 +335,7 @@ export class PerimeterCartridge implements Cartridge {
         'input',
         () => {
           if (this.sim.phase !== 'CALLSIGN_ENTRY' || this.scoreSubmitted) return;
-          this.callsignDraft = mobileInput.value.toUpperCase().slice(0, 16);
+          this.callsignDraft = sanitizeCallsignDraft(mobileInput.value);
           mobileInput.value = this.callsignDraft;
         },
         { signal }
@@ -939,7 +952,7 @@ export class PerimeterCartridge implements Cartridge {
   }
 
   private handleKeyDown(e: KeyboardEvent): void {
-    // Callsign Entry Keyboard Input (1-16 chars, no profanity filter)
+    // Callsign Entry Keyboard Input (^[A-Z0-9_-]{1,12}$ with profanity & cooldown enforcement)
     if (this.sim.phase === 'CALLSIGN_ENTRY' && !this.osdMenuOpen && !this.manifestOpen) {
       if (e.code === 'Escape') {
         this.host.audio.playButtonLatchLock();
@@ -954,8 +967,9 @@ export class PerimeterCartridge implements Cartridge {
           this.host.audio.playSfx('keypress_return', { volume: 0.9 });
           void this.submitCurrentRunScore();
         } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-          if (this.callsignDraft.length < 16) {
+          if (CALLSIGN_CHAR_REGEX.test(e.key) && this.callsignDraft.length < CALLSIGN_MAX_LEN) {
             this.callsignDraft += e.key.toUpperCase();
+            this.submitResultBanner = null;
             this.host.audio.playSfx('ui_keyclick', { pitch: 1.05 });
           }
         }
@@ -1157,6 +1171,9 @@ export class PerimeterCartridge implements Cartridge {
 
     // Step Tactical Simulation (freezes automatically if OSD/Manifest modal is open)
     if (!this.osdMenuOpen && !this.manifestOpen) {
+      if (this.sim.phase === 'TACTICAL_PREP' || this.sim.phase === 'WAVE_ACTIVE') {
+        this.runPlaytimeSec += clampedDt;
+      }
       this.sim.step(clampedDt);
       const napalmState = this.sim.getActiveNapalmAudioState();
       this.host.audio.updatePerimeterNapalmBed(napalmState.intensity, napalmState.pan, clampedDt);

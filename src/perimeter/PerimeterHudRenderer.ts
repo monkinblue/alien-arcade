@@ -1960,7 +1960,7 @@ export class PerimeterHudRenderer {
     ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
     ctx.fillStyle = '#44FF77';
     ctx.fillText(
-      'OPERATOR CALLSIGN (1-16 CHARS // TYPE & PRESS [ENTER]):',
+      'OPERATOR CALLSIGN (A-Z, 0-9, _, -, MAX 12 // [ENTER] SUBMIT):',
       bx + 32,
       by + 104
     );

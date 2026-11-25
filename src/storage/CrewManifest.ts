@@ -1,3 +1,4 @@
+import { maskCallsignForDisplay, SCORE_CAPS } from '../services/callsignGuard';
 import type { CrewManifestEntry, LeaderboardMode } from '../types';
 
 const STORAGE_KEY = 'nostromo_lander_crew_manifest_v2';
@@ -63,7 +64,7 @@ const ARCHIVE_CAMPAIGN: CrewManifestEntry[] = [
 
 const ARCHIVE_ENDLESS: CrewManifestEntry[] = [
   {
-    callsign: 'ASH // 120-A2',
+    callsign: 'ASH-120A2',
     score: 31200,
     sector: 6,
     highestSector: 'DS-06',
@@ -154,15 +155,14 @@ export class CrewManifestStore {
   public recordFlight(
     entry: Omit<CrewManifestEntry, 'date' | 'isArchiveFallback'> & { date?: string }
   ): number {
-    // Allow any 1-16 char callsign friends enter (no profanity filter), trimmed & uppercase
-    const sanitizedCallsign = entry.callsign.trim().slice(0, 16).toUpperCase() || 'PILOT-01';
+    const sanitizedCallsign = maskCallsignForDisplay(entry.callsign, 'PILOT-01');
     const now = new Date();
     const isoDate = entry.date ?? now.toISOString().slice(0, 10);
 
     const record: CrewManifestEntry = {
       callsign: sanitizedCallsign,
-      score: Math.max(1, Math.min(1000000, Math.round(entry.score))),
-      sector: Math.max(1, Math.min(99, Math.round(entry.sector))),
+      score: Math.max(1, Math.min(SCORE_CAPS.lander.score, Math.round(entry.score))),
+      sector: Math.max(1, Math.min(SCORE_CAPS.lander.sector, Math.round(entry.sector))),
       highestSector: entry.highestSector,
       accuracyRating: entry.accuracyRating,
       accuracyPercent: Math.max(0, Math.min(100, Math.round(entry.accuracyPercent))),

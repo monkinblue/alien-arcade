@@ -14,6 +14,14 @@ import {
 } from 'firebase/firestore';
 import { CrewManifestStore } from '../storage/CrewManifest';
 import type { CrewManifestEntry, LeaderboardMode } from '../types';
+import {
+  checkSubmissionGate,
+  maskCallsignForDisplay,
+  recordSubmissionTimestamp,
+  sanitizeCallsignDraft,
+  SCORE_CAPS,
+  validateCallsignForSubmit,
+} from './callsignGuard';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyCpq9BNHG1cplrbkrHdT_WttUxcy-E5rYk',
@@ -128,8 +136,8 @@ export class GlobalLeaderboardService {
 
             const entry: CrewManifestEntry = {
               id: docSnap.id,
-              callsign: raw.callsign.trim().slice(0, 16).toUpperCase() || 'PILOT',
-              score: Math.round(raw.score),
+              callsign: maskCallsignForDisplay(raw.callsign, 'PILOT'),
+              score: Math.max(1, Math.min(SCORE_CAPS.lander.score, Math.round(raw.score))),
               sector,
               highestSector: formatSectorCode(sector, mode),
               accuracyRating: accuracyToGrade(accuracy),
@@ -176,8 +184,9 @@ export class GlobalLeaderboardService {
   public getSavedCallsign(): string {
     try {
       const saved = window.localStorage.getItem(CALLSIGN_STORAGE_KEY);
-      if (saved && saved.trim().length > 0) {
-        return saved.trim().slice(0, 16).toUpperCase();
+      const clean = saved ? sanitizeCallsignDraft(saved) : '';
+      if (clean.length > 0) {
+        return clean;
       }
     } catch {
       /* ignore */
@@ -186,7 +195,7 @@ export class GlobalLeaderboardService {
   }
 
   public saveCallsign(callsign: string): string {
-    const cleaned = callsign.trim().slice(0, 16).toUpperCase() || 'PILOT-01';
+    const cleaned = sanitizeCallsignDraft(callsign) || 'PILOT-01';
     try {
       window.localStorage.setItem(CALLSIGN_STORAGE_KEY, cleaned);
     } catch {
@@ -231,18 +240,44 @@ export class GlobalLeaderboardService {
     sector: number;
     mode: LeaderboardMode;
     accuracy: number;
+    playtimeSec?: number;
   }): Promise<{
     ok: boolean;
     rank: number;
     mode: LeaderboardMode;
     offlineFallback: boolean;
     docId?: string;
+    rejectedReason?: string;
   }> {
-    const callsign = this.saveCallsign(params.callsign);
-    const score = Math.max(1, Math.min(1000000, Math.round(params.score)));
-    const sector = Math.max(1, Math.min(99, Math.round(params.sector)));
     const mode: LeaderboardMode = params.mode === 'ENDLESS' ? 'ENDLESS' : 'CAMPAIGN';
-    const accuracy = Math.max(0, Math.min(100, Math.round(params.accuracy)));
+    const validation = validateCallsignForSubmit(params.callsign);
+    if (!validation.ok) {
+      return {
+        ok: false,
+        rank: 1,
+        mode,
+        offlineFallback: false,
+        rejectedReason: validation.error,
+      };
+    }
+
+    const gate = checkSubmissionGate('lander', params.playtimeSec ?? 999);
+    if (!gate.allowed) {
+      return {
+        ok: false,
+        rank: 1,
+        mode,
+        offlineFallback: false,
+        rejectedReason: gate.reason,
+      };
+    }
+
+    const callsign = this.saveCallsign(validation.callsign);
+    const score = Math.max(1, Math.min(SCORE_CAPS.lander.score, Math.round(params.score)));
+    const sector = Math.max(1, Math.min(SCORE_CAPS.lander.sector, Math.round(params.sector)));
+    const accuracy = Math.max(0, Math.min(SCORE_CAPS.lander.accuracy, Math.round(params.accuracy)));
+
+    recordSubmissionTimestamp('lander');
 
     // Always mirror to local storage backup
     this.localFallback.recordFlight({

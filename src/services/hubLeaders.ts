@@ -7,6 +7,7 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import type { CartridgeProgramId } from '../shell/Cartridge';
+import { maskCallsignForDisplay } from './callsignGuard';
 import { getSharedFirestore } from './leaderboard';
 
 export interface HubProgramLeader {
@@ -75,7 +76,7 @@ export class HubLeadersService {
                 typeof raw.score === 'number' &&
                 Number.isFinite(raw.score)
               ) {
-                const callsign = raw.callsign.trim().slice(0, 16).toUpperCase() || 'PILOT';
+                const callsign = maskCallsignForDisplay(raw.callsign, 'PILOT');
                 const score = Math.max(1, Math.round(raw.score));
                 parsed.push({ callsign, score });
               }

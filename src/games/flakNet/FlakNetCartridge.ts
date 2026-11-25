@@ -1,3 +1,8 @@
+import {
+  CALLSIGN_CHAR_REGEX,
+  CALLSIGN_MAX_LEN,
+  sanitizeCallsignDraft,
+} from '../../services/callsignGuard';
 import type {
   Cartridge,
   CrtShaderFrameParams,
@@ -71,6 +76,8 @@ export class FlakNetCartridge implements Cartridge {
   private glitchIntensity = 0;
 
   private callsignDraft = 'GUNNER-01';
+  private runPlaytimeSec = 0;
+  private debugTainted = false;
   private callsignEditing = false;
   private callsignOverwriteOnNextKey = false;
   private scoreSubmitted = false;
@@ -138,6 +145,7 @@ export class FlakNetCartridge implements Cartridge {
     this.sim.resetToTitle();
     this.demoDirector.stop(this.sim);
     if (import.meta.env.DEV) {
+      this.debugTainted = false;
       this.autoBot?.setEnabled(false);
     }
     this.bindListeners(signal);
@@ -206,6 +214,7 @@ export class FlakNetCartridge implements Cartridge {
           };
         },
         fire: (x, y, type = 'flak') => {
+          this.debugTainted = true;
           this.cursorVirtual = { x, y };
           this.sim.updateBatteryTurretAim(this.cursorVirtual);
           if (type === 'emp' || type === 'S') {
@@ -217,6 +226,7 @@ export class FlakNetCartridge implements Cartridge {
           return this.sim.fireSmartFlak(x, y);
         },
         jumpToWave: (n) => {
+          this.debugTainted = true;
           this.demoDirector.stop(this.sim);
           this.osdMenuOpen = false;
           this.manifestOpen = false;
@@ -231,6 +241,7 @@ export class FlakNetCartridge implements Cartridge {
           };
         },
         setAutoBot: (enabled) => {
+          this.debugTainted = true;
           this.autoBot?.setEnabled(Boolean(enabled));
           return { autoBotEnabled: this.autoBot?.isEnabled() ?? false };
         },
@@ -299,6 +310,7 @@ export class FlakNetCartridge implements Cartridge {
 
   private startRun(): void {
     this.demoDirector.stop(this.sim);
+    this.runPlaytimeSec = 0;
     this.osdMenuOpen = false;
     this.manifestOpen = false;
     this.callsignEditing = false;
@@ -336,6 +348,10 @@ export class FlakNetCartridge implements Cartridge {
 
   private async submitCurrentScore(): Promise<void> {
     if (this.demoDirector.isActive() || this.sim.isDemoMode) return;
+    if (import.meta.env.DEV && this.debugTainted) {
+      this.submitResultBanner = 'DEV DEBUG SESSION — FLAK_SCORES WRITE BLOCKED';
+      return;
+    }
     if (this.scoreSubmitted || this.submittingScore) return;
     this.submittingScore = true;
     this.submitResultBanner = 'TRANSMITTING TELEMETRY TO MU-TH-UR...';
@@ -349,8 +365,14 @@ export class FlakNetCartridge implements Cartridge {
       wave: finalWave,
       maxChain: finalChain,
       accuracy: finalAcc,
+      playtimeSec: this.runPlaytimeSec,
     });
     this.submittingScore = false;
+    if (res.rejectedReason) {
+      this.submitResultBanner = res.rejectedReason;
+      this.host.audio.playMutedAvionicsIndicatorBeep(false);
+      return;
+    }
     this.scoreSubmitted = true;
     this.callsignDraft = this.leaderboard.getSavedCallsign();
     this.lastSubmittedRun = {
@@ -572,13 +594,14 @@ export class FlakNetCartridge implements Cartridge {
               return;
             }
             if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-              if (/^[A-Za-z0-9 _-]$/.test(e.key)) {
+              if (CALLSIGN_CHAR_REGEX.test(e.key)) {
                 if (this.callsignOverwriteOnNextKey) {
                   this.callsignDraft = e.key.toUpperCase();
                   this.callsignOverwriteOnNextKey = false;
-                } else if (this.callsignDraft.length < 16) {
+                } else if (this.callsignDraft.length < CALLSIGN_MAX_LEN) {
                   this.callsignDraft += e.key.toUpperCase();
                 }
+                this.submitResultBanner = null;
                 this.host.audio.playSfx('ui_keyclick', { pitch: 0.96 + Math.random() * 0.1 });
               }
               return;
@@ -681,7 +704,7 @@ export class FlakNetCartridge implements Cartridge {
         'input',
         () => {
           if (this.sim.phase !== 'GAME_OVER' || this.scoreSubmitted) return;
-          this.callsignDraft = mobileInput.value.toUpperCase().slice(0, 16);
+          this.callsignDraft = sanitizeCallsignDraft(mobileInput.value);
           mobileInput.value = this.callsignDraft;
         },
         { signal }
@@ -768,8 +791,13 @@ export class FlakNetCartridge implements Cartridge {
     if (simActive) {
       if (this.demoDirector.isActive()) {
         this.demoDirector.step(this.sim, clampedDt);
-      } else if (import.meta.env.DEV && this.autoBot?.isEnabled()) {
-        this.autoBot.step(this.sim, clampedDt, this.cursorVirtual);
+      } else {
+        if (import.meta.env.DEV && this.autoBot?.isEnabled()) {
+          this.autoBot.step(this.sim, clampedDt, this.cursorVirtual);
+        }
+        if (this.sim.phase === 'ACTIVE_WAVE' && !this.sim.paused && !this.sim.isDemoMode) {
+          this.runPlaytimeSec += clampedDt;
+        }
       }
       this.sim.step(clampedDt);
     }

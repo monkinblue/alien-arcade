@@ -10,6 +10,14 @@ import {
   type Timestamp,
   type Unsubscribe,
 } from 'firebase/firestore';
+import {
+  checkSubmissionGate,
+  maskCallsignForDisplay,
+  recordSubmissionTimestamp,
+  sanitizeCallsignDraft,
+  SCORE_CAPS,
+  validateCallsignForSubmit,
+} from '../../services/callsignGuard';
 import { getSharedFirestore, type UplinkConnectionStatus } from '../../services/leaderboard';
 import type { FlakScoreEntry } from './types';
 
@@ -144,15 +152,15 @@ export class FlakLeaderboardService {
             }
             const wave =
               typeof raw.wave === 'number' && Number.isFinite(raw.wave)
-                ? Math.max(1, Math.min(99, Math.round(raw.wave)))
+                ? Math.max(1, Math.min(SCORE_CAPS.flak.wave, Math.round(raw.wave)))
                 : 1;
             const maxChain =
               typeof raw.maxChain === 'number' && Number.isFinite(raw.maxChain)
-                ? Math.max(1, Math.min(99, Math.round(raw.maxChain)))
+                ? Math.max(1, Math.min(SCORE_CAPS.flak.maxChain, Math.round(raw.maxChain)))
                 : 1;
             const accuracy =
               typeof raw.accuracy === 'number' && Number.isFinite(raw.accuracy)
-                ? Math.max(0, Math.min(100, Math.round(raw.accuracy)))
+                ? Math.max(0, Math.min(SCORE_CAPS.flak.accuracy, Math.round(raw.accuracy)))
                 : 0;
 
             let dateStr = 'LIVE';
@@ -166,8 +174,8 @@ export class FlakLeaderboardService {
 
             list.push({
               id: docSnap.id,
-              callsign: raw.callsign.trim().slice(0, 16).toUpperCase() || 'GUNNER',
-              score: Math.max(1, Math.min(5000000, Math.round(raw.score))),
+              callsign: maskCallsignForDisplay(raw.callsign, 'GUNNER'),
+              score: Math.max(1, Math.min(SCORE_CAPS.flak.score, Math.round(raw.score))),
               wave,
               maxChain,
               accuracy,
@@ -203,8 +211,9 @@ export class FlakLeaderboardService {
   public getSavedCallsign(): string {
     try {
       const saved = window.localStorage.getItem(SHARED_CALLSIGN_KEY);
-      if (saved && saved.trim().length > 0) {
-        return saved.trim().slice(0, 16).toUpperCase();
+      const clean = saved ? sanitizeCallsignDraft(saved) : '';
+      if (clean.length > 0) {
+        return clean;
       }
     } catch {
       // Ignore
@@ -213,7 +222,7 @@ export class FlakLeaderboardService {
   }
 
   public saveCallsign(raw: string): string {
-    const cleaned = raw.trim().slice(0, 16).toUpperCase() || 'GUNNER-01';
+    const cleaned = sanitizeCallsignDraft(raw) || 'GUNNER-01';
     try {
       window.localStorage.setItem(SHARED_CALLSIGN_KEY, cleaned);
     } catch {
@@ -238,7 +247,7 @@ export class FlakLeaderboardService {
 
   /**
    * Submits finalized run score to Firestore `flak_scores` with EXACTLY the 6 required keys
-   * (zero extra fields, no profanity filter) and mirrors locally as offline fallback.
+   * after strict callsign validation, profanity check, and 30s cooldown verification.
    */
   public async submitScore(params: {
     callsign: string;
@@ -246,17 +255,41 @@ export class FlakLeaderboardService {
     wave: number;
     maxChain: number;
     accuracy: number;
+    playtimeSec?: number;
   }): Promise<{
     ok: boolean;
     rank: number;
     offlineFallback: boolean;
     docId?: string;
+    rejectedReason?: string;
   }> {
-    const callsign = this.saveCallsign(params.callsign);
-    const score = Math.max(1, Math.min(5000000, Math.round(params.score)));
-    const wave = Math.max(1, Math.min(99, Math.round(params.wave)));
-    const maxChain = Math.max(1, Math.min(99, Math.round(params.maxChain)));
-    const accuracy = Math.max(0, Math.min(100, Math.round(params.accuracy)));
+    const validation = validateCallsignForSubmit(params.callsign);
+    if (!validation.ok) {
+      return {
+        ok: false,
+        rank: 1,
+        offlineFallback: false,
+        rejectedReason: validation.error,
+      };
+    }
+
+    const gate = checkSubmissionGate('flak', params.playtimeSec ?? 999);
+    if (!gate.allowed) {
+      return {
+        ok: false,
+        rank: 1,
+        offlineFallback: false,
+        rejectedReason: gate.reason,
+      };
+    }
+
+    const callsign = this.saveCallsign(validation.callsign);
+    const score = Math.max(1, Math.min(SCORE_CAPS.flak.score, Math.round(params.score)));
+    const wave = Math.max(1, Math.min(SCORE_CAPS.flak.wave, Math.round(params.wave)));
+    const maxChain = Math.max(1, Math.min(SCORE_CAPS.flak.maxChain, Math.round(params.maxChain)));
+    const accuracy = Math.max(0, Math.min(SCORE_CAPS.flak.accuracy, Math.round(params.accuracy)));
+
+    recordSubmissionTimestamp('flak');
 
     // Always mirror into localStorage fallback archive
     const localId = `local-${Date.now()}`;
@@ -284,7 +317,7 @@ export class FlakLeaderboardService {
 
     try {
       // EXACT 6-key Firestore document schema:
-      // callsign (1-16), score (1..5000000), wave (1..99), maxChain (1..99), accuracy (0..100), createdAt
+      // callsign (^[A-Z0-9_-]{1,12}$), score (1..2500000), wave (1..99), maxChain (1..32), accuracy (0..100), createdAt
       const docRef = await addDoc(collection(this.db, 'flak_scores'), {
         callsign,
         score,

@@ -3181,9 +3181,12 @@ export class HudRenderer {
     } else if (isSending) {
       ctx.fillStyle = '#FFB000';
       ctx.fillText('TRANSMITTING TELEMETRY PACKET TO MU-TH-UR RELAY...', w * 0.5, by + 182);
+    } else if (state.uplinkConfirmText) {
+      ctx.fillStyle = '#FF5538';
+      ctx.fillText(state.uplinkConfirmText, w * 0.5, by + 182);
     } else {
       ctx.fillStyle = COLORS.GREEN_MID;
-      ctx.fillText('ENTER CALLSIGN (1–16 CHARS) & PRESS [ENTER] TO TRANSMIT', w * 0.5, by + 182);
+      ctx.fillText('ENTER CALLSIGN (A-Z, 0-9, _, -, MAX 12) & PRESS [ENTER]', w * 0.5, by + 182);
     }
 
     if (isDone) {

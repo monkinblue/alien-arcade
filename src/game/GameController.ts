@@ -8,6 +8,11 @@ import { MobileHudRenderer, type MobileActiveTouchState } from '../render/Mobile
 import { WebGLCRT } from '../render/WebGLCRT';
 import { WorldRenderer, type CameraView } from '../render/WorldRenderer';
 import {
+  CALLSIGN_CHAR_REGEX,
+  CALLSIGN_MAX_LEN,
+  sanitizeCallsignDraft,
+} from '../services/callsignGuard';
+import {
   GlobalLeaderboardService,
   accuracyToGrade,
   formatSectorCode,
@@ -91,6 +96,7 @@ export class GameController implements Cartridge {
   private touchdownSnapshot: TouchdownSnapshot | null = null;
   private tallyAnimProgress = 0;
   private callsignDraft = 'PILOT-01';
+  private runPlaytimeSec = 0;
   private manifestTab: LeaderboardMode = 'CAMPAIGN';
   private scoreSubmittedForRun = false;
   private lastSubmittedRun: LastSubmittedRun | null = null;
@@ -241,7 +247,7 @@ export class GameController implements Cartridge {
         'input',
         () => {
           if (this.phase === 'CALLSIGN_ENTRY') {
-            this.callsignDraft = mobileInput.value.toUpperCase().slice(0, 16);
+            this.callsignDraft = sanitizeCallsignDraft(mobileInput.value);
             mobileInput.value = this.callsignDraft;
           }
         },
@@ -841,8 +847,9 @@ export class GameController implements Cartridge {
         this.audio.playButtonLatchLock(0.9, 0.85);
         this.phase = 'TITLE_MENU';
       } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (this.callsignDraft.length < 16) {
+        if (CALLSIGN_CHAR_REGEX.test(e.key) && this.callsignDraft.length < CALLSIGN_MAX_LEN) {
           this.callsignDraft += e.key.toUpperCase();
+          this.uplinkConfirmText = null;
           this.audio.playSfx('ui_keyclick', { pitch: 1.06 });
         }
       }
@@ -1088,6 +1095,7 @@ export class GameController implements Cartridge {
     this.dropStreak = 0;
     this.highestSectorNum = startSector;
     this.accuracySamples = [];
+    this.runPlaytimeSec = 0;
     this.scoreSubmittedForRun = false;
     this.lastSubmittedRun = null;
     this.uplinkSubmitState = 'IDLE';
@@ -1109,6 +1117,7 @@ export class GameController implements Cartridge {
     this.dropStreak = 0;
     this.highestSectorNum = 1;
     this.accuracySamples = [];
+    this.runPlaytimeSec = 0;
     this.scoreSubmittedForRun = false;
     this.lastSubmittedRun = null;
     this.uplinkSubmitState = 'IDLE';
@@ -1384,25 +1393,34 @@ export class GameController implements Cartridge {
     if (this.scoreSubmittedForRun || this.uplinkSubmitState === 'TRANSMITTING') {
       return;
     }
-    const trimmed = this.callsignDraft.trim().slice(0, 16).toUpperCase() || 'PILOT-01';
-    this.callsignDraft = trimmed;
+    const cleanDraft = sanitizeCallsignDraft(this.callsignDraft);
+    this.callsignDraft = cleanDraft;
     this.uplinkSubmitState = 'TRANSMITTING';
-    this.scoreSubmittedForRun = true;
+    this.uplinkConfirmText = null;
 
     const avg = this.getAverageAccuracy();
     const mode: LeaderboardMode = this.endlessMode ? 'ENDLESS' : 'CAMPAIGN';
     const result = await this.leaderboard.submitScore({
-      callsign: trimmed,
+      callsign: cleanDraft,
       score: this.missionScore,
       sector: this.highestSectorNum,
       mode,
       accuracy: avg.percent,
+      playtimeSec: this.runPlaytimeSec,
     });
 
+    if (result.rejectedReason) {
+      this.uplinkSubmitState = 'IDLE';
+      this.uplinkConfirmText = result.rejectedReason;
+      this.audio.playMutedAvionicsIndicatorBeep(false);
+      return;
+    }
+
+    this.scoreSubmittedForRun = true;
     const rankStr = `#${String(result.rank).padStart(2, '0')}`;
     this.lastSubmittedRun = {
       docId: result.docId,
-      callsign: trimmed,
+      callsign: cleanDraft,
       score: Math.round(this.missionScore),
       sector: this.highestSectorNum,
       highestSector: formatSectorCode(this.highestSectorNum, mode),
@@ -1416,11 +1434,11 @@ export class GameController implements Cartridge {
       this.uplinkSubmitState = 'CONFIRMED';
       this.uplinkConfirmText = `UPLINK CONFIRMED // ${mode} RANK ${rankStr}`;
       this.audio.playScaryComputerTransition('confirm', 0, 0.55);
-      this.logEvent(`GLOBAL UPLINK CONFIRMED: ${trimmed} [${mode} ${rankStr}]`);
+      this.logEvent(`GLOBAL UPLINK CONFIRMED: ${cleanDraft} [${mode} ${rankStr}]`);
     } else {
       this.uplinkSubmitState = 'OFFLINE_SAVED';
       this.uplinkConfirmText = `RELAY OFFLINE // LOGGED TO LOCAL ARCHIVE (${rankStr})`;
-      this.logEvent(`LOCAL ARCHIVE LOGGED: ${trimmed} (${Math.round(this.missionScore)} PTS)`);
+      this.logEvent(`LOCAL ARCHIVE LOGGED: ${cleanDraft} (${Math.round(this.missionScore)} PTS)`);
     }
   }
 
@@ -1557,6 +1575,7 @@ export class GameController implements Cartridge {
     const modalPaused = this.bezelState.flightLogsOpen || this.bezelState.osdMenuOpen;
     if (this.phase === 'FLIGHT' && this.lander.alive && !modalPaused) {
       this.sectorElapsedSec += dt;
+      this.runPlaytimeSec += dt;
     }
 
     if (this.displayedScore < this.missionScore) {
