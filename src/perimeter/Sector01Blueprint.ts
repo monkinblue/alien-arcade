@@ -32,8 +32,6 @@ function tileCenter(col: number, row: number): Vec2 {
 }
 
 export class Sector01Blueprint {
-  public static readonly SECTOR_01_MAX_WAVES = 10;
-
   public static createSector01(): ColonyBlueprint {
     const cols = PERIMETER_CONSTANTS.GRID_COLS; // 32
     const rows = PERIMETER_CONSTANTS.GRID_ROWS; // 18
@@ -395,14 +393,16 @@ export class Sector01Blueprint {
   }
 
   /**
-   * Returns Sector 01 Campaign Waves (1..10) or procedurally escalated Endless Hive Siege waves!
+   * Returns handcrafted Endless Hive Siege opening waves (1..10) featuring Crushers, Spitters,
+   * Screamers, Mutators, and Wave 10 Xeno Queen Matriarch — plus procedurally escalated Deep Siege (11+)!
    */
   public static getWaveDefinition(waveNumber: number): WaveDefinition {
-    const campaignWaves: WaveDefinition[] = [
+    const openingWaves: WaveDefinition[] = [
       {
         waveNumber: 1,
         title: 'PERIMETER CONTACT // NW & SW PROBE',
-        scrapBonus: 55,
+        scrapBonus: 60,
+        mutator: 'NONE',
         groups: [
           { ventId: 'VENT-01', kind: 'DRONE', count: 4, intervalSec: 1.8, delaySec: 0.6 },
           { ventId: 'VENT-02', kind: 'SKITTERER', count: 8, intervalSec: 0.65, delaySec: 3.4 },
@@ -412,7 +412,8 @@ export class Sector01Blueprint {
       {
         waveNumber: 2,
         title: 'FLOOR GRATE SWARM // SKITTERER & RECON STALKERS',
-        scrapBonus: 65,
+        scrapBonus: 70,
+        mutator: 'NONE',
         groups: [
           { ventId: 'VENT-01', kind: 'DRONE', count: 4, intervalSec: 1.45, delaySec: 0.5 },
           { ventId: 'GRATE-01', kind: 'SKITTERER', count: 14, intervalSec: 0.44, delaySec: 5.5 },
@@ -423,7 +424,8 @@ export class Sector01Blueprint {
       {
         waveNumber: 3,
         title: 'CORROSIVE BREACH // ACID BURSTERS',
-        scrapBonus: 75,
+        scrapBonus: 85,
+        mutator: 'NONE',
         groups: [
           { ventId: 'VENT-02', kind: 'BURSTER', count: 5, intervalSec: 2.0, delaySec: 0.6 },
           { ventId: 'VENT-04', kind: 'DRONE', count: 8, intervalSec: 1.2, delaySec: 1.6 },
@@ -432,8 +434,9 @@ export class Sector01Blueprint {
       },
       {
         waveNumber: 4,
-        title: 'OPTICAL GHOSTS // SIGNAL STALKER INFILTRATION',
-        scrapBonus: 85,
+        title: 'GRID BROWNOUT // SIGNAL STALKER INFILTRATION',
+        scrapBonus: 95,
+        mutator: 'GRID_BROWNOUT',
         groups: [
           { ventId: 'VENT-03', kind: 'STALKER', count: 6, intervalSec: 1.8, delaySec: 0.8 },
           { ventId: 'VENT-01', kind: 'DRONE', count: 8, intervalSec: 1.15, delaySec: 1.8 },
@@ -442,57 +445,63 @@ export class Sector01Blueprint {
       },
       {
         waveNumber: 5,
-        title: 'HEAVY CARAPACE // PRAETORIAN VANGUARD',
-        scrapBonus: 100,
+        title: 'MINI-BOSS // JUGGERNAUT CRUSHER VANGUARD',
+        scrapBonus: 120,
+        mutator: 'NONE',
+        hasBoss: 'CRUSHER',
         groups: [
-          { ventId: 'VENT-01', kind: 'PRAETORIAN', count: 2, intervalSec: 4.5, delaySec: 0.8 },
-          { ventId: 'VENT-01', kind: 'DRONE', count: 8, intervalSec: 1.05, delaySec: 2.0 },
+          { ventId: 'VENT-01', kind: 'CRUSHER', count: 1, intervalSec: 4.0, delaySec: 1.2 },
+          { ventId: 'VENT-01', kind: 'DRONE', count: 8, intervalSec: 1.05, delaySec: 2.4 },
           { ventId: 'VENT-04', kind: 'PRAETORIAN', count: 1, intervalSec: 4.0, delaySec: 5.2 },
           { ventId: 'GRATE-03', kind: 'SKITTERER', count: 14, intervalSec: 0.38, delaySec: 6.5 },
         ],
       },
       {
         waveNumber: 6,
-        title: 'MULTI-VECTOR PINCER // ALL 4 SHAFTS ACTIVE',
-        scrapBonus: 115,
+        title: 'ACID ARTILLERY // SPITTER PINCER ASSAULT',
+        scrapBonus: 125,
+        mutator: 'NONE',
         groups: [
-          { ventId: 'VENT-01', kind: 'DRONE', count: 7, intervalSec: 1.05, delaySec: 0.4 },
-          { ventId: 'VENT-02', kind: 'BURSTER', count: 5, intervalSec: 1.75, delaySec: 1.2 },
-          { ventId: 'VENT-03', kind: 'STALKER', count: 6, intervalSec: 1.55, delaySec: 2.4 },
+          { ventId: 'VENT-01', kind: 'SPITTER', count: 4, intervalSec: 2.4, delaySec: 0.8 },
+          { ventId: 'VENT-02', kind: 'BURSTER', count: 5, intervalSec: 1.75, delaySec: 1.4 },
+          { ventId: 'VENT-03', kind: 'STALKER', count: 5, intervalSec: 1.55, delaySec: 2.4 },
           { ventId: 'VENT-04', kind: 'PRAETORIAN', count: 2, intervalSec: 3.8, delaySec: 4.2 },
           { ventId: 'GRATE-04', kind: 'SKITTERER', count: 14, intervalSec: 0.36, delaySec: 6.8 },
         ],
       },
       {
         waveNumber: 7,
-        title: 'SUB-DUCT OVERLOAD // STALKER & SWARM SURGE',
-        scrapBonus: 125,
+        title: 'RADAR INTERFERENCE // BIO-SCREAMER SWARM',
+        scrapBonus: 135,
+        mutator: 'NONE',
         groups: [
+          { ventId: 'VENT-03', kind: 'SCREAMER', count: 3, intervalSec: 3.2, delaySec: 1.0 },
           { ventId: 'GRATE-01', kind: 'SKITTERER', count: 16, intervalSec: 0.34, delaySec: 5.5 },
           { ventId: 'GRATE-02', kind: 'SKITTERER', count: 16, intervalSec: 0.34, delaySec: 8.5 },
-          { ventId: 'VENT-02', kind: 'STALKER', count: 7, intervalSec: 1.35, delaySec: 1.2 },
-          { ventId: 'VENT-03', kind: 'PRAETORIAN', count: 2, intervalSec: 3.5, delaySec: 3.8 },
-          { ventId: 'VENT-04', kind: 'BURSTER', count: 6, intervalSec: 1.55, delaySec: 5.5 },
+          { ventId: 'VENT-02', kind: 'STALKER', count: 6, intervalSec: 1.35, delaySec: 1.6 },
+          { ventId: 'VENT-04', kind: 'SPITTER', count: 4, intervalSec: 2.1, delaySec: 5.2 },
         ],
       },
       {
         waveNumber: 8,
-        title: 'BULKHEAD CRUSHERS // ARMORED PHALANX',
-        scrapBonus: 140,
+        title: 'ACIDIC SURGE // ARMORED PHALANX',
+        scrapBonus: 155,
+        mutator: 'ACIDIC_SURGE',
         groups: [
           { ventId: 'VENT-01', kind: 'PRAETORIAN', count: 3, intervalSec: 3.2, delaySec: 0.6 },
-          { ventId: 'VENT-03', kind: 'PRAETORIAN', count: 3, intervalSec: 3.2, delaySec: 2.0 },
+          { ventId: 'VENT-03', kind: 'PRAETORIAN', count: 2, intervalSec: 3.2, delaySec: 2.0 },
           { ventId: 'VENT-02', kind: 'BURSTER', count: 7, intervalSec: 1.4, delaySec: 3.0 },
-          { ventId: 'VENT-04', kind: 'DRONE', count: 12, intervalSec: 0.85, delaySec: 4.2 },
+          { ventId: 'VENT-04', kind: 'SPITTER', count: 5, intervalSec: 1.9, delaySec: 4.2 },
         ],
       },
       {
         waveNumber: 9,
-        title: 'DARKNESS INCURSION // BLACKOUT PACKS',
-        scrapBonus: 155,
+        title: 'BLACKOUT PACKS // SCREAMER & STALKER SURGE',
+        scrapBonus: 165,
+        mutator: 'NONE',
         groups: [
           { ventId: 'VENT-01', kind: 'STALKER', count: 8, intervalSec: 1.2, delaySec: 0.4 },
-          { ventId: 'VENT-04', kind: 'STALKER', count: 8, intervalSec: 1.2, delaySec: 1.4 },
+          { ventId: 'VENT-04', kind: 'SCREAMER', count: 4, intervalSec: 2.5, delaySec: 1.4 },
           { ventId: 'GRATE-03', kind: 'SKITTERER', count: 20, intervalSec: 0.3, delaySec: 6.0 },
           { ventId: 'VENT-02', kind: 'PRAETORIAN', count: 3, intervalSec: 3.0, delaySec: 4.5 },
           { ventId: 'VENT-03', kind: 'BURSTER', count: 8, intervalSec: 1.3, delaySec: 5.5 },
@@ -500,60 +509,115 @@ export class Sector01Blueprint {
       },
       {
         waveNumber: 10,
-        title: 'QUEEN MOTHER BROOD // FINAL SECTOR 01 SIEGE',
-        scrapBonus: 240,
+        title: 'BOSS // XENO MATRIARCH QUEEN BREACH',
+        scrapBonus: 260,
+        mutator: 'NONE',
+        hasBoss: 'QUEEN',
         groups: [
-          { ventId: 'VENT-01', kind: 'PRAETORIAN', count: 4, intervalSec: 2.9, delaySec: 0.5 },
-          { ventId: 'VENT-02', kind: 'PRAETORIAN', count: 3, intervalSec: 3.1, delaySec: 1.8 },
-          { ventId: 'VENT-03', kind: 'STALKER', count: 10, intervalSec: 1.05, delaySec: 1.0 },
-          { ventId: 'VENT-04', kind: 'BURSTER', count: 10, intervalSec: 1.15, delaySec: 2.2 },
-          { ventId: 'GRATE-01', kind: 'SKITTERER', count: 18, intervalSec: 0.28, delaySec: 5.8 },
-          { ventId: 'GRATE-04', kind: 'SKITTERER', count: 18, intervalSec: 0.28, delaySec: 8.5 },
-          { ventId: 'VENT-01', kind: 'DRONE', count: 14, intervalSec: 0.72, delaySec: 7.0 },
+          { ventId: 'VENT-01', kind: 'QUEEN', count: 1, intervalSec: 6.0, delaySec: 1.2 },
+          { ventId: 'VENT-01', kind: 'PRAETORIAN', count: 2, intervalSec: 3.6, delaySec: 3.4 },
+          { ventId: 'VENT-02', kind: 'SPITTER', count: 4, intervalSec: 2.1, delaySec: 2.2 },
+          { ventId: 'VENT-03', kind: 'STALKER', count: 8, intervalSec: 1.15, delaySec: 1.6 },
+          { ventId: 'VENT-04', kind: 'BURSTER', count: 8, intervalSec: 1.25, delaySec: 2.8 },
+          { ventId: 'GRATE-01', kind: 'SKITTERER', count: 16, intervalSec: 0.3, delaySec: 6.2 },
+          { ventId: 'GRATE-04', kind: 'SKITTERER', count: 16, intervalSec: 0.3, delaySec: 9.0 },
         ],
       },
     ];
 
-    if (waveNumber <= campaignWaves.length) {
-      return campaignWaves[waveNumber - 1];
+    if (waveNumber <= openingWaves.length) {
+      return openingWaves[waveNumber - 1];
     }
 
     // Procedural Endless Hive Siege Escalation (Waves 11+)
     const tier = waveNumber - 10;
     const outerVents = ['VENT-01', 'VENT-02', 'VENT-03', 'VENT-04'];
     const grates = ['GRATE-01', 'GRATE-02', 'GRATE-03', 'GRATE-04'];
-    const kinds: HostileKind[] = ['DRONE', 'BURSTER', 'STALKER', 'PRAETORIAN'];
+    const kinds: HostileKind[] = [
+      'DRONE',
+      'BURSTER',
+      'STALKER',
+      'PRAETORIAN',
+      'SPITTER',
+      'SCREAMER',
+    ];
+
+    const isQueenWave = waveNumber % 10 === 0;
+    const isCrusherWave = !isQueenWave && waveNumber % 5 === 0;
+    const mutatorPool = [
+      'GRID_BROWNOUT',
+      'ACIDIC_SURGE',
+      'SUBFLOOR_BREACH',
+      'THERMAL_SPIKE',
+    ] as const;
+    const mutator =
+      waveNumber % 4 === 0 ? mutatorPool[(Math.floor(waveNumber / 4) - 1) % mutatorPool.length] : 'NONE';
 
     const groups: WaveSpawnGroup[] = [];
+    if (isQueenWave) {
+      const queenCount = Math.min(3, Math.floor(waveNumber / 10));
+      groups.push({
+        ventId: outerVents[waveNumber % outerVents.length],
+        kind: 'QUEEN',
+        count: queenCount,
+        intervalSec: 9.0,
+        delaySec: 1.2,
+      });
+    } else if (isCrusherWave) {
+      const crusherCount = Math.min(4, 1 + Math.floor(tier / 6));
+      groups.push({
+        ventId: outerVents[waveNumber % outerVents.length],
+        kind: 'CRUSHER',
+        count: crusherCount,
+        intervalSec: 5.5,
+        delaySec: 1.0,
+      });
+    }
+
     outerVents.forEach((vId, idx) => {
-      const kind = kinds[(waveNumber + idx) % kinds.length];
+      const kind = kinds[(waveNumber + idx * 2) % kinds.length];
       const baseCount =
-        kind === 'PRAETORIAN' ? 3 + Math.floor(tier * 0.75) : 9 + Math.floor(tier * 1.8);
+        kind === 'PRAETORIAN'
+          ? 3 + Math.floor(tier * 0.65)
+          : kind === 'SCREAMER' || kind === 'SPITTER'
+            ? 4 + Math.floor(tier * 0.85)
+            : 9 + Math.floor(tier * 1.6);
       groups.push({
         ventId: vId,
         kind,
         count: baseCount,
-        intervalSec: Math.max(0.52, (kind === 'PRAETORIAN' ? 2.6 : 1.05) - tier * 0.03),
-        delaySec: idx * 1.4,
+        intervalSec: Math.max(0.48, (kind === 'PRAETORIAN' ? 2.6 : 1.05) - tier * 0.028),
+        delaySec: 1.4 + idx * 1.4,
       });
     });
 
-    // Twin floor-grate Skitterer eruptions (5s+ delay for clean rattling breach telegraphs!)
-    for (let g = 0; g < 2; g++) {
-      const grateId = grates[(waveNumber + g * 2) % grates.length];
+    // Sub-floor grate Skitterer eruptions (all 4 grates during SUBFLOOR_BREACH!)
+    const activeGrateCount = mutator === 'SUBFLOOR_BREACH' ? 4 : 2;
+    for (let g = 0; g < activeGrateCount; g++) {
+      const grateId = grates[(waveNumber + g) % grates.length];
       groups.push({
         ventId: grateId,
         kind: 'SKITTERER',
-        count: 18 + tier * 3,
-        intervalSec: Math.max(0.22, 0.3 - tier * 0.006),
-        delaySec: 5.5 + g * 3.8,
+        count: (mutator === 'SUBFLOOR_BREACH' ? 16 : 18) + tier * 2,
+        intervalSec: Math.max(0.22, 0.3 - tier * 0.005),
+        delaySec: 5.5 + g * 2.8,
       });
     }
 
+    const title = isQueenWave
+      ? `BOSS // MATRIARCH QUEEN SIEGE — WAVE ${String(waveNumber).padStart(2, '0')}`
+      : isCrusherWave
+        ? `MINI-BOSS // CRUSHER STAMPEDE — WAVE ${String(waveNumber).padStart(2, '0')}`
+        : mutator !== 'NONE'
+          ? `${mutator.replace('_', ' ')} // WAVE ${String(waveNumber).padStart(2, '0')}`
+          : `DEEP HIVE SIEGE // WAVE ${String(waveNumber).padStart(2, '0')} OVERRUN`;
+
     return {
       waveNumber,
-      title: `ENDLESS HIVE SIEGE // WAVE ${String(waveNumber).padStart(2, '0')} OVERRUN`,
-      scrapBonus: 145 + tier * 12,
+      title,
+      scrapBonus: 155 + tier * 14 + (isQueenWave ? 120 : isCrusherWave ? 65 : 0),
+      mutator,
+      hasBoss: isQueenWave ? 'QUEEN' : isCrusherWave ? 'CRUSHER' : undefined,
       groups,
     };
   }

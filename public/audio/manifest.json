@@ -1,7 +1,7 @@
 {
   "version": 2,
-  "generatedAt": "2026-11-23T00:58:01.354Z",
-  "voiceId": null,
+  "generatedAt": "2026-11-26T14:47:45.819Z",
+  "voiceId": "Xb7hH8MSUJpSbSDYk0k2",
   "assets": {
     "ambient_crt_buzz": {
       "path": "/audio/ambient_crt_buzz.mp3",
@@ -193,6 +193,91 @@
       "category": "sfx",
       "bytes": 18433
     },
+    "perim_reactor_hum_loop": {
+      "path": "/audio/perim_reactor_hum_loop.mp3",
+      "category": "loop",
+      "bytes": 129192
+    },
+    "perim_breaker_blackout": {
+      "path": "/audio/perim_breaker_blackout.mp3",
+      "category": "sfx",
+      "bytes": 36405
+    },
+    "perim_breaker_restore": {
+      "path": "/audio/perim_breaker_restore.mp3",
+      "category": "sfx",
+      "bytes": 26792
+    },
+    "perim_airlock_purge": {
+      "path": "/audio/perim_airlock_purge.mp3",
+      "category": "sfx",
+      "bytes": 30972
+    },
+    "perim_cryo_blast": {
+      "path": "/audio/perim_cryo_blast.mp3",
+      "category": "sfx",
+      "bytes": 20105
+    },
+    "perim_arc_weld": {
+      "path": "/audio/perim_arc_weld.mp3",
+      "category": "sfx",
+      "bytes": 24702
+    },
+    "perim_flare_ignite": {
+      "path": "/audio/perim_flare_ignite.mp3",
+      "category": "sfx",
+      "bytes": 20105
+    },
+    "perim_overclock_surge": {
+      "path": "/audio/perim_overclock_surge.mp3",
+      "category": "sfx",
+      "bytes": 21358
+    },
+    "perim_door_batter": {
+      "path": "/audio/perim_door_batter.mp3",
+      "category": "sfx",
+      "bytes": 15925
+    },
+    "perim_acid_sizzle": {
+      "path": "/audio/perim_acid_sizzle.mp3",
+      "category": "sfx",
+      "bytes": 18433
+    },
+    "perim_rail_lance": {
+      "path": "/audio/perim_rail_lance.mp3",
+      "category": "sfx",
+      "bytes": 20105
+    },
+    "perim_queen_roar": {
+      "path": "/audio/perim_queen_roar.mp3",
+      "category": "sfx",
+      "bytes": 41838
+    },
+    "perim_shock_coil": {
+      "path": "/audio/perim_shock_coil.mp3",
+      "category": "sfx",
+      "bytes": 15925
+    },
+    "perim_claymore_blast": {
+      "path": "/audio/perim_claymore_blast.mp3",
+      "category": "sfx",
+      "bytes": 23030
+    },
+    "perim_shatter_crunch": {
+      "path": "/audio/perim_shatter_crunch.mp3",
+      "category": "sfx",
+      "bytes": 13835
+    },
+    "perim_thermal_steam": {
+      "path": "/audio/perim_thermal_steam.mp3",
+      "category": "sfx",
+      "bytes": 18433
+    },
+    "perim_wave_clear": {
+      "path": "/audio/perim_wave_clear.mp3",
+      "category": "sfx",
+      "bytes": 24702
+    },
     "homeade_computer_start": {
       "path": "/audio/homeade_computer_start.m4a",
       "category": "sfx",
@@ -262,6 +347,36 @@
       "path": "/audio/voice_hull_breach.mp3",
       "category": "voice",
       "bytes": 45600
+    },
+    "perim_voice_grate_breach": {
+      "path": "/audio/perim_voice_grate_breach.mp3",
+      "category": "voice",
+      "bytes": 36823
+    },
+    "perim_voice_sentry_dry": {
+      "path": "/audio/perim_voice_sentry_dry.mp3",
+      "category": "voice",
+      "bytes": 41003
+    },
+    "perim_voice_door_failing": {
+      "path": "/audio/perim_voice_door_failing.mp3",
+      "category": "voice",
+      "bytes": 38077
+    },
+    "perim_voice_overload": {
+      "path": "/audio/perim_voice_overload.mp3",
+      "category": "voice",
+      "bytes": 41003
+    },
+    "perim_voice_queen": {
+      "path": "/audio/perim_voice_queen.mp3",
+      "category": "voice",
+      "bytes": 63572
+    },
+    "perim_voice_protocol": {
+      "path": "/audio/perim_voice_protocol.mp3",
+      "category": "voice",
+      "bytes": 38077
     }
   }
 }

@@ -3,7 +3,10 @@ import type { Vec2, ViewportRect } from '../types';
 import type { PerimeterSimulation } from './PerimeterSimulation';
 import {
   HARDWARE_SPECS,
+  HOSTILE_SPECS,
+  MK3_BRANCH_SPECS,
   PERIMETER_CONSTANTS,
+  WAVE_MUTATORS,
   type ActiveCursorTool,
   type HostileEntity,
 } from './types';
@@ -136,10 +139,14 @@ export class PerimeterBlueprintRenderer {
 
     ctx.restore();
 
-    // Subtle Reactor Blackout Darkness Flicker Tint over CAD Viewport
+    // Subtle Reactor Blackout Darkness Flicker Tint or Emergency Floodlight Sheen over CAD Viewport
     if (sim.blackoutTimer > 0) {
       const flick = 0.34 + 0.1 * Math.sin(timeSec * 36);
       ctx.fillStyle = `rgba(2, 4, 3, ${flick.toFixed(2)})`;
+      ctx.fillRect(viewport.x, viewport.y, viewport.width, viewport.height);
+    } else if (sim.floodlightTimer > 0) {
+      const flAlpha = 0.065 + 0.025 * Math.sin(timeSec * 12);
+      ctx.fillStyle = `rgba(205, 255, 240, ${flAlpha.toFixed(3)})`;
       ctx.fillRect(viewport.x, viewport.y, viewport.width, viewport.height);
     }
 
@@ -149,8 +156,11 @@ export class PerimeterBlueprintRenderer {
         ? '#FF3318'
         : sim.overloadTimer > 0.25
           ? '#FFB000'
-          : COLORS.GREEN_MID;
-    ctx.lineWidth = sim.blackoutTimer > 0 || sim.overloadTimer > 0.25 ? 2.6 : 2.0;
+          : sim.floodlightTimer > 0
+            ? '#B6FFF2'
+            : COLORS.GREEN_MID;
+    ctx.lineWidth =
+      sim.blackoutTimer > 0 || sim.overloadTimer > 0.25 || sim.floodlightTimer > 0 ? 2.6 : 2.0;
     ctx.strokeRect(viewport.x + 1, viewport.y + 1, viewport.width - 2, viewport.height - 2);
 
     // Priority-Exclusive Single-Line Top CAD Banner (ZERO overlap at any screen width!)
@@ -179,7 +189,7 @@ export class PerimeterBlueprintRenderer {
       ctx.fillStyle = frac > 0.6 ? '#FFF0CC' : '#FFB000';
       ctx.textAlign = 'center';
       ctx.fillText(
-        `⚠ REACTOR OVERLOAD // BREAKER TRIP IN ${rem.toFixed(1)}S — SHED LOAD [P] ⚠`,
+        `⚠ REACTOR OVERLOAD // BREAKER TRIP IN ${rem.toFixed(1)}S — SHED AUX [X] OR UNIT [P] ⚠`,
         viewport.x + viewport.width * 0.5,
         viewport.y + 19,
         viewport.width - 20
@@ -209,15 +219,62 @@ export class PerimeterBlueprintRenderer {
         viewport.x + 10,
         viewport.y + 18
       );
-      if (viewport.width >= 640) {
+      if (viewport.width >= 580) {
         ctx.textAlign = 'right';
-        ctx.fillStyle = 'rgba(255, 176, 0, 0.78)';
-        ctx.fillText(
-          'DARK: 55% RNG · LIT (FLARE/M314): 100% +20% CRIT',
-          viewport.x + viewport.width - 10,
-          viewport.y + 18
-        );
+        if (sim.floodlightTimer > 0) {
+          ctx.fillStyle = '#B6FFF2';
+          ctx.fillText(
+            `☀ SECTOR FLOODLIGHT ACTIVE (${sim.floodlightTimer.toFixed(1)}S) — 100% RANGE + CRIT`,
+            viewport.x + viewport.width - 10,
+            viewport.y + 18
+          );
+        } else if (sim.activeMutator !== 'NONE') {
+          const mut = WAVE_MUTATORS[sim.activeMutator];
+          ctx.fillStyle = mut.color;
+          ctx.fillText(
+            `⚡ MUTATOR [${mut.label}]: ${mut.desc}`,
+            viewport.x + viewport.width - 10,
+            viewport.y + 18
+          );
+        } else {
+          ctx.fillStyle = 'rgba(255, 176, 0, 0.78)';
+          ctx.fillText(
+            'DARK: 55% RNG · LIT (FLARE/M314/FLOOD): 100% +20% CRIT',
+            viewport.x + viewport.width - 10,
+            viewport.y + 18
+          );
+        }
       }
+    }
+
+    // Active Boss Health Bar (QUEEN or CRUSHER) cleanly below top CAD banner
+    const activeBoss =
+      sim.hostiles.find((h) => h.kind === 'QUEEN') ??
+      sim.hostiles.find((h) => h.kind === 'CRUSHER');
+    if (activeBoss) {
+      const bSpec = HOSTILE_SPECS[activeBoss.kind];
+      const barW = Math.min(460, viewport.width - 36);
+      const barH = 22;
+      const bx = viewport.x + (viewport.width - barW) * 0.5;
+      const by = viewport.y + bannerH + 6;
+      const hpFrac = Math.max(0, Math.min(1, activeBoss.hp / Math.max(1, activeBoss.maxHp)));
+      const isQueen = activeBoss.kind === 'QUEEN';
+      ctx.fillStyle = 'rgba(24, 5, 5, 0.92)';
+      ctx.fillRect(bx, by, barW, barH);
+      ctx.fillStyle = isQueen ? 'rgba(255, 42, 68, 0.62)' : 'rgba(255, 136, 36, 0.62)';
+      ctx.fillRect(bx + 2, by + 2, (barW - 4) * hpFrac, barH - 4);
+      ctx.strokeStyle = isQueen ? '#FF3355' : '#FF9933';
+      ctx.lineWidth = 1.8;
+      ctx.strokeRect(bx, by, barW, barH);
+      ctx.font = 'bold 12.5px "Share Tech Mono", monospace';
+      ctx.fillStyle = '#FFF4DC';
+      ctx.textAlign = 'center';
+      ctx.fillText(
+        `★ ${bSpec.name} — ${Math.ceil(activeBoss.hp)} / ${activeBoss.maxHp} HP ★`,
+        bx + barW * 0.5,
+        by + 15.5,
+        barW - 14
+      );
     }
 
     ctx.restore();
@@ -235,9 +292,13 @@ export class PerimeterBlueprintRenderer {
       activeTool.kind === 'BUILD' &&
       (activeTool.buildId === 'SENTRY_PULSE' ||
         activeTool.buildId === 'INCINERATOR' ||
+        activeTool.buildId === 'RAIL_LANCE' ||
         activeTool.buildId === 'MOTION_RELAY');
     const highlightGrates =
-      activeTool.kind === 'BUILD' && activeTool.buildId === 'CRYO_VALVE';
+      activeTool.kind === 'BUILD' &&
+      (activeTool.buildId === 'CRYO_VALVE' || activeTool.buildId === 'SHOCK_COIL');
+    const isShockBuild = activeTool.kind === 'BUILD' && activeTool.buildId === 'SHOCK_COIL';
+    const highlightClaymore = activeTool.kind === 'BUILD' && activeTool.buildId === 'CLAYMORE';
     const highlightPurge =
       activeTool.kind === 'ABILITY' && activeTool.abilityId === 'PURGE';
     const buildPulse = 0.55 + 0.45 * Math.sin(timeSec * 7.5);
@@ -322,11 +383,13 @@ export class PerimeterBlueprintRenderer {
           const occupied = sim.turrets.some((t) => t.col === c && t.row === r);
           ctx.fillStyle =
             highlightGrates && !occupied
-              ? `rgba(68, 255, 119, ${(0.14 + buildPulse * 0.2).toFixed(2)})`
+              ? isShockBuild
+                ? `rgba(0, 240, 255, ${(0.14 + buildPulse * 0.2).toFixed(2)})`
+                : `rgba(68, 255, 119, ${(0.14 + buildPulse * 0.2).toFixed(2)})`
               : 'rgba(13, 59, 30, 0.25)';
           ctx.fillRect(x + 8, y + 8, ts - 16, ts - 16);
           ctx.strokeStyle =
-            highlightGrates && !occupied ? '#44FF77' : '#1E6E3B';
+            highlightGrates && !occupied ? (isShockBuild ? '#00F0FF' : '#44FF77') : '#1E6E3B';
           ctx.lineWidth = highlightGrates && !occupied ? 2.4 : 1.5;
           ctx.strokeRect(x + 8, y + 8, ts - 16, ts - 16);
 
@@ -337,6 +400,12 @@ export class PerimeterBlueprintRenderer {
             ctx.lineTo(x + ts - 11, y + k);
           }
           ctx.stroke();
+        } else if (kind === 'CORRIDOR' && highlightClaymore) {
+          const hasMine = sim.claymores.some((m) => m.col === c && m.row === r);
+          if (!hasMine) {
+            ctx.fillStyle = `rgba(255, 176, 0, ${(0.04 + buildPulse * 0.04).toFixed(3)})`;
+            ctx.fillRect(x + 16, y + 16, ts - 32, ts - 32);
+          }
         } else if (kind === 'MOUNT_PAD') {
           const occupied = sim.turrets.some((t) => t.col === c && t.row === r);
           const padM = 9;
@@ -414,20 +483,40 @@ export class PerimeterBlueprintRenderer {
     }
     ctx.restore();
 
-    // 4 Outer Breach Vents (VENT-01 .. VENT-04) + Auxiliary Floor Grates
-    const activeWaveVents = new Set(sim.currentWaveDef.groups.map((g) => g.ventId));
+    // 4 Outer Breach Vents (VENT-01 .. VENT-04) + Auxiliary Floor Grates (+ Tactical Prep Wave Previews!)
+    const ventSummaries = new Map<string, { text: string; hasBoss: boolean }>();
+    for (const grp of sim.currentWaveDef.groups) {
+      const existing = ventSummaries.get(grp.ventId);
+      const spec = HOSTILE_SPECS[grp.kind];
+      const tag = spec.isBoss ? `★${spec.shortCode}` : `${grp.count}×${spec.shortCode}`;
+      if (!existing) {
+        ventSummaries.set(grp.ventId, { text: tag, hasBoss: Boolean(spec.isBoss) });
+      } else {
+        existing.text = `${existing.text} ${tag}`;
+        if (spec.isBoss) existing.hasBoss = true;
+      }
+    }
+    const showPrepPreview = sim.phase === 'TACTICAL_PREP';
+
     for (const vent of bp.vents) {
-      const isWaveActive = activeWaveVents.has(vent.id);
+      const summary = ventSummaries.get(vent.id);
+      const isWaveActive = Boolean(summary);
       if (vent.isAuxGrate) {
         if (isWaveActive) {
           ctx.save();
-          ctx.strokeStyle = 'rgba(255, 176, 0, 0.55)';
-          ctx.lineWidth = 1.6;
+          ctx.strokeStyle = showPrepPreview
+            ? `rgba(255, 176, 0, ${(0.55 + buildPulse * 0.4).toFixed(2)})`
+            : 'rgba(255, 176, 0, 0.55)';
+          ctx.lineWidth = showPrepPreview ? 2.2 : 1.6;
           ctx.strokeRect(vent.pos.x - 24, vent.pos.y - 24, 48, 48);
-          ctx.font = 'bold 11px "Share Tech Mono", monospace';
-          ctx.fillStyle = 'rgba(255, 176, 0, 0.78)';
+          ctx.font = 'bold 11.5px "Share Tech Mono", monospace';
+          ctx.fillStyle = '#FFB000';
           ctx.textAlign = 'center';
-          ctx.fillText(vent.id, vent.pos.x, vent.pos.y - 28);
+          ctx.fillText(
+            showPrepPreview && summary ? `${vent.id}: ${summary.text}` : vent.id,
+            vent.pos.x,
+            vent.pos.y - 28
+          );
           ctx.restore();
         }
         continue;
@@ -435,8 +524,12 @@ export class PerimeterBlueprintRenderer {
 
       const vPulse = isWaveActive ? 0.65 + 0.35 * Math.sin(timeSec * 6.5) : 0.45;
       ctx.save();
-      ctx.strokeStyle = isWaveActive ? `rgba(255, 176, 0, ${vPulse.toFixed(2)})` : '#238C40';
-      ctx.lineWidth = 2.4;
+      ctx.strokeStyle = summary?.hasBoss
+        ? `rgba(255, 51, 68, ${vPulse.toFixed(2)})`
+        : isWaveActive
+          ? `rgba(255, 176, 0, ${vPulse.toFixed(2)})`
+          : '#238C40';
+      ctx.lineWidth = summary?.hasBoss ? 3.2 : 2.4;
       ctx.strokeRect(vent.pos.x - 24, vent.pos.y - 24, 48, 48);
 
       // Diamond breach reticle
@@ -449,10 +542,31 @@ export class PerimeterBlueprintRenderer {
       ctx.stroke();
 
       ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
-      ctx.fillStyle = isWaveActive ? '#FFB000' : COLORS.GREEN_PRIMARY;
+      ctx.fillStyle = summary?.hasBoss
+        ? '#FF4466'
+        : isWaveActive
+          ? '#FFB000'
+          : COLORS.GREEN_PRIMARY;
       ctx.textAlign = vent.col < 16 ? 'left' : 'right';
       const labelX = vent.col < 16 ? vent.pos.x - 24 : vent.pos.x + 24;
       ctx.fillText(vent.id, labelX, vent.pos.y - 30);
+
+      // Upcoming Wave Composition Preview Badge during Tactical Prep!
+      if (showPrepPreview && summary) {
+        ctx.font = 'bold 12px "JetBrains Mono", monospace';
+        const previewTxt = summary.text;
+        const pw = ctx.measureText(previewTxt).width + 12;
+        const px = vent.col < 16 ? vent.pos.x - 24 : vent.pos.x + 24 - pw;
+        const py = vent.pos.y + 28;
+        ctx.fillStyle = summary.hasBoss ? 'rgba(65, 10, 14, 0.94)' : 'rgba(28, 18, 4, 0.92)';
+        ctx.fillRect(px, py, pw, 19);
+        ctx.strokeStyle = summary.hasBoss ? '#FF3355' : '#FFB000';
+        ctx.lineWidth = 1.4;
+        ctx.strokeRect(px, py, pw, 19);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = summary.hasBoss ? '#FFE0E6' : '#FFE082';
+        ctx.fillText(previewTxt, px + pw * 0.5, py + 13.5);
+      }
       ctx.restore();
     }
   }
@@ -551,8 +665,30 @@ export class PerimeterBlueprintRenderer {
       const spec = HARDWARE_SPECS[t.kind];
 
       if (t.kind === 'MOTION_RELAY') {
+        // MK-III Branch A: Permanent 240px Floodlight Illumination Halo!
+        if (t.powered && sim.blackoutTimer <= 0 && t.level === 3 && t.mk3Branch === 'A') {
+          const haloR = 240;
+          const grad = ctx.createRadialGradient(t.pos.x, t.pos.y, 8, t.pos.x, t.pos.y, haloR);
+          grad.addColorStop(0, 'rgba(220, 255, 240, 0.24)');
+          grad.addColorStop(0.65, 'rgba(110, 255, 190, 0.08)');
+          grad.addColorStop(1, 'rgba(110, 255, 190, 0)');
+          ctx.save();
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(t.pos.x, t.pos.y, haloR, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(200, 255, 232, 0.45)';
+          ctx.lineWidth = 1.6;
+          ctx.setLineDash([7, 6]);
+          ctx.beginPath();
+          ctx.arc(t.pos.x, t.pos.y, haloR, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
+
         if (isSelected) {
-          const rPx = spec.rangePx * (t.level === 2 ? 1.2 : 1.0);
+          const rPx = spec.rangePx * (t.level === 3 ? 1.38 : t.level === 2 ? 1.2 : 1.0);
           ctx.save();
           ctx.strokeStyle = 'rgba(68, 255, 119, 0.35)';
           ctx.lineWidth = 1.6;
@@ -583,12 +719,30 @@ export class PerimeterBlueprintRenderer {
         continue;
       }
 
-      if (t.kind === 'CRYO_VALVE') {
-        if (isSelected) {
-          const rPx = spec.rangePx * (t.level === 2 ? 1.22 : 1.0);
+      if (t.kind === 'CRYO_VALVE' || t.kind === 'SHOCK_COIL') {
+        const cryoProto = 1 + sim.getProtocolStacks('CRYO_SHATTER') * 0.2;
+        const lvMult =
+          t.kind === 'CRYO_VALVE'
+            ? t.level === 3 && t.mk3Branch === 'B'
+              ? 1.4
+              : t.level >= 2
+                ? 1.22
+                : 1.0
+            : t.level === 3
+              ? 1.28
+              : t.level === 2
+                ? 1.15
+                : 1.0;
+        const rPx = spec.rangePx * lvMult * cryoProto;
+        if (isSelected || (t.kind === 'SHOCK_COIL' && t.powered && sim.blackoutTimer <= 0)) {
           ctx.save();
-          ctx.strokeStyle = 'rgba(142, 245, 171, 0.45)';
-          ctx.lineWidth = 1.8;
+          ctx.strokeStyle =
+            t.kind === 'SHOCK_COIL'
+              ? isSelected
+                ? 'rgba(0, 240, 255, 0.62)'
+                : 'rgba(0, 240, 255, 0.16)'
+              : 'rgba(142, 245, 171, 0.45)';
+          ctx.lineWidth = isSelected ? 1.9 : 1.2;
           ctx.setLineDash([5, 5]);
           ctx.beginPath();
           ctx.arc(t.pos.x, t.pos.y, rPx, 0, Math.PI * 2);
@@ -601,14 +755,16 @@ export class PerimeterBlueprintRenderer {
 
       if (!t.powered || sim.blackoutTimer > 0) continue;
 
-      const effRange =
-        spec.rangePx * (t.relayBoosted ? 1.24 : 1.0) * (t.level === 2 ? 1.12 : 1.0);
+      const relayMult = t.relayMatrixBoosted ? 1.32 : t.relayBoosted ? 1.24 : 1.0;
+      const lvlMult = t.level === 3 ? 1.22 : t.level === 2 ? 1.12 : 1.0;
+      const effRange = spec.rangePx * relayMult * lvlMult;
       const darkRange = effRange * PERIMETER_CONSTANTS.DARK_CORRIDOR_RANGE_MULT;
       const halfArc = spec.coneHalfAngleRad;
       const a1 = t.angle - halfArc;
       const a2 = t.angle + halfArc;
 
       ctx.save();
+      const isRail = t.kind === 'RAIL_LANCE';
       const isAmber = t.kind === 'INCINERATOR' || t.overclockTimer > 0;
       const isDown =
         t.thermalLocked || t.rearmTimer > 0 || (t.kind === 'SENTRY_PULSE' && t.ammo <= 0);
@@ -623,6 +779,10 @@ export class PerimeterBlueprintRenderer {
       if (isDown) {
         coneGrad.addColorStop(0, 'rgba(255, 51, 24, 0.12)');
         coneGrad.addColorStop(1, 'rgba(255, 51, 24, 0.01)');
+      } else if (isRail && t.overclockTimer <= 0) {
+        coneGrad.addColorStop(0, 'rgba(0, 240, 255, 0.20)');
+        coneGrad.addColorStop(0.55, 'rgba(0, 220, 255, 0.09)');
+        coneGrad.addColorStop(1, 'rgba(0, 200, 255, 0.015)');
       } else if (isAmber) {
         coneGrad.addColorStop(0, 'rgba(255, 176, 0, 0.18)');
         coneGrad.addColorStop(0.55, 'rgba(255, 176, 0, 0.09)');
@@ -657,9 +817,11 @@ export class PerimeterBlueprintRenderer {
         ? 'rgba(255, 51, 24, 0.45)'
         : isSelected
           ? '#FFB000'
-          : isAmber
-            ? 'rgba(255, 176, 0, 0.34)'
-            : 'rgba(68, 255, 119, 0.32)';
+          : isRail && t.overclockTimer <= 0
+            ? 'rgba(0, 240, 255, 0.36)'
+            : isAmber
+              ? 'rgba(255, 176, 0, 0.34)'
+              : 'rgba(68, 255, 119, 0.32)';
       ctx.lineWidth = isSelected ? 2.2 : 1.35;
       ctx.setLineDash([6, 5]);
       ctx.beginPath();
@@ -674,9 +836,11 @@ export class PerimeterBlueprintRenderer {
       // Inner 55% passive dark-corridor IR engagement range arc (solid crisp inner arc!)
       ctx.strokeStyle = isDown
         ? 'rgba(255, 51, 24, 0.55)'
-        : isAmber
-          ? 'rgba(255, 176, 0, 0.62)'
-          : 'rgba(68, 255, 119, 0.58)';
+        : isRail && t.overclockTimer <= 0
+          ? 'rgba(0, 240, 255, 0.62)'
+          : isAmber
+            ? 'rgba(255, 176, 0, 0.62)'
+            : 'rgba(68, 255, 119, 0.58)';
       ctx.lineWidth = 1.65;
       ctx.beginPath();
       for (let i = 0; i < darkPts.length; i++) {
@@ -690,7 +854,12 @@ export class PerimeterBlueprintRenderer {
         const sweepPhase = Math.sin(timeSec * 3.8 + t.col * 0.7);
         const rayAng = t.angle + sweepPhase * halfArc * 0.92;
         const rayHit = sim.castSightRay(t.pos, rayAng, darkRange);
-        ctx.strokeStyle = isAmber ? 'rgba(255, 196, 72, 0.48)' : 'rgba(142, 245, 171, 0.48)';
+        ctx.strokeStyle =
+          isRail && t.overclockTimer <= 0
+            ? 'rgba(130, 248, 255, 0.52)'
+            : isAmber
+              ? 'rgba(255, 196, 72, 0.48)'
+              : 'rgba(142, 245, 171, 0.48)';
         ctx.lineWidth = 1.4;
         ctx.beginPath();
         ctx.moveTo(t.pos.x, t.pos.y);
@@ -820,6 +989,72 @@ export class PerimeterBlueprintRenderer {
         ctx.lineTo(sx + pw.flushDir.x * (travel + 55), sy + pw.flushDir.y * (travel + 55));
         ctx.stroke();
       }
+      ctx.restore();
+    }
+
+    // 5. Armed M18 Proximity Claymore Mines
+    for (const m of sim.claymores) {
+      const armed = m.armTimer <= 0;
+      const blink = armed && Math.sin(timeSec * 10 + m.col) > 0;
+      ctx.save();
+      ctx.translate(m.pos.x, m.pos.y);
+
+      ctx.strokeStyle = armed ? 'rgba(255, 176, 0, 0.30)' : 'rgba(130, 180, 140, 0.24)';
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([4, 5]);
+      ctx.beginPath();
+      ctx.arc(0, 0, PERIMETER_CONSTANTS.CLAYMORE_TRIGGER_RADIUS_PX, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = '#1E2C1A';
+      ctx.strokeStyle = armed ? '#FFB000' : '#6F9F7A';
+      ctx.lineWidth = 2.0;
+      ctx.fillRect(-10, -7, 20, 14);
+      ctx.strokeRect(-10, -7, 20, 14);
+
+      ctx.fillStyle = blink ? '#FF3318' : armed ? '#FFB000' : '#44FF77';
+      ctx.beginPath();
+      ctx.arc(0, 0, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.font = 'bold 9.5px "Share Tech Mono", monospace';
+      ctx.fillStyle = armed ? '#FFD266' : '#8EF5AB';
+      ctx.textAlign = 'center';
+      ctx.fillText(armed ? 'M18' : 'ARM', 0, -10);
+      ctx.restore();
+    }
+
+    // 6. Matriarch Queen Hatching Egg Sacs!
+    for (const egg of sim.eggSacs) {
+      const prog = 1 - egg.hatchTimer / Math.max(0.1, egg.maxHatchTimer);
+      const pulse = 1 + 0.12 * Math.sin(timeSec * 14 + egg.id);
+      ctx.save();
+      ctx.translate(egg.pos.x, egg.pos.y);
+
+      ctx.strokeStyle = prog > 0.7 ? '#FF3344' : '#B8FF3B';
+      ctx.lineWidth = 2.6;
+      ctx.beginPath();
+      ctx.arc(0, 0, 17, -Math.PI * 0.5, -Math.PI * 0.5 + prog * Math.PI * 2);
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(42, 60, 18, 0.92)';
+      ctx.strokeStyle = '#C8FF44';
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 11 * pulse, 14 * pulse, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#FF5533';
+      ctx.beginPath();
+      ctx.arc(0, -3, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.font = 'bold 10.5px "Share Tech Mono", monospace';
+      ctx.fillStyle = '#D4FF66';
+      ctx.textAlign = 'center';
+      ctx.fillText(`EGG ${egg.hatchTimer.toFixed(1)}S`, 0, -21);
       ctx.restore();
     }
   }
@@ -993,20 +1228,17 @@ export class PerimeterBlueprintRenderer {
     const c = sim.blueprint.coreCenter;
     ctx.save();
 
-    // Inner sterile Med-Lab illumination halo
-    const grad = ctx.createRadialGradient(
-      c.x,
-      c.y,
-      12,
-      c.x,
-      c.y,
-      PERIMETER_CONSTANTS.CORE_LIT_RADIUS
-    );
+    // Inner sterile Med-Lab illumination halo (halved during GRID_BROWNOUT mutator!)
+    const coreLitR =
+      sim.activeMutator === 'GRID_BROWNOUT'
+        ? PERIMETER_CONSTANTS.CORE_LIT_RADIUS * 0.5
+        : PERIMETER_CONSTANTS.CORE_LIT_RADIUS;
+    const grad = ctx.createRadialGradient(c.x, c.y, 12, c.x, c.y, coreLitR);
     grad.addColorStop(0, 'rgba(68, 255, 119, 0.22)');
     grad.addColorStop(1, 'rgba(68, 255, 119, 0)');
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.arc(c.x, c.y, PERIMETER_CONSTANTS.CORE_LIT_RADIUS, 0, Math.PI * 2);
+    ctx.arc(c.x, c.y, coreLitR, 0, Math.PI * 2);
     ctx.fill();
 
     // 3 Concentric Bulkhead Seal Rings (visualizing the 3 Core Seals / Lives!)
@@ -1103,7 +1335,9 @@ export class PerimeterBlueprintRenderer {
                 ? '#FFD266'
                 : t.kind === 'INCINERATOR'
                   ? '#FFB000'
-                  : '#44FF77';
+                  : t.kind === 'RAIL_LANCE' || t.kind === 'SHOCK_COIL'
+                    ? '#00F0FF'
+                    : '#44FF77';
 
       if (t.kind === 'CRYO_VALVE') {
         // Octagonal Duct Valve Assembly
@@ -1129,6 +1363,39 @@ export class PerimeterBlueprintRenderer {
         ctx.moveTo(0, -10);
         ctx.lineTo(0, 10);
         ctx.stroke();
+      } else if (t.kind === 'SHOCK_COIL') {
+        // Concentric Tesla Arc-Shock Coil Tower
+        ctx.fillStyle = '#041418';
+        ctx.strokeStyle = mainCol;
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, 16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.strokeStyle = t.powered ? '#9BF8FF' : '#2D5E66';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(0, 0, 10, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.rotate(t.powered ? timeSec * 4.5 : 0);
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.beginPath();
+        ctx.moveTo(-13, 0);
+        ctx.lineTo(-7, 0);
+        ctx.moveTo(7, 0);
+        ctx.lineTo(13, 0);
+        ctx.moveTo(0, -13);
+        ctx.lineTo(0, -7);
+        ctx.moveTo(0, 7);
+        ctx.lineTo(0, 13);
+        ctx.stroke();
+
+        ctx.fillStyle = t.powered ? '#00F0FF' : '#2D5E66';
+        ctx.beginPath();
+        ctx.arc(0, 0, 4.5, 0, Math.PI * 2);
+        ctx.fill();
       } else if (t.kind === 'MOTION_RELAY') {
         // M314 Dish & Laser Emitter Node
         ctx.fillStyle = '#05150C';
@@ -1140,12 +1407,12 @@ export class PerimeterBlueprintRenderer {
         ctx.stroke();
 
         ctx.rotate(t.powered ? timeSec * 2.8 : 0);
-        ctx.strokeStyle = '#FFB000';
+        ctx.strokeStyle = t.jammedTimer > 0 ? '#E066FF' : '#FFB000';
         ctx.beginPath();
         ctx.arc(0, 0, 9, -0.8, 0.8);
         ctx.stroke();
       } else {
-        // UA 571-C Sentry or M240 Incinerator Tripod Base + Rotating Receiver/Barrel!
+        // UA 571-C Sentry, M240 Incinerator, or M99 Rail-Lance Tripod Base + Rotating Receiver/Barrel!
         ctx.strokeStyle = COLORS.GREEN_MID;
         ctx.lineWidth = 2.0;
         ctx.beginPath();
@@ -1173,6 +1440,23 @@ export class PerimeterBlueprintRenderer {
           ctx.lineTo(23, 2.5);
           ctx.lineTo(9, 2.5);
           ctx.stroke();
+        } else if (t.kind === 'RAIL_LANCE') {
+          ctx.strokeStyle = mainCol;
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.moveTo(9, -5.5);
+          ctx.lineTo(29, -3.5);
+          ctx.moveTo(9, 5.5);
+          ctx.lineTo(29, 3.5);
+          ctx.stroke();
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.moveTo(13, -4);
+          ctx.lineTo(13, 4);
+          ctx.moveTo(20, -3.5);
+          ctx.lineTo(20, 3.5);
+          ctx.stroke();
         } else {
           // Twin wide nozzle + pilot igniter for M240 Incinerator
           ctx.fillRect(9, -5, 13, 10);
@@ -1181,21 +1465,41 @@ export class PerimeterBlueprintRenderer {
 
         // Muzzle flash star
         if (t.firingFlashTimer > 0) {
-          ctx.fillStyle = '#FFF6CC';
+          ctx.fillStyle = t.kind === 'RAIL_LANCE' ? '#B6FFFF' : '#FFF6CC';
           ctx.beginPath();
-          ctx.arc(25, 0, 5.5, 0, Math.PI * 2);
+          ctx.arc(t.kind === 'RAIL_LANCE' ? 30 : 25, 0, t.kind === 'RAIL_LANCE' ? 7 : 5.5, 0, Math.PI * 2);
           ctx.fill();
         }
       }
 
-      if (t.level === 2) {
+      if (t.acidDebuffTimer > 0) {
         ctx.restore();
         ctx.save();
         ctx.translate(t.pos.x, t.pos.y);
-        ctx.fillStyle = '#FFB000';
-        ctx.font = 'bold 10px "Share Tech Mono", monospace';
+        ctx.strokeStyle = '#B8FF3B';
+        ctx.lineWidth = 2.2;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.arc(0, 0, 22, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else if (t.jammedTimer > 0) {
+        ctx.restore();
+        ctx.save();
+        ctx.translate(t.pos.x, t.pos.y);
+        ctx.strokeStyle = '#E066FF';
+        ctx.lineWidth = 2.0;
+        ctx.strokeRect(-22, -22, 44, 44);
+      }
+
+      if (t.level >= 2) {
+        ctx.restore();
+        ctx.save();
+        ctx.translate(t.pos.x, t.pos.y);
+        ctx.fillStyle = t.level === 3 ? '#00F0FF' : '#FFB000';
+        ctx.font = 'bold 10.5px "Share Tech Mono", monospace';
         ctx.textAlign = 'right';
-        ctx.fillText('II', 21, 21);
+        ctx.fillText(t.level === 3 ? `III${t.mk3Branch ?? ''}` : 'II', 23, 22);
       }
 
       ctx.restore();
@@ -1229,6 +1533,23 @@ export class PerimeterBlueprintRenderer {
     sim: PerimeterSimulation,
     timeSec: number
   ): void {
+    // Screamer radar-jamming phantom decoys
+    for (const pb of sim.phantomBlips) {
+      const alpha = Math.max(0, Math.min(1, pb.life / Math.max(0.1, pb.maxLife)));
+      const jx = pb.pos.x + (Math.random() - 0.5) * 6;
+      const jy = pb.pos.y + (Math.random() - 0.5) * 6;
+      ctx.save();
+      ctx.strokeStyle = `rgba(224, 102, 255, ${(0.75 * alpha).toFixed(2)})`;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(jx, jy, 8, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.font = 'bold 10px "JetBrains Mono", monospace';
+      ctx.fillStyle = `rgba(224, 102, 255, ${(0.85 * alpha).toFixed(2)})`;
+      ctx.fillText('ERR?', jx + 10, jy + 3);
+      ctx.restore();
+    }
+
     for (const h of sim.hostiles) {
       if (h.verified) {
         this.drawVerifiedBioSilhouette(ctx, h, timeSec);
@@ -1291,21 +1612,33 @@ export class PerimeterBlueprintRenderer {
 
     const chilled = h.cryoSlowTimer > 0;
     const burning = h.napalmBurnTimer > 0;
-    const strokeCol = burning
-      ? '#FFB000'
-      : chilled
-        ? '#9BF8FF'
-        : h.kind === 'BURSTER'
-          ? '#C8FF44'
-          : h.kind === 'PRAETORIAN'
-            ? '#FF8C24'
-            : h.kind === 'STALKER'
-              ? '#B6FFE0'
-              : '#44FF77';
+    const stunned = h.stunTimer > 0;
+    const strokeCol = stunned
+      ? '#00F0FF'
+      : burning
+        ? '#FFB000'
+        : chilled
+          ? '#9BF8FF'
+          : h.kind === 'QUEEN'
+            ? '#FF3355'
+            : h.kind === 'CRUSHER'
+              ? '#FF7722'
+              : h.kind === 'SPITTER'
+                ? '#B8FF3B'
+                : h.kind === 'SCREAMER'
+                  ? '#E066FF'
+                  : h.kind === 'BURSTER'
+                    ? '#C8FF44'
+                    : h.kind === 'PRAETORIAN'
+                      ? '#FF8C24'
+                      : h.kind === 'STALKER'
+                        ? '#B6FFE0'
+                        : '#44FF77';
 
     ctx.strokeStyle = strokeCol;
     ctx.fillStyle = 'rgba(6, 22, 12, 0.88)';
-    ctx.lineWidth = h.kind === 'PRAETORIAN' ? 2.8 : 2.1;
+    ctx.lineWidth =
+      h.kind === 'QUEEN' ? 3.4 : h.kind === 'CRUSHER' || h.kind === 'PRAETORIAN' ? 2.8 : 2.1;
 
     if (h.kind === 'SKITTERER') {
       // Erratic arachnid dart + 6 legs + whip tail
@@ -1390,6 +1723,112 @@ export class PerimeterBlueprintRenderer {
       ctx.beginPath();
       ctx.arc(-2, 0, 4.5, 0, Math.PI * 2);
       ctx.fill();
+    } else if (h.kind === 'SPITTER') {
+      // Acid Spitter: Bloated venomous rear sac + wide forward mandibles
+      ctx.beginPath();
+      ctx.moveTo(15, 0);
+      ctx.lineTo(5, -7);
+      ctx.lineTo(-13, -11);
+      ctx.lineTo(-17, 0);
+      ctx.lineTo(-13, 11);
+      ctx.lineTo(5, 7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#B8FF3B';
+      ctx.beginPath();
+      ctx.arc(-6, 0, 5.5 + Math.sin(timeSec * 12 + h.id) * 1.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(8, -5);
+      ctx.lineTo(18, -10);
+      ctx.moveTo(8, 5);
+      ctx.lineTo(18, 10);
+      ctx.stroke();
+    } else if (h.kind === 'SCREAMER') {
+      // Bio-Screamer Jammer: Angular violet acoustic crest + pulsing sonic ripples
+      const ringR = 14 + ((timeSec * 28 + h.id * 5) % 16);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(224, 102, 255, 0.52)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.beginPath();
+      ctx.moveTo(16, 0);
+      ctx.lineTo(4, -12);
+      ctx.lineTo(-14, -7);
+      ctx.lineTo(-10, 0);
+      ctx.lineTo(-14, 7);
+      ctx.lineTo(4, 12);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (h.kind === 'CRUSHER') {
+      // Juggernaut Crusher Mini-Boss: Massive armored battering ram + fiery charge aura!
+      if (h.chargeTelegraphTimer > 0 || h.chargeActiveTimer > 0) {
+        ctx.save();
+        ctx.strokeStyle = h.chargeActiveTimer > 0 ? '#FF3318' : '#FFB000';
+        ctx.lineWidth = 3.2;
+        ctx.beginPath();
+        ctx.arc(0, 0, 31 + Math.sin(timeSec * 24) * 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.beginPath();
+      ctx.moveTo(25, 0);
+      ctx.lineTo(14, -22);
+      ctx.lineTo(-16, -18);
+      ctx.lineTo(-24, 0);
+      ctx.lineTo(-16, 18);
+      ctx.lineTo(14, 22);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = '#FFD266';
+      ctx.lineWidth = 5.0;
+      ctx.beginPath();
+      ctx.arc(4, 0, 23, -1.15, 1.15);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(14, -14);
+      ctx.lineTo(30, -9);
+      ctx.moveTo(14, 14);
+      ctx.lineTo(30, 9);
+      ctx.stroke();
+    } else if (h.kind === 'QUEEN') {
+      // Xeno Matriarch Queen Boss: Splayed Royal Crown Crest + Mantis Scythes + Whip Tail!
+      const tailW = Math.sin(timeSec * 9 + h.id) * 10;
+      ctx.fillStyle = 'rgba(38, 6, 12, 0.92)';
+      ctx.beginPath();
+      ctx.moveTo(30, 0);
+      ctx.lineTo(10, -14);
+      ctx.lineTo(-4, -29);
+      ctx.lineTo(-22, -20);
+      ctx.lineTo(-16, -8);
+      ctx.lineTo(-26, 0);
+      ctx.lineTo(-16, 8);
+      ctx.lineTo(-22, 20);
+      ctx.lineTo(-4, 29);
+      ctx.lineTo(10, 14);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = '#FFD266';
+      ctx.lineWidth = 2.6;
+      ctx.beginPath();
+      ctx.moveTo(12, -11);
+      ctx.lineTo(28, -22);
+      ctx.moveTo(12, 11);
+      ctx.lineTo(28, 22);
+      ctx.moveTo(-26, 0);
+      ctx.quadraticCurveTo(-38, tailW, -48, -tailW * 0.6);
+      ctx.stroke();
     } else {
       // Signal Stalker: Angular Stealth Mantis with razor scythes
       ctx.beginPath();
@@ -1408,17 +1847,37 @@ export class PerimeterBlueprintRenderer {
       ctx.stroke();
     }
 
+    if (stunned) {
+      ctx.strokeStyle = '#9BF8FF';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(0, 0, h.radiusPx + 5, timeSec * 12, timeSec * 12 + Math.PI * 1.2);
+      ctx.stroke();
+    }
+
     ctx.restore();
 
-    // Compact HP bar for wounded medium/heavy targets
-    if (h.hp < h.maxHp && h.kind !== 'SKITTERER') {
-      const bw = h.kind === 'PRAETORIAN' ? 40 : 26;
+    // Compact HP bar for wounded medium/heavy/boss targets
+    if ((h.hp < h.maxHp && h.kind !== 'SKITTERER') || h.isBoss) {
+      const bw =
+        h.kind === 'QUEEN'
+          ? 58
+          : h.kind === 'CRUSHER'
+            ? 48
+            : h.kind === 'PRAETORIAN'
+              ? 40
+              : 26;
       const bx = h.pos.x - bw * 0.5;
       const by = h.pos.y - h.radiusPx - 11;
       ctx.fillStyle = '#050E08';
-      ctx.fillRect(bx, by, bw, 4.5);
-      ctx.fillStyle = h.kind === 'PRAETORIAN' ? '#FFB000' : '#44FF77';
-      ctx.fillRect(bx, by, bw * Math.max(0, h.hp / h.maxHp), 4.5);
+      ctx.fillRect(bx, by, bw, 5);
+      ctx.fillStyle =
+        h.kind === 'QUEEN'
+          ? '#FF3355'
+          : h.kind === 'CRUSHER' || h.kind === 'PRAETORIAN'
+            ? '#FFB000'
+            : '#44FF77';
+      ctx.fillRect(bx, by, bw * Math.max(0, h.hp / h.maxHp), 5);
     }
   }
 
@@ -1426,6 +1885,61 @@ export class PerimeterBlueprintRenderer {
     ctx: CanvasRenderingContext2D,
     sim: PerimeterSimulation
   ): void {
+    // M99 Rail-Lance Piercing Electromagnetic Plasma Beams
+    for (const rb of sim.railBeams) {
+      const alpha = Math.max(0, rb.life / Math.max(0.05, rb.maxLife));
+      ctx.save();
+      ctx.strokeStyle = `rgba(0, 240, 255, ${(0.55 * alpha).toFixed(2)})`;
+      ctx.lineWidth = rb.tier === 3 ? 11 : rb.tier === 2 ? 8.5 : 7;
+      ctx.beginPath();
+      ctx.moveTo(rb.p1.x, rb.p1.y);
+      ctx.lineTo(rb.p2.x, rb.p2.y);
+      ctx.stroke();
+
+      ctx.strokeStyle = `rgba(235, 255, 255, ${(0.95 * alpha).toFixed(2)})`;
+      ctx.lineWidth = rb.tier === 3 ? 4.2 : 2.8;
+      ctx.beginPath();
+      ctx.moveTo(rb.p1.x, rb.p1.y);
+      ctx.lineTo(rb.p2.x, rb.p2.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Arc-Shock Coil Chain Lightning Bolts
+    for (const sa of sim.shockArcs) {
+      const alpha = Math.max(0, sa.life / Math.max(0.05, sa.maxLife));
+      if (sa.points.length < 2) continue;
+      ctx.save();
+      ctx.strokeStyle = `rgba(0, 240, 255, ${(0.88 * alpha).toFixed(2)})`;
+      ctx.lineWidth = 3.2;
+      ctx.beginPath();
+      for (let i = 0; i < sa.points.length; i++) {
+        const pt = sa.points[i];
+        const jx = i === 0 || i === sa.points.length - 1 ? 0 : (Math.random() - 0.5) * 10;
+        const jy = i === 0 || i === sa.points.length - 1 ? 0 : (Math.random() - 0.5) * 10;
+        if (i === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x + jx, pt.y + jy);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(235, 255, 255, ${(0.9 * alpha).toFixed(2)})`;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Spitter Corrosive Acid Spit Globs
+    for (const spit of sim.acidSpits) {
+      ctx.save();
+      ctx.fillStyle = '#C8FF44';
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(spit.pos.x, spit.pos.y, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // Caseless 10mm Vector Tracer Bolts
     for (const tr of sim.tracers) {
       const alpha = Math.max(0.2, tr.life / tr.maxLife);
@@ -1529,18 +2043,37 @@ export class PerimeterBlueprintRenderer {
           borderCol = t.firingFlashTimer > 0 ? '#FFB000' : 'rgba(59, 224, 104, 0.65)';
         }
       } else if (t.kind === 'INCINERATOR') {
-        label = `${t.callsign} // NAPALM ${Math.round(t.heat)}%`;
-        textCol = t.heat > 75 ? '#FF5522' : '#FFB000';
-        borderCol = 'rgba(255, 176, 0, 0.72)';
+        label =
+          t.acidDebuffTimer > 0
+            ? `⚠ ${t.callsign} // ACID`
+            : `${t.callsign} // NAPALM ${Math.round(t.heat)}%`;
+        textCol = t.acidDebuffTimer > 0 ? '#B8FF3B' : t.heat > 75 ? '#FF5522' : '#FFB000';
+        borderCol = t.acidDebuffTimer > 0 ? '#B8FF3B' : 'rgba(255, 176, 0, 0.72)';
+      } else if (t.kind === 'RAIL_LANCE') {
+        const branchTag =
+          t.level === 3 && t.mk3Branch ? ` ${MK3_BRANCH_SPECS.RAIL_LANCE[t.mk3Branch].code}` : '';
+        label =
+          t.acidDebuffTimer > 0
+            ? `⚠ ${t.callsign} // ACID`
+            : `${t.callsign} // RAIL${branchTag}`;
+        textCol = t.acidDebuffTimer > 0 ? '#B8FF3B' : '#00F0FF';
+        borderCol = t.acidDebuffTimer > 0 ? '#B8FF3B' : 'rgba(0, 240, 255, 0.72)';
       } else if (t.kind === 'CRYO_VALVE') {
         label = `${t.callsign} // CRYO`;
         textCol = '#8EF5AB';
+      } else if (t.kind === 'SHOCK_COIL') {
+        label = `${t.callsign} // COIL`;
+        textCol = '#00F0FF';
+        borderCol = 'rgba(0, 240, 255, 0.65)';
       } else {
         label =
-          t.tripwireIntegrity < 50
-            ? `${t.callsign} // WIRE DMG`
-            : `${t.callsign} // M314`;
-        textCol = t.tripwireIntegrity < 50 ? '#FFB000' : '#44FF77';
+          t.jammedTimer > 0
+            ? `⚠ ${t.callsign} // JAMMED`
+            : t.tripwireIntegrity < 50
+              ? `${t.callsign} // WIRE DMG`
+              : `${t.callsign} // M314`;
+        textCol =
+          t.jammedTimer > 0 ? '#E066FF' : t.tripwireIntegrity < 50 ? '#FFB000' : '#44FF77';
       }
 
       ctx.save();
@@ -1562,7 +2095,11 @@ export class PerimeterBlueprintRenderer {
       ctx.fillText(label, 0, by + 13);
 
       // Barrel Thermal Micro-Bar for combat turrets
-      if (t.powered && (t.kind === 'SENTRY_PULSE' || t.kind === 'INCINERATOR') && t.heat > 2) {
+      if (
+        t.powered &&
+        (t.kind === 'SENTRY_PULSE' || t.kind === 'INCINERATOR' || t.kind === 'RAIL_LANCE') &&
+        t.heat > 2
+      ) {
         ctx.fillStyle = '#102418';
         ctx.fillRect(bx, by + 19, tw, 3.5);
         ctx.fillStyle = t.heat > 80 ? '#FF3318' : '#FFB000';
@@ -1661,14 +2198,13 @@ export class PerimeterBlueprintRenderer {
       return;
     }
 
-    // 3. Hardware Build Ghost & Drag-to-Aim Cone Preview
+    // 3. Hardware Build Ghost & Drag-to-Aim Cone Preview (with Magnetic Hardpoint Snapping!)
     if (activeTool.kind === 'BUILD') {
-      const col = dragBuildAnchor
-        ? dragBuildAnchor.col
-        : Math.floor((cursorVirtual?.x ?? 0) / ts);
-      const row = dragBuildAnchor
-        ? dragBuildAnchor.row
-        : Math.floor((cursorVirtual?.y ?? 0) / ts);
+      const resolved = dragBuildAnchor
+        ? { col: dragBuildAnchor.col, row: dragBuildAnchor.row, snapped: false }
+        : sim.resolveMagneticBuildCell(activeTool.buildId, cursorVirtual!);
+      const col = resolved.col;
+      const row = resolved.row;
       if (col < 0 || col >= sim.blueprint.cols || row < 0 || row >= sim.blueprint.rows) return;
 
       const check = sim.canPlaceHardwareAt(activeTool.buildId, col, row);
@@ -1678,14 +2214,35 @@ export class PerimeterBlueprintRenderer {
       const spec = HARDWARE_SPECS[activeTool.buildId];
 
       ctx.save();
-      ctx.strokeStyle = check.ok ? '#44FF77' : '#FF3318';
+      if (resolved.snapped && check.ok && cursorVirtual) {
+        ctx.strokeStyle = 'rgba(0, 240, 255, 0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(cursorVirtual.x, cursorVirtual.y);
+        ctx.lineTo(cx, cy);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.strokeStyle = check.ok ? (resolved.snapped ? '#00F0FF' : '#44FF77') : '#FF3318';
       ctx.fillStyle = check.ok ? 'rgba(68, 255, 119, 0.16)' : 'rgba(255, 51, 24, 0.16)';
       ctx.lineWidth = 2.4;
       ctx.fillRect(col * ts + 6, row * ts + 6, ts - 12, ts - 12);
       ctx.strokeRect(col * ts + 6, row * ts + 6, ts - 12, ts - 12);
 
+      if (resolved.snapped && check.ok && !dragBuildAnchor) {
+        ctx.font = 'bold 11px "Share Tech Mono", monospace';
+        ctx.fillStyle = '#00F0FF';
+        ctx.textAlign = 'center';
+        ctx.fillText('SNAP LOCK', cx, cy - 32);
+      }
+
       if (check.ok && spec.rangePx > 0) {
-        ctx.strokeStyle = '#FFB000';
+        ctx.strokeStyle =
+          activeTool.buildId === 'RAIL_LANCE' || activeTool.buildId === 'SHOCK_COIL'
+            ? '#00F0FF'
+            : '#FFB000';
         ctx.lineWidth = 2.0;
         ctx.setLineDash([6, 5]);
         ctx.beginPath();
@@ -1702,6 +2259,12 @@ export class PerimeterBlueprintRenderer {
           ctx.arc(cx, cy, spec.rangePx, 0, Math.PI * 2);
         }
         ctx.stroke();
+        if (activeTool.buildId === 'CLAYMORE') {
+          ctx.strokeStyle = '#FF5522';
+          ctx.beginPath();
+          ctx.arc(cx, cy, PERIMETER_CONSTANTS.CLAYMORE_TRIGGER_RADIUS_PX, 0, Math.PI * 2);
+          ctx.stroke();
+        }
         ctx.setLineDash([]);
 
         if (dragBuildAnchor) {

@@ -9,16 +9,72 @@ import {
   PerimeterBlueprintRenderer,
   type BlueprintCamera,
 } from './PerimeterBlueprintRenderer';
+import {
+  PerimeterDevAutoCommander,
+  type AutoCommanderOptions,
+} from './PerimeterDevAutoCommander';
 import { PerimeterHudRenderer, type PerimeterLayout } from './PerimeterHudRenderer';
 import { PerimeterManifest } from './PerimeterManifest';
 import { PerimeterSimulation } from './PerimeterSimulation';
 import {
+  MK3_BRANCH_SPECS,
   PERIMETER_CONSTANTS,
+  TACTICAL_PROTOCOLS,
+  WAVE_MUTATORS,
   type ActiveCursorTool,
   type BuildToolId,
   type CommandAbilityId,
+  type Mk3BranchId,
   type PerimeterLastSubmittedRun,
+  type ProtocolId,
 } from './types';
+
+interface PerimeterDebugBridge {
+  getState: () => Record<string, unknown>;
+  placeUnit: (
+    buildId: Exclude<BuildToolId, 'NONE'>,
+    col?: number,
+    row?: number,
+    aimAngle?: number
+  ) => { ok: boolean; msg: string; turretId?: string };
+  upgradeUnit: (
+    idOrCallsign: string,
+    mk3Branch?: Mk3BranchId
+  ) => { ok: boolean; msg: string };
+  selectUnit: (idOrCallsign: string | null) => { selectedTurretId: string | null };
+  sellUnit: (idOrCallsign: string) => { ok: boolean; msg: string };
+  toggleUnitPower: (idOrCallsign: string) => { ok: boolean; msg: string };
+  rearmAll: () => { ok: boolean; msg: string; count: number };
+  expandReactor: () => { ok: boolean; msg: string };
+  fabricateSeal: () => { ok: boolean; msg: string };
+  toggleAuxShed: () => { ok: boolean; msg: string };
+  triggerAbility: (
+    abilityId: CommandAbilityId,
+    targetPos?: Vec2
+  ) => { ok: boolean; msg: string };
+  pickProtocol: (indexOrId: number | ProtocolId) => { ok: boolean; msg: string };
+  launchWave: () => { phase: string; waveNumber: number };
+  setSpeed: (fast2x: boolean) => { fastForward2x: boolean };
+  setPaused: (paused: boolean) => { tacticalPaused: boolean };
+  grantScrap: (amount: number) => { scrap: number };
+  setBattery: (pct: number) => { reserveBattery: number };
+  setSeals: (count: number) => { bulkheadSeals: number };
+  jumpToWave: (waveNum: number, autoLaunch?: boolean) => Record<string, unknown>;
+  triggerProtocolDraft: () => { choices: ProtocolId[] };
+  clearHostiles: (triggerWaveComplete?: boolean) => { phase: string; waveNumber: number };
+  fastStep: (seconds: number, stepDt?: number) => Record<string, unknown>;
+  setAutoCommander: (
+    enabled: boolean,
+    opts?: AutoCommanderOptions
+  ) => { enabled: boolean; opts: Required<AutoCommanderOptions> };
+  resetAudioTelemetry: () => { reset: boolean };
+}
+
+declare global {
+  interface Window {
+    __PERIMETER_DEBUG__?: PerimeterDebugBridge;
+  }
+}
 
 export class PerimeterCartridge implements Cartridge {
   public readonly id = 'perimeter';
@@ -81,34 +137,141 @@ export class PerimeterCartridge implements Cartridge {
   private statusToastTimer = 0;
   private glitchIntensity = 0;
 
+  // Dev-only debug taint flag & Auto-Commander (100% tree-shaken in production builds)
+  private debugTainted = false;
+  private devOverlayVisible = false;
+  private devJumpIndex = 0;
+  private devAutoCommander: PerimeterDevAutoCommander | null = import.meta.env.DEV
+    ? new PerimeterDevAutoCommander()
+    : null;
+
   constructor(host: HostEnvironment) {
     this.host = host;
     this.callsignDraft = this.manifest.getSavedCallsign();
 
     this.sim = new PerimeterSimulation({
-      onMotionPing: (distM, maxM, pan) =>
-        this.host.audio.playPerimeterMotionPing(distM, maxM, pan),
-      onPulseBurst: (pan, oc, distNorm) =>
-        this.host.audio.playPulseSentryBurst(pan, oc, 1.0, distNorm),
-      onAmmoTick: (ratio) => this.host.audio.playAmmoCounterTick(ratio),
-      onLowAmmoAlert: (pan, isEmpty) =>
-        this.host.audio.playLowAmmoAlertChime(pan, isEmpty),
-      onRearmSentry: (pan) => this.host.audio.playSentryRearmBeltLock(pan),
-      onDryFire: (pan) => this.host.audio.playSentryDryFire(pan),
-      onIncinerator: (pan, distNorm) =>
-        this.host.audio.playIncineratorWhoosh(pan, distNorm),
-      onAlienScreech: (screechCtx, kind, pan, distNorm) =>
-        this.host.audio.playXenomorphScreech(screechCtx, kind, pan, distNorm),
-      onCryoHiss: (pan) => this.host.audio.playCryoVentHiss(pan),
-      onArcWeld: (pan) => this.host.audio.playArcWelderSeal(pan),
-      onDoorBatter: (pan) => this.host.audio.playDoorBatterThud(pan),
-      onRicochet: (pan) => this.host.audio.playArmorRicochet(pan),
-      onAcidSizzle: (pan) => this.host.audio.playAcidCorrosionSizzle(pan),
-      onAirlockPurge: (pan) => this.host.audio.playAirlockDecompression(pan),
-      onBulkheadBreach: () => this.host.audio.playBulkheadBreachKlaxon(),
-      onFlarePop: (pan) => this.host.audio.playStrobeFlareIgnite(pan),
-      onOverclockSurge: (pan) => this.host.audio.playOverclockSurge(pan),
-      onServoStep: (pan) => this.host.audio.playTurretServoStep(pan),
+      onMotionPing: (distM, maxM, pan, closeSwarmCount) => {
+        if (import.meta.env.DEV) {
+          this.devAutoCommander?.recordAudio(
+            closeSwarmCount >= 3 ? 'motionPingDouble' : 'motionPing'
+          );
+        }
+        this.host.audio.playPerimeterMotionPing(distM, maxM, pan, closeSwarmCount);
+      },
+      onPulseBurst: (pan, oc, distNorm, tier) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio(`pulseT${tier}`);
+        this.host.audio.playPulseSentryBurst(pan, oc, 1.0, distNorm, tier);
+      },
+      onRailLance: (pan, tier) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio(`railT${tier}`);
+        this.host.audio.playRailLanceShot(pan, tier);
+      },
+      onShockCoil: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('shockCoil');
+        this.host.audio.playShockCoilArc(pan);
+      },
+      onClaymoreBlast: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('claymoreBlast');
+        this.host.audio.playClaymoreDetonation(pan);
+      },
+      onQueenRoar: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('queenRoar');
+        this.host.audio.playQueenMatriarchRoar(pan);
+      },
+      onShatterCrunch: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('shatterCrunch');
+        this.host.audio.playCryoShatterCrunch(pan);
+      },
+      onThermalSteam: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('thermalSteam');
+        this.host.audio.playThermalSteamVent(pan);
+      },
+      onReactorBreaker: (tripped) => {
+        if (import.meta.env.DEV) {
+          this.devAutoCommander?.recordAudio(tripped ? 'breakerTrip' : 'breakerRestore');
+        }
+        this.host.audio.playReactorBreakerEvent(tripped);
+      },
+      onWaveClear: () => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('waveClear');
+        this.host.audio.playWaveClearedChime();
+      },
+      onUpgradeConfirm: (isMk3) => {
+        if (import.meta.env.DEV) {
+          this.devAutoCommander?.recordAudio(isMk3 ? 'upgradeMk3' : 'upgradeMk2');
+        }
+        this.host.audio.playUpgradeConfirmChime(isMk3);
+      },
+      onIntercomVoice: (id) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio(`voice_${id}`);
+        this.host.audio.playPerimeterIntercomVoice(id);
+      },
+      onAmmoTick: (ratio) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('ammoTick');
+        this.host.audio.playAmmoCounterTick(ratio);
+      },
+      onLowAmmoAlert: (pan, isEmpty) => {
+        if (import.meta.env.DEV) {
+          this.devAutoCommander?.recordAudio(isEmpty ? 'dryAlert' : 'lowAmmoAlert');
+        }
+        this.host.audio.playLowAmmoAlertChime(pan, isEmpty);
+      },
+      onRearmSentry: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('rearmSentry');
+        this.host.audio.playSentryRearmBeltLock(pan);
+      },
+      onDryFire: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('dryFire');
+        this.host.audio.playSentryDryFire(pan);
+      },
+      onIncinerator: (pan, distNorm) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('incinerator');
+        this.host.audio.playIncineratorWhoosh(pan, distNorm);
+      },
+      onAlienScreech: (screechCtx, kind, pan, distNorm) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio(`screech_${screechCtx}`);
+        this.host.audio.playXenomorphScreech(screechCtx, kind, pan, distNorm);
+      },
+      onCryoHiss: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('cryoHiss');
+        this.host.audio.playCryoVentHiss(pan);
+      },
+      onArcWeld: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('arcWeld');
+        this.host.audio.playArcWelderSeal(pan);
+      },
+      onDoorBatter: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('doorBatter');
+        this.host.audio.playDoorBatterThud(pan);
+      },
+      onRicochet: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('ricochet');
+        this.host.audio.playArmorRicochet(pan);
+      },
+      onAcidSizzle: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('acidSizzle');
+        this.host.audio.playAcidCorrosionSizzle(pan);
+      },
+      onAirlockPurge: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('airlockPurge');
+        this.host.audio.playAirlockDecompression(pan);
+      },
+      onBulkheadBreach: () => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('bulkheadBreach');
+        this.host.audio.playBulkheadBreachKlaxon();
+      },
+      onFlarePop: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('flarePop');
+        this.host.audio.playStrobeFlareIgnite(pan);
+      },
+      onOverclockSurge: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('overclockSurge');
+        this.host.audio.playOverclockSurge(pan);
+      },
+      onServoStep: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('servoStep');
+        this.host.audio.playTurretServoStep(pan);
+      },
       onLogClick: () => this.host.audio.playAsmrScrollClack(0.55),
       onSyncGlitch: (intensity) => {
         this.glitchIntensity = Math.max(this.glitchIntensity, intensity);
@@ -143,18 +306,380 @@ export class PerimeterCartridge implements Cartridge {
       zoom: 1.0,
     };
 
-    // Start fresh Sector 01 briefing on cartridge mount
+    // Start fresh Endless Hive Siege briefing on cartridge mount
     this.runPlaytimeSec = 0;
-    this.sim.resetRun('SECTOR_01', true);
+    this.sim.resetRun('ENDLESS_SIEGE', true);
     this.callsignDraft = this.manifest.getSavedCallsign();
     this.scoreSubmitted = false;
     this.submittingScore = false;
     this.submitResultBanner = null;
 
     this.bindListeners(signal);
+
+    if (import.meta.env.DEV) {
+      this.debugTainted = false;
+      this.devAutoCommander?.resetAudioTelemetry();
+      this.devAutoCommander?.setEnabled(false);
+
+      const resolveTurret = (idOrCallsign: string) => {
+        const up = idOrCallsign.toUpperCase();
+        return this.sim.turrets.find((t) => t.id === idOrCallsign || t.callsign.toUpperCase() === up);
+      };
+
+      const buildStateSnapshot = (): Record<string, unknown> => {
+        const audioSnap = this.devAutoCommander?.getAudioTelemetry() ?? {
+          eventsLast5SecPerSec: 0,
+          eventsLast5SecByType: {},
+          totalCounts: {},
+        };
+        const byKind: Record<string, number> = {};
+        const bosses: Array<Record<string, unknown>> = [];
+        for (const h of this.sim.hostiles) {
+          byKind[h.kind] = (byKind[h.kind] ?? 0) + 1;
+          if (h.isBoss) {
+            bosses.push({
+              id: h.id,
+              kind: h.kind,
+              hp: Math.ceil(h.hp),
+              maxHp: h.maxHp,
+              x: Math.round(h.pos.x),
+              y: Math.round(h.pos.y),
+              verified: h.verified,
+              illuminated: h.illuminated,
+              stunned: h.stunTimer > 0,
+              chilled: h.cryoSlowTimer > 0,
+              burning: h.napalmBurnTimer > 0,
+              charging: h.chargeTelegraphTimer > 0 || h.chargeActiveTimer > 0,
+            });
+          }
+        }
+
+        const openMountPads: Array<{ col: number; row: number }> = [];
+        const openDuctGrates: Array<{ col: number; row: number }> = [];
+        const bp = this.sim.blueprint;
+        for (let r = 0; r < bp.rows; r++) {
+          for (let c = 0; c < bp.cols; c++) {
+            const k = bp.tiles[r][c];
+            if (k !== 'MOUNT_PAD' && k !== 'DUCT_GRATE') continue;
+            if (this.sim.turrets.some((t) => t.col === c && t.row === r)) continue;
+            if (k === 'MOUNT_PAD') openMountPads.push({ col: c, row: r });
+            else openDuctGrates.push({ col: c, row: r });
+          }
+        }
+
+        const mut = WAVE_MUTATORS[this.sim.activeMutator];
+        return {
+          phase: this.sim.phase,
+          waveNumber: this.sim.waveNumber,
+          waveTitle: this.sim.currentWaveDef.title,
+          tacticalPaused: this.sim.tacticalPaused,
+          fastForward2x: this.sim.fastForward2x,
+          autoCommanderEnabled: this.devAutoCommander?.isEnabled() ?? false,
+          autoCommanderActions: this.devAutoCommander?.getRecentActions() ?? [],
+          debugTainted: this.debugTainted,
+          economy: {
+            scrap: this.sim.scrap,
+            score: this.sim.score,
+            totalKills: this.sim.totalKills,
+            streak: this.sim.perfectWaveStreak,
+            streakMult: this.sim.getStreakMultiplier(),
+            activeScoreMult: this.sim.getActiveScoreMultiplier(),
+            reactorExpandCost: this.sim.getReactorExpandCost(),
+            reactorExpansionsBought: this.sim.reactorExpansionsBought,
+          },
+          reactor: {
+            usedKw: this.sim.getTotalLoadKw(),
+            staticKw: this.sim.getStaticAllocatedKw(),
+            maxKw: this.sim.maxReactorKw,
+            freeKw: this.sim.maxReactorKw - this.sim.getTotalLoadKw(),
+            reserveBattery: Number(this.sim.reserveBattery.toFixed(1)),
+            overloadTimer: Number(this.sim.overloadTimer.toFixed(2)),
+            blackoutTimer: Number(this.sim.blackoutTimer.toFixed(2)),
+            auxShedActive: this.sim.auxShedActive,
+            floodlightTimer: Number(this.sim.floodlightTimer.toFixed(2)),
+          },
+          seals: {
+            coreSeals: this.sim.bulkheadSeals,
+            maxCoreSeals: PERIMETER_CONSTANTS.MAX_BULKHEAD_SEALS,
+            sealedDoors: this.sim.getActiveSealedDoorCount(),
+            maxDoorSeals: this.sim.getMaxDoorSeals(),
+            doors: Array.from(this.sim.doors.values()).map((d) => ({
+              id: d.def.id,
+              welded: d.welded,
+              hp: Math.round(d.hp),
+              maxHp: d.maxHp,
+              weldingTimer: Number(d.weldingTimer.toFixed(2)),
+            })),
+          },
+          mutator: {
+            id: this.sim.activeMutator,
+            label: mut.label,
+            scoreMult: mut.scoreMult,
+          },
+          protocols: {
+            active: { ...this.sim.activeProtocols },
+            draftChoices: [...this.sim.protocolDraftChoices],
+            draftChoiceSpecs: this.sim.protocolDraftChoices.map((id) => TACTICAL_PROTOCOLS[id]),
+          },
+          cooldowns: {
+            flare: Number(this.sim.flareCooldown.toFixed(2)),
+            overclock: Number(this.sim.overclockCooldown.toFixed(2)),
+            coolantFlush: Number(this.sim.coolantFlushCooldown.toFixed(2)),
+            floodlight: Number(this.sim.floodlightCooldown.toFixed(2)),
+            purgeAvailable: this.sim.purgeAvailableThisWave,
+          },
+          turrets: this.sim.turrets.map((t) => ({
+            id: t.id,
+            callsign: t.callsign,
+            kind: t.kind,
+            col: t.col,
+            row: t.row,
+            level: t.level,
+            mk3Branch: t.mk3Branch ?? null,
+            mk3Code:
+              t.level === 3 && t.mk3Branch ? MK3_BRANCH_SPECS[t.kind][t.mk3Branch].code : null,
+            powered: t.powered,
+            kw: this.sim.getTurretPowerKw(t),
+            ammo: t.ammo,
+            maxAmmo: t.maxAmmo,
+            rearmTimer: Number(t.rearmTimer.toFixed(2)),
+            heat: Math.round(t.heat),
+            thermalLocked: t.thermalLocked,
+            overclockTimer: Number(t.overclockTimer.toFixed(2)),
+            relayBoosted: t.relayBoosted,
+            relayMatrixBoosted: t.relayMatrixBoosted,
+            acidDebuffTimer: Number(t.acidDebuffTimer.toFixed(2)),
+            jammedTimer: Number(t.jammedTimer.toFixed(2)),
+            kills: t.kills,
+          })),
+          hazards: {
+            claymores: this.sim.claymores.length,
+            eggSacs: this.sim.eggSacs.length,
+            acidPools: this.sim.acidPools.length,
+            acidSpits: this.sim.acidSpits.length,
+            phantomBlips: this.sim.phantomBlips.length,
+            grateTelegraphs: this.sim.grateTelegraphs.length,
+            flares: this.sim.flares.length,
+            napalmClouds: this.sim.napalmClouds.length,
+          },
+          hostiles: {
+            total: this.sim.hostiles.length,
+            pendingSpawns: this.sim.getPendingSpawnCount(),
+            verified: this.sim.hostiles.filter((h) => h.verified).length,
+            byKind,
+            bosses,
+          },
+          openHardpoints: {
+            mountPadsCount: openMountPads.length,
+            ductGratesCount: openDuctGrates.length,
+            mountPads: openMountPads.slice(0, 8),
+            ductGrates: openDuctGrates,
+          },
+          selected: {
+            turretId: this.selectedTurretId,
+            doorId: this.selectedDoorId,
+            activeTool: this.activeTool.kind,
+          },
+          recentLogs: this.sim.eventLogs.slice(-8),
+          audioTelemetry: {
+            muted: this.host.isMuted(),
+            busActivity: Number(this.host.audio.getBusActivityLevel().toFixed(3)),
+            reactorAudio: this.sim.getReactorAudioTelemetry(),
+            ...audioSnap,
+          },
+        };
+      };
+
+      window.__PERIMETER_DEBUG__ = {
+        getState: buildStateSnapshot,
+        placeUnit: (buildId, col, row, aimAngle) => {
+          this.debugTainted = true;
+          if (col !== undefined && row !== undefined) {
+            const ang = aimAngle ?? this.sim.computeDefaultAimAngle(col, row);
+            const res = this.sim.deployHardware(buildId, col, row, ang);
+            if (res.ok && res.placedTurret) {
+              this.selectedTurretId = res.placedTurret.id;
+              this.selectedDoorId = null;
+            }
+            return {
+              ok: res.ok,
+              msg: res.reason ?? `DEPLOYED ${res.placedTurret?.callsign ?? buildId}`,
+              turretId: res.placedTurret?.id,
+            };
+          }
+          const placed = this.devAutoCommander?.placeBestHardware(this.sim, buildId) ?? {
+            ok: false,
+            msg: 'AUTO COMMANDER UNAVAILABLE',
+          };
+          if (placed.ok && placed.turretId) {
+            this.selectedTurretId = placed.turretId;
+            this.selectedDoorId = null;
+          }
+          return placed;
+        },
+        upgradeUnit: (idOrCallsign, mk3Branch) => {
+          this.debugTainted = true;
+          const t = resolveTurret(idOrCallsign);
+          if (!t) return { ok: false, msg: `TURRET ${idOrCallsign} NOT FOUND` };
+          this.selectedTurretId = t.id;
+          this.selectedDoorId = null;
+          return this.sim.upgradeTurret(t.id, mk3Branch);
+        },
+        selectUnit: (idOrCallsign) => {
+          if (!idOrCallsign) {
+            this.selectedTurretId = null;
+            return { selectedTurretId: null };
+          }
+          const t = resolveTurret(idOrCallsign);
+          this.selectedTurretId = t?.id ?? null;
+          this.selectedDoorId = null;
+          return { selectedTurretId: this.selectedTurretId };
+        },
+        sellUnit: (idOrCallsign) => {
+          this.debugTainted = true;
+          const t = resolveTurret(idOrCallsign);
+          if (!t) return { ok: false, msg: `TURRET ${idOrCallsign} NOT FOUND` };
+          const r = this.sim.scrapTurret(t.id);
+          if (this.selectedTurretId === t.id) this.selectedTurretId = null;
+          return r;
+        },
+        toggleUnitPower: (idOrCallsign) => {
+          this.debugTainted = true;
+          const t = resolveTurret(idOrCallsign);
+          if (!t) return { ok: false, msg: `TURRET ${idOrCallsign} NOT FOUND` };
+          return this.sim.toggleTurretPower(t.id);
+        },
+        rearmAll: () => {
+          this.debugTainted = true;
+          return this.sim.rearmAllSentries();
+        },
+        expandReactor: () => {
+          this.debugTainted = true;
+          return this.sim.expandReactorBus();
+        },
+        fabricateSeal: () => {
+          this.debugTainted = true;
+          return this.sim.fabricateCoreSeal();
+        },
+        toggleAuxShed: () => {
+          this.debugTainted = true;
+          return this.sim.toggleAuxLoadShed();
+        },
+        triggerAbility: (abilityId, targetPos) => {
+          this.debugTainted = true;
+          if (abilityId === 'FLOODLIGHT' || abilityId === 'COOLANT_FLUSH') {
+            return this.sim.triggerInstantCommandAbility(abilityId);
+          }
+          let pos = targetPos;
+          if (!pos) {
+            if (abilityId === 'OVERCLOCK') {
+              const t = this.sim.turrets.find((u) => u.powered);
+              pos = t ? { ...t.pos } : { ...this.sim.blueprint.coreCenter };
+            } else if (abilityId === 'PURGE') {
+              const al = this.sim.blueprint.airlocks[0];
+              pos = al ? { ...al.center } : { ...this.sim.blueprint.coreCenter };
+            } else {
+              const h = this.sim.hostiles[0];
+              pos = h ? { ...h.pos } : { ...this.sim.blueprint.coreCenter };
+            }
+          }
+          return this.sim.triggerCommandAbility(abilityId, pos);
+        },
+        pickProtocol: (indexOrId) => {
+          this.debugTainted = true;
+          const protoId =
+            typeof indexOrId === 'number'
+              ? this.sim.protocolDraftChoices[indexOrId]
+              : indexOrId;
+          if (!protoId) return { ok: false, msg: 'INVALID PROTOCOL INDEX OR ID' };
+          return this.sim.selectProtocolDraft(protoId);
+        },
+        launchWave: () => {
+          this.debugTainted = true;
+          if (this.sim.phase === 'BRIEFING') this.sim.phase = 'TACTICAL_PREP';
+          if (this.sim.phase === 'TACTICAL_PREP') this.sim.launchNextWave();
+          return { phase: this.sim.phase, waveNumber: this.sim.waveNumber };
+        },
+        setSpeed: (fast2x) => {
+          this.sim.fastForward2x = Boolean(fast2x);
+          return { fastForward2x: this.sim.fastForward2x };
+        },
+        setPaused: (paused) => {
+          this.sim.tacticalPaused = Boolean(paused);
+          return { tacticalPaused: this.sim.tacticalPaused };
+        },
+        grantScrap: (amount) => {
+          this.debugTainted = true;
+          this.sim.scrap = Math.max(0, this.sim.scrap + Math.round(amount));
+          return { scrap: this.sim.scrap };
+        },
+        setBattery: (pct) => {
+          this.debugTainted = true;
+          this.sim.reserveBattery = Math.max(0, Math.min(100, pct));
+          return { reserveBattery: this.sim.reserveBattery };
+        },
+        setSeals: (count) => {
+          this.debugTainted = true;
+          this.sim.bulkheadSeals = Math.max(
+            1,
+            Math.min(PERIMETER_CONSTANTS.MAX_BULKHEAD_SEALS, Math.round(count))
+          );
+          return { bulkheadSeals: this.sim.bulkheadSeals };
+        },
+        jumpToWave: (waveNum, autoLaunch = false) => {
+          this.debugTainted = true;
+          this.osdMenuOpen = false;
+          this.manifestOpen = false;
+          this.devAutoCommander?.jumpToWave(this.sim, waveNum, autoLaunch);
+          return buildStateSnapshot();
+        },
+        triggerProtocolDraft: () => {
+          this.debugTainted = true;
+          return { choices: this.devAutoCommander?.openProtocolDraft(this.sim) ?? [] };
+        },
+        clearHostiles: (triggerWaveComplete = true) => {
+          this.debugTainted = true;
+          this.devAutoCommander?.clearHostiles(this.sim, triggerWaveComplete);
+          return { phase: this.sim.phase, waveNumber: this.sim.waveNumber };
+        },
+        fastStep: (seconds, stepDt = 1 / 60) => {
+          this.debugTainted = true;
+          const clampedSec = Math.max(0, Math.min(360, seconds));
+          const dt = Math.max(1 / 120, Math.min(0.05, stepDt));
+          const steps = Math.ceil(clampedSec / dt);
+          for (let i = 0; i < steps; i++) {
+            this.devAutoCommander?.step(this.sim, dt);
+            this.sim.step(dt);
+          }
+          return buildStateSnapshot();
+        },
+        setAutoCommander: (enabled, opts) => {
+          this.debugTainted = true;
+          this.devAutoCommander?.setEnabled(Boolean(enabled), opts);
+          return {
+            enabled: this.devAutoCommander?.isEnabled() ?? false,
+            opts: this.devAutoCommander?.getOptions() ?? {
+              autoLaunch: true,
+              godSeals: false,
+              autoPickProtocol: true,
+            },
+          };
+        },
+        resetAudioTelemetry: () => {
+          this.devAutoCommander?.resetAudioTelemetry();
+          return { reset: true };
+        },
+      };
+    }
   }
 
   public unmount(): void {
+    if (import.meta.env.DEV) {
+      delete window.__PERIMETER_DEBUG__;
+      this.devAutoCommander?.setEnabled(false);
+      this.devAutoCommander?.resetAudioTelemetry();
+      this.debugTainted = false;
+    }
     if (this.listenerAbort) {
       this.listenerAbort.abort();
       this.listenerAbort = null;
@@ -207,6 +732,11 @@ export class PerimeterCartridge implements Cartridge {
 
   private async submitCurrentRunScore(): Promise<void> {
     if (this.scoreSubmitted || this.submittingScore) return;
+    if (import.meta.env.DEV && this.debugTainted) {
+      this.submitResultBanner = 'DEV DEBUG ACTIVE — PERIMETER_SCORES SUBMISSION BLOCKED';
+      this.host.audio.playMutedAvionicsIndicatorBeep(false);
+      return;
+    }
     this.submittingScore = true;
     this.submitResultBanner = 'TRANSMITTING TELEMETRY TO MU-TH-UR...';
     const finalScore = Math.max(1, this.sim.score);
@@ -395,6 +925,7 @@ export class PerimeterCartridge implements Cartridge {
           !this.osdMenuOpen &&
           !this.manifestOpen &&
           this.sim.phase !== 'BRIEFING' &&
+          this.sim.phase !== 'PROTOCOL_DRAFT' &&
           this.sim.phase !== 'CALLSIGN_ENTRY' &&
           cx >= bpVp.x &&
           cx <= bpVp.x + bpVp.width &&
@@ -431,17 +962,22 @@ export class PerimeterCartridge implements Cartridge {
           }
         }
 
-        // Recompute optimal corridor aim angle whenever hovering a new hardpoint!
-        // (Fixes carryover previewAngle bug while respecting manual [R] rotation on the current tile.)
+        // Recompute optimal corridor aim angle whenever hovering a new hardpoint (with magnetic snap)!
         if (
           !this.dragBuildAnchor &&
           this.activeTool.kind === 'BUILD' &&
           this.cursorVirtual &&
           this.activeTool.buildId !== 'ARC_WELDER' &&
-          this.activeTool.buildId !== 'CRYO_VALVE'
+          this.activeTool.buildId !== 'CRYO_VALVE' &&
+          this.activeTool.buildId !== 'SHOCK_COIL' &&
+          this.activeTool.buildId !== 'CLAYMORE'
         ) {
-          const col = Math.floor(this.cursorVirtual.x / this.sim.blueprint.tileSize);
-          const row = Math.floor(this.cursorVirtual.y / this.sim.blueprint.tileSize);
+          const resolved = this.sim.resolveMagneticBuildCell(
+            this.activeTool.buildId,
+            this.cursorVirtual
+          );
+          const col = resolved.col;
+          const row = resolved.row;
           const movedTile =
             !this.lastBuildHoverTile ||
             this.lastBuildHoverTile.col !== col ||
@@ -512,8 +1048,8 @@ export class PerimeterCartridge implements Cartridge {
           this.osdMenuOpen ||
           this.manifestOpen ||
           this.sim.phase === 'BRIEFING' ||
+          this.sim.phase === 'PROTOCOL_DRAFT' ||
           this.sim.phase === 'CALLSIGN_ENTRY' ||
-          this.sim.phase === 'SECTOR_VICTORY' ||
           this.sim.phase === 'CORE_BREACHED'
         ) {
           return;
@@ -534,8 +1070,6 @@ export class PerimeterCartridge implements Cartridge {
         const virt = this.blueprintRenderer.screenToVirtual(bpVp, this.camera, cx, cy);
         this.cursorVirtual = virt;
         const ts = this.sim.blueprint.tileSize;
-        const col = Math.floor(virt.x / ts);
-        const row = Math.floor(virt.y / ts);
 
         // Rotate-Turret Aiming Click
         if (this.activeTool.kind === 'ROTATE_TURRET') {
@@ -565,10 +1099,13 @@ export class PerimeterCartridge implements Cartridge {
           return;
         }
 
-        // Hardware Build Deployment (with Mouse-Drag Cone Aiming!)
+        // Hardware Build Deployment (with Magnetic Hardpoint Snap + Mouse-Drag Cone Aiming!)
         if (this.activeTool.kind === 'BUILD') {
           const bId = this.activeTool.buildId;
-          const check = this.sim.canPlaceHardwareAt(bId, col, row);
+          const resolved = this.sim.resolveMagneticBuildCell(bId, virt);
+          const snapCol = resolved.col;
+          const snapRow = resolved.row;
+          const check = this.sim.canPlaceHardwareAt(bId, snapCol, snapRow);
           if (!check.ok) {
             // Allow clicking an existing turret/door to inspect if clicked directly on it
             const existingT = this.sim.findTurretAt(virt, 28);
@@ -585,8 +1122,13 @@ export class PerimeterCartridge implements Cartridge {
             return;
           }
 
-          if (bId === 'ARC_WELDER' || bId === 'CRYO_VALVE') {
-            const deployed = this.sim.deployHardware(bId, col, row, 0);
+          if (
+            bId === 'ARC_WELDER' ||
+            bId === 'CRYO_VALVE' ||
+            bId === 'SHOCK_COIL' ||
+            bId === 'CLAYMORE'
+          ) {
+            const deployed = this.sim.deployHardware(bId, snapCol, snapRow, 0);
             if (deployed.ok) {
               if (deployed.placedTurret) {
                 const placePan = Math.max(
@@ -604,6 +1146,10 @@ export class PerimeterCartridge implements Cartridge {
                     ? `${deployed.weldedDoor.def.id} ARC-WELDING (2.0S)...`
                     : `${deployed.weldedDoor.def.id} SEALED`
                 );
+              } else if (bId === 'CLAYMORE') {
+                this.showToast(
+                  `M18 CLAYMORE ARMED (${this.sim.claymores.length}/${PERIMETER_CONSTANTS.CLAYMORE_MAX_ACTIVE})`
+                );
               }
               if (!e.shiftKey) {
                 this.activeTool = { kind: 'INSPECT' };
@@ -613,18 +1159,18 @@ export class PerimeterCartridge implements Cartridge {
             return;
           }
 
-          // Directional Hardware (UA 571-C, M240, M314): Begin drag-to-aim anchor!
+          // Directional Hardware (UA 571-C, M240, M99 Rail-Lance, M314): Begin drag-to-aim anchor!
           const anchorPan = Math.max(
             -0.82,
-            Math.min(0.82, ((col * ts + ts * 0.5) / PERIMETER_CONSTANTS.VIRTUAL_W - 0.5) * 1.5)
+            Math.min(0.82, ((snapCol * ts + ts * 0.5) / PERIMETER_CONSTANTS.VIRTUAL_W - 0.5) * 1.5)
           );
           this.host.audio.playTurretTripodTouchdown(anchorPan);
           const initAng = this.previewAngleLockedByUser
             ? this.activeTool.previewAngle
-            : this.sim.computeDefaultAimAngle(col, row);
+            : this.sim.computeDefaultAimAngle(snapCol, snapRow);
           this.dragBuildAnchor = {
-            col,
-            row,
+            col: snapCol,
+            row: snapRow,
             angle: initAng,
             shiftHeld: e.shiftKey,
           };
@@ -637,7 +1183,7 @@ export class PerimeterCartridge implements Cartridge {
         if (hitTurret) {
           this.selectedTurretId = hitTurret.id;
           this.selectedDoorId = null;
-          if (e.shiftKey && hitTurret.kind !== 'CRYO_VALVE') {
+          if (e.shiftKey && hitTurret.kind !== 'CRYO_VALVE' && hitTurret.kind !== 'SHOCK_COIL') {
             this.dragRotateTurretId = hitTurret.id;
           }
           this.host.audio.playSfx('ui_keyclick');
@@ -770,6 +1316,38 @@ export class PerimeterCartridge implements Cartridge {
   }
 
   private armCommandAbility(abilityId: CommandAbilityId): void {
+    // Instant map-wide Reactor abilities ([L] Emergency Floodlight & [C] Emergency Coolant Flush)
+    if (abilityId === 'FLOODLIGHT' || abilityId === 'COOLANT_FLUSH') {
+      const res = this.sim.triggerInstantCommandAbility(abilityId);
+      if (!res.ok) {
+        this.host.audio.playMutedAvionicsIndicatorBeep(false);
+      }
+      this.showToast(res.msg);
+      return;
+    }
+
+    // Smart Double-Tap [O] Overclock: if already armed AND a powered turret is selected, fire centered on it!
+    if (
+      abilityId === 'OVERCLOCK' &&
+      this.activeTool.kind === 'ABILITY' &&
+      this.activeTool.abilityId === 'OVERCLOCK' &&
+      this.selectedTurretId
+    ) {
+      const sel = this.sim.turrets.find((u) => u.id === this.selectedTurretId && u.powered);
+      if (sel) {
+        const res = this.sim.triggerCommandAbility('OVERCLOCK', sel.pos);
+        if (res.ok) {
+          this.activeTool = { kind: 'INSPECT' };
+          this.lastToolAutoExitMs = performance.now();
+          this.showToast(res.msg);
+        } else {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast(res.msg);
+        }
+        return;
+      }
+    }
+
     if (this.activeTool.kind === 'ABILITY' && this.activeTool.abilityId === abilityId) {
       this.activeTool = { kind: 'INSPECT' };
       return;
@@ -791,12 +1369,23 @@ export class PerimeterCartridge implements Cartridge {
       abilityId === 'FLARE'
         ? 'CLICK ANY DARK CORRIDOR TO DEPLOY M40 STROBE FLARE'
         : abilityId === 'OVERCLOCK'
-          ? 'CLICK SECTOR TO OVERCLOCK TURRETS (2X ROF FOR 8S)'
+          ? this.selectedTurretId
+            ? 'CLICK SECTOR TO OVERCLOCK (OR PRESS [O] AGAIN ON SELECTED TURRET)'
+            : 'CLICK SECTOR TO OVERCLOCK TURRETS (2X ROF FOR 8S)'
           : 'CLICK DESIGNATED AIRLOCK CHAMBER [W-01 / E-02 / S-03] TO PURGE'
     );
   }
 
   private handleHudButton(id: string): void {
+    if (id.startsWith('proto-')) {
+      const idx = parseInt(id.replace('proto-', ''), 10);
+      const chosen = this.sim.protocolDraftChoices[idx];
+      if (chosen) {
+        const r = this.sim.selectProtocolDraft(chosen);
+        this.showToast(r.msg);
+      }
+      return;
+    }
     if (id.startsWith('build-')) {
       const bId = id.replace('build-', '') as Exclude<BuildToolId, 'NONE'>;
       this.selectBuildTool(bId);
@@ -825,14 +1414,6 @@ export class PerimeterCartridge implements Cartridge {
     }
 
     switch (id) {
-      case 'mode-sec01':
-        this.resetSubmissionState(true);
-        this.sim.resetRun('SECTOR_01', true);
-        break;
-      case 'mode-endless':
-        this.resetSubmissionState(true);
-        this.sim.resetRun('ENDLESS_SIEGE', true);
-        break;
       case 'briefing-engage':
         this.sim.phase = 'TACTICAL_PREP';
         break;
@@ -873,9 +1454,47 @@ export class PerimeterCartridge implements Cartridge {
           this.showToast(r.msg);
         }
         break;
+      case 'rearm-all': {
+        const r = this.sim.rearmAllSentries();
+        if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
+        this.showToast(r.msg);
+        break;
+      }
+      case 'reactor-expand': {
+        const r = this.sim.expandReactorBus();
+        if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
+        this.showToast(r.msg);
+        break;
+      }
+      case 'seal-fabricate': {
+        const r = this.sim.fabricateCoreSeal();
+        if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
+        this.showToast(r.msg);
+        break;
+      }
+      case 'aux-shed': {
+        const r = this.sim.toggleAuxLoadShed();
+        if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
+        this.showToast(r.msg);
+        break;
+      }
       case 'insp-upgrade':
         if (this.selectedTurretId) {
           const r = this.sim.upgradeTurret(this.selectedTurretId);
+          this.showToast(r.msg);
+        }
+        break;
+      case 'insp-upgrade-a':
+        if (this.selectedTurretId) {
+          const r = this.sim.upgradeTurret(this.selectedTurretId, 'A');
+          if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast(r.msg);
+        }
+        break;
+      case 'insp-upgrade-b':
+        if (this.selectedTurretId) {
+          const r = this.sim.upgradeTurret(this.selectedTurretId, 'B');
+          if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
           this.showToast(r.msg);
         }
         break;
@@ -936,11 +1555,6 @@ export class PerimeterCartridge implements Cartridge {
       case 'perim-fullscreen':
         this.host.toggleFullscreen();
         break;
-      case 'perim-restart-sec01':
-        this.osdMenuOpen = false;
-        this.resetSubmissionState(true);
-        this.sim.resetRun('SECTOR_01', false);
-        break;
       case 'perim-restart-endless':
         this.osdMenuOpen = false;
         this.resetSubmissionState(true);
@@ -955,6 +1569,67 @@ export class PerimeterCartridge implements Cartridge {
   }
 
   private handleKeyDown(e: KeyboardEvent): void {
+    // Dev-only playtest hotkeys [F2..F9] (100% dead-code eliminated in production builds)
+    if (import.meta.env.DEV && !e.repeat) {
+      if (e.code === 'F2') {
+        e.preventDefault();
+        this.debugTainted = true;
+        const nextOn = !(this.devAutoCommander?.isEnabled() ?? false);
+        this.devAutoCommander?.setEnabled(nextOn, {
+          autoLaunch: true,
+          autoPickProtocol: false,
+        });
+        this.showToast(nextOn ? '[DEV] AUTO-COMMANDER: ON' : '[DEV] AUTO-COMMANDER: OFF');
+        return;
+      }
+      if (e.code === 'F3') {
+        e.preventDefault();
+        this.debugTainted = true;
+        this.sim.scrap += 1000;
+        this.showToast(`[DEV] +1000 SCRAP (NOW ${this.sim.scrap})`);
+        return;
+      }
+      if (e.code === 'F4') {
+        e.preventDefault();
+        this.debugTainted = true;
+        const milestones = [3, 4, 5, 6, 7, 8, 10, 12, 15];
+        const target = milestones[this.devJumpIndex % milestones.length];
+        this.devJumpIndex++;
+        this.devAutoCommander?.jumpToWave(this.sim, target, e.shiftKey);
+        this.showToast(`[DEV] JUMPED TO WAVE ${String(target).padStart(2, '0')}`);
+        return;
+      }
+      if (e.code === 'F6') {
+        e.preventDefault();
+        this.debugTainted = true;
+        this.devAutoCommander?.openProtocolDraft(this.sim);
+        return;
+      }
+      if (e.code === 'F7') {
+        e.preventDefault();
+        this.debugTainted = true;
+        this.devAutoCommander?.clearHostiles(this.sim, true);
+        this.showToast('[DEV] CLEARED WAVE HOSTILES');
+        return;
+      }
+      if (e.code === 'F8') {
+        e.preventDefault();
+        this.devOverlayVisible = !this.devOverlayVisible;
+        return;
+      }
+      if (e.code === 'F9') {
+        e.preventDefault();
+        this.debugTainted = true;
+        const curOpts = this.devAutoCommander?.getOptions();
+        const nextGod = !(curOpts?.godSeals ?? false);
+        this.devAutoCommander?.setEnabled(this.devAutoCommander?.isEnabled() ?? false, {
+          godSeals: nextGod,
+        });
+        this.showToast(nextGod ? '[DEV] GOD SEALS: ON' : '[DEV] GOD SEALS: OFF');
+        return;
+      }
+    }
+
     // Callsign Entry Keyboard Input (^[A-Z0-9_-]{1,12}$ with profanity & cooldown enforcement)
     if (this.sim.phase === 'CALLSIGN_ENTRY' && !this.osdMenuOpen && !this.manifestOpen) {
       if (e.code === 'Escape') {
@@ -1010,7 +1685,20 @@ export class PerimeterCartridge implements Cartridge {
       return;
     }
 
-    if (this.sim.phase === 'SECTOR_VICTORY' || this.sim.phase === 'CORE_BREACHED') {
+    if (this.sim.phase === 'PROTOCOL_DRAFT') {
+      if (e.code === 'Digit1' && !e.repeat) {
+        this.handleHudButton('proto-0');
+      } else if (e.code === 'Digit2' && !e.repeat) {
+        this.handleHudButton('proto-1');
+      } else if (e.code === 'Digit3' && !e.repeat) {
+        this.handleHudButton('proto-2');
+      } else if (e.code === 'Escape') {
+        this.osdMenuOpen = true;
+      }
+      return;
+    }
+
+    if (this.sim.phase === 'CORE_BREACHED') {
       if (e.code === 'Enter' || e.code === 'Space') {
         this.host.audio.playButtonLatchLock();
         this.resetSubmissionState();
@@ -1054,7 +1742,7 @@ export class PerimeterCartridge implements Cartridge {
       return;
     }
 
-    // Command Ability Hotkeys: [F], [O], [V] (plus Shift+1/2/3 or Alt+1/2/3)
+    // Command Ability & Station Engineering Hotkeys: [F], [O], [V], [L], [C], [X]
     if (e.code === 'KeyF' || ((e.shiftKey || e.altKey) && e.code === 'Digit1')) {
       this.host.audio.playSfx('ui_keyclick');
       this.armCommandAbility('FLARE');
@@ -1070,8 +1758,23 @@ export class PerimeterCartridge implements Cartridge {
       this.armCommandAbility('PURGE');
       return;
     }
+    if (e.code === 'KeyL' && !e.repeat) {
+      this.host.audio.playSfx('ui_keyclick');
+      this.armCommandAbility('FLOODLIGHT');
+      return;
+    }
+    if (e.code === 'KeyC' && !e.repeat) {
+      this.host.audio.playSfx('ui_keyclick');
+      this.armCommandAbility('COOLANT_FLUSH');
+      return;
+    }
+    if (e.code === 'KeyX' && !e.repeat) {
+      this.host.audio.playButtonLatchLock();
+      this.handleHudButton('aux-shed');
+      return;
+    }
 
-    // Hardware Build Hotkeys [1-5]
+    // Hardware Build Hotkeys [1-8]
     if (e.code === 'Digit1') {
       this.host.audio.playSfx('ui_keyclick');
       this.selectBuildTool('SENTRY_PULSE');
@@ -1080,18 +1783,29 @@ export class PerimeterCartridge implements Cartridge {
       this.selectBuildTool('INCINERATOR');
     } else if (e.code === 'Digit3') {
       this.host.audio.playSfx('ui_keyclick');
-      this.selectBuildTool('CRYO_VALVE');
+      this.selectBuildTool('RAIL_LANCE');
     } else if (e.code === 'Digit4') {
       this.host.audio.playSfx('ui_keyclick');
-      this.selectBuildTool('MOTION_RELAY');
+      this.selectBuildTool('CRYO_VALVE');
     } else if (e.code === 'Digit5') {
       this.host.audio.playSfx('ui_keyclick');
+      this.selectBuildTool('SHOCK_COIL');
+    } else if (e.code === 'Digit6') {
+      this.host.audio.playSfx('ui_keyclick');
+      this.selectBuildTool('MOTION_RELAY');
+    } else if (e.code === 'Digit7') {
+      this.host.audio.playSfx('ui_keyclick');
       this.selectBuildTool('ARC_WELDER');
+    } else if (e.code === 'Digit8') {
+      this.host.audio.playSfx('ui_keyclick');
+      this.selectBuildTool('CLAYMORE');
     } else if (e.code === 'KeyR' && !e.repeat) {
       const isDirectionalBuild =
         this.activeTool.kind === 'BUILD' &&
         this.activeTool.buildId !== 'ARC_WELDER' &&
-        this.activeTool.buildId !== 'CRYO_VALVE';
+        this.activeTool.buildId !== 'CRYO_VALVE' &&
+        this.activeTool.buildId !== 'SHOCK_COIL' &&
+        this.activeTool.buildId !== 'CLAYMORE';
       if (isDirectionalBuild && this.activeTool.kind === 'BUILD') {
         this.activeTool.previewAngle += Math.PI / 4;
         this.previewAngleLockedByUser = true;
@@ -1115,9 +1829,12 @@ export class PerimeterCartridge implements Cartridge {
           this.handleHudButton('insp-rotate');
         }
       }
-    } else if (e.code === 'KeyE' && !e.repeat && this.selectedTurretId) {
-      this.host.audio.playButtonLatchLock();
-      this.handleHudButton('insp-rearm');
+    } else if (e.code === 'KeyE' && !e.repeat) {
+      if (e.shiftKey || !this.selectedTurretId) {
+        this.handleHudButton('rearm-all');
+      } else {
+        this.handleHudButton('insp-rearm');
+      }
     } else if (e.code === 'KeyP' && !e.repeat && this.selectedTurretId) {
       this.host.audio.playButtonLatchLock();
       this.handleHudButton('insp-power');
@@ -1177,11 +1894,23 @@ export class PerimeterCartridge implements Cartridge {
       if (this.sim.phase === 'TACTICAL_PREP' || this.sim.phase === 'WAVE_ACTIVE') {
         this.runPlaytimeSec += clampedDt;
       }
+      if (import.meta.env.DEV) {
+        this.devAutoCommander?.step(this.sim, clampedDt);
+      }
       this.sim.step(clampedDt);
       const napalmState = this.sim.getActiveNapalmAudioState();
       this.host.audio.updatePerimeterNapalmBed(napalmState.intensity, napalmState.pan, clampedDt);
+      const rx = this.sim.getReactorAudioTelemetry();
+      this.host.audio.updatePerimeterReactorBed(
+        rx.active,
+        this.sim.tacticalPaused ? rx.loadRatio * 0.35 : rx.loadRatio,
+        this.sim.tacticalPaused ? 0 : rx.overloadFrac,
+        rx.blackoutActive,
+        clampedDt
+      );
     } else {
       this.host.audio.updatePerimeterNapalmBed(0, 0, clampedDt);
+      this.host.audio.updatePerimeterReactorBed(false, 0, 0, false, clampedDt);
     }
 
     const layout = this.getCurrentLayout();
@@ -1229,6 +1958,17 @@ export class PerimeterCartridge implements Cartridge {
       },
       layout
     );
+
+    if (import.meta.env.DEV && this.devOverlayVisible && this.devAutoCommander) {
+      this.devAutoCommander.renderDevOverlay(
+        ctx,
+        this.sim,
+        layout.blueprintViewport.x + 8,
+        layout.blueprintViewport.y + layout.blueprintViewport.height - 142,
+        this.debugTainted,
+        this.host.audio.getBusActivityLevel()
+      );
+    }
 
     const overdriveAmt =
       this.sim.blackoutTimer > 0

@@ -36,28 +36,12 @@ interface FirestorePerimeterDoc {
 
 const SEEDED_RECORDS: PerimeterManifestEntry[] = [
   {
-    callsign: 'HICKS',
-    waves: 10,
-    kills: 412,
-    score: 54800,
-    mode: 'SECTOR_01',
-    date: '2179-07-14',
-  },
-  {
     callsign: 'VASQUEZ',
     waves: 14,
     kills: 638,
     score: 79400,
     mode: 'ENDLESS_SIEGE',
     date: '2179-07-14',
-  },
-  {
-    callsign: 'BISHOP',
-    waves: 10,
-    kills: 388,
-    score: 49200,
-    mode: 'SECTOR_01',
-    date: '2179-07-13',
   },
   {
     callsign: 'RIPLEY',
@@ -68,11 +52,27 @@ const SEEDED_RECORDS: PerimeterManifestEntry[] = [
     date: '2179-07-15',
   },
   {
+    callsign: 'HICKS',
+    waves: 10,
+    kills: 412,
+    score: 54800,
+    mode: 'ENDLESS_SIEGE',
+    date: '2179-07-14',
+  },
+  {
+    callsign: 'BISHOP',
+    waves: 10,
+    kills: 388,
+    score: 49200,
+    mode: 'ENDLESS_SIEGE',
+    date: '2179-07-13',
+  },
+  {
     callsign: 'HUDSON',
     waves: 7,
     kills: 245,
     score: 28600,
-    mode: 'SECTOR_01',
+    mode: 'ENDLESS_SIEGE',
     date: '2179-07-12',
   },
 ];
@@ -146,10 +146,7 @@ export class PerimeterManifest {
             if (typeof raw.callsign !== 'string' || typeof raw.score !== 'number') {
               return;
             }
-            const mode: PerimeterMode =
-              raw.mode === 'ENDLESS' || raw.mode === 'ENDLESS_SIEGE'
-                ? 'ENDLESS_SIEGE'
-                : 'SECTOR_01';
+            const mode: PerimeterMode = 'ENDLESS_SIEGE';
             const waves =
               typeof raw.waves === 'number' && Number.isFinite(raw.waves)
                 ? Math.max(1, Math.min(SCORE_CAPS.perimeter.waves, Math.round(raw.waves)))
@@ -293,8 +290,7 @@ export class PerimeterManifest {
     const score = Math.max(1, Math.min(SCORE_CAPS.perimeter.score, Math.round(entry.score)));
     const waves = Math.max(1, Math.min(SCORE_CAPS.perimeter.waves, Math.round(entry.waves)));
     const kills = Math.max(0, Math.min(SCORE_CAPS.perimeter.kills, Math.round(entry.kills)));
-    const firestoreMode: 'CAMPAIGN' | 'ENDLESS' =
-      entry.mode === 'ENDLESS_SIEGE' ? 'ENDLESS' : 'CAMPAIGN';
+    const firestoreMode: 'ENDLESS' = 'ENDLESS';
 
     recordSubmissionTimestamp('perimeter');
 

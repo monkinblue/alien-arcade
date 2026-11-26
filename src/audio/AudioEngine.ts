@@ -6,7 +6,19 @@ export type XenomorphScreechSpecies =
   | 'DRONE'
   | 'PRAETORIAN'
   | 'BURSTER'
-  | 'STALKER';
+  | 'STALKER'
+  | 'SPITTER'
+  | 'SCREAMER'
+  | 'CRUSHER'
+  | 'QUEEN';
+
+export type PerimeterVoiceId =
+  | 'grate_breach'
+  | 'sentry_dry'
+  | 'door_failing'
+  | 'overload'
+  | 'queen'
+  | 'protocol';
 
 interface ManifestFileEntry {
   path: string;
@@ -56,6 +68,21 @@ export class AudioEngine {
   private napalmLoopGain: GainNode | null = null;
   private curNapalmGain = 0;
   private curNapalmPan = 0;
+
+  // Dynamic Colony Reactor Core Hum & High-Load Electrical Strain Bed (Hadley's Perimeter 2.0)
+  private reactorLoopSource: AudioBufferSourceNode | null = null;
+  private reactorFilter: BiquadFilterNode | null = null;
+  private reactorGain: GainNode | null = null;
+  private reactorStrainOsc: OscillatorNode | null = null;
+  private reactorStrainGain: GainNode | null = null;
+  private curReactorGain = 0;
+  private curReactorCutoff = 260;
+  private curReactorRate = 0.94;
+  private curReactorStrain = 0;
+  private lastPerimVoiceById = new Map<string, number>();
+  private lastShatterTime = 0;
+  private lastShockCoilTime = 0;
+  private lastSteamTime = 0;
 
   // Non-repeating 1986 Aliens Xenomorph Screech Shuffle-Bag & Polyphony Governor
   private recentScreechIds: string[] = [];
@@ -293,8 +320,19 @@ export class AudioEngine {
 
           if (id === 'sentry_rearm_belt') {
             this.normalizeAudioBufferPeak(finalBuf, 0.95);
-          } else if (id === 'core_breach_alert') {
+          } else if (
+            id === 'core_breach_alert' ||
+            id === 'perim_queen_roar' ||
+            id === 'perim_breaker_blackout' ||
+            id === 'perim_airlock_purge' ||
+            id === 'perim_rail_lance' ||
+            id === 'perim_claymore_blast'
+          ) {
             this.normalizeAudioBufferPeak(finalBuf, 0.92);
+          } else if (id.startsWith('perim_voice_')) {
+            this.normalizeAudioBufferPeak(finalBuf, 0.9);
+          } else if (id.startsWith('perim_')) {
+            this.normalizeAudioBufferPeak(finalBuf, 0.84);
           } else if (
             id.startsWith('alien_screech_') ||
             id === 'incinerator_whoosh' ||
@@ -1304,6 +1342,33 @@ export class AudioEngine {
       }
       this.restartLoopSource('napalm_burn_loop');
     }
+
+    // Dynamic Hadley's Perimeter Reactor Core Hum & Electrical Strain Bus (silent at 0 until Perimeter active)
+    this.reactorFilter = ctx.createBiquadFilter();
+    this.reactorFilter.type = 'lowpass';
+    this.reactorFilter.frequency.value = 260;
+    this.reactorFilter.Q.value = 0.8;
+    this.reactorGain = ctx.createGain();
+    this.reactorGain.gain.value = 0;
+    this.reactorFilter.connect(this.reactorGain);
+    this.reactorGain.connect(this.masterGain);
+
+    // Subtle 118Hz transformer strain harmonic that wakes up above 82% load / Overclock
+    this.reactorStrainOsc = ctx.createOscillator();
+    this.reactorStrainOsc.type = 'sawtooth';
+    this.reactorStrainOsc.frequency.value = 118;
+    const strainBp = ctx.createBiquadFilter();
+    strainBp.type = 'bandpass';
+    strainBp.frequency.value = 340;
+    strainBp.Q.value = 1.6;
+    this.reactorStrainGain = ctx.createGain();
+    this.reactorStrainGain.gain.value = 0;
+    this.reactorStrainOsc.connect(strainBp);
+    strainBp.connect(this.reactorStrainGain);
+    this.reactorStrainGain.connect(this.masterGain);
+    this.reactorStrainOsc.start();
+
+    this.restartLoopSource('perim_reactor_hum_loop');
   }
 
   /**
@@ -1528,6 +1593,16 @@ export class AudioEngine {
       this.napalmLoopSource.playbackRate.value = 0.88;
       this.napalmLoopSource.connect(this.napalmLoopPanner);
       this.napalmLoopSource.start();
+    } else if (id === 'perim_reactor_hum_loop' && this.reactorFilter) {
+      try {
+        this.reactorLoopSource?.stop();
+      } catch {
+        /* ignore */
+      }
+      this.reactorLoopSource = makeSource();
+      this.reactorLoopSource.playbackRate.value = this.curReactorRate;
+      this.reactorLoopSource.connect(this.reactorFilter);
+      this.reactorLoopSource.start();
     }
   }
 
@@ -1640,6 +1715,64 @@ export class AudioEngine {
     this.setSmoothParam(this.napalmLoopPanner.pan, this.curNapalmPan);
   }
 
+  /**
+   * Drives the dynamic Hadley's Perimeter Reactor Core turbine hum & transformer strain bus:
+   * - Scales pitch/cutoff with live kW load ratio
+   * - Ramps 118Hz transformer strain above 82% load or during Overclock / Overload
+   * - Cuts sharply to eerie silence during Reactor Blackout!
+   */
+  public updatePerimeterReactorBed(
+    active: boolean,
+    loadRatio: number,
+    overloadFrac: number,
+    blackoutActive: boolean,
+    dt = 1 / 60
+  ): void {
+    if (!this.ctx || !this.unlocked || !this.reactorGain || !this.reactorFilter) return;
+    const clampedDt = Math.max(0.001, Math.min(0.1, dt));
+    const clampedLoad = Math.max(0, Math.min(1.3, loadRatio));
+    const clampedOver = Math.max(0, Math.min(1, overloadFrac));
+
+    const targetGain =
+      !active || blackoutActive
+        ? 0
+        : 0.055 + Math.min(1, clampedLoad) * 0.068 + clampedOver * 0.075;
+    const targetCutoff = 220 + Math.min(1, clampedLoad) * 340 + clampedOver * 640;
+    const targetRate = 0.9 + Math.min(1.15, clampedLoad) * 0.14 + clampedOver * 0.22;
+    const targetStrain =
+      !active || blackoutActive
+        ? 0
+        : clampedOver > 0.02
+          ? 0.025 + clampedOver * 0.055
+          : clampedLoad > 0.82
+            ? ((clampedLoad - 0.82) / 0.2) * 0.022
+            : 0;
+
+    const kGain = 1 - Math.exp(-clampedDt * (blackoutActive ? 14 : 4.2));
+    const kSlow = 1 - Math.exp(-clampedDt * 3.8);
+
+    this.curReactorGain += (targetGain - this.curReactorGain) * kGain;
+    this.curReactorCutoff += (targetCutoff - this.curReactorCutoff) * kSlow;
+    this.curReactorRate += (targetRate - this.curReactorRate) * kSlow;
+    this.curReactorStrain += (targetStrain - this.curReactorStrain) * kGain;
+
+    this.setSmoothParam(
+      this.reactorGain.gain,
+      this.curReactorGain < 0.0008 ? 0 : this.curReactorGain
+    );
+    this.setSmoothParam(this.reactorFilter.frequency, this.curReactorCutoff);
+    if (this.reactorLoopSource) {
+      this.setSmoothParam(this.reactorLoopSource.playbackRate, this.curReactorRate);
+    }
+    if (this.reactorStrainGain && this.reactorStrainOsc) {
+      this.setSmoothParam(
+        this.reactorStrainGain.gain,
+        this.curReactorStrain < 0.0005 ? 0 : this.curReactorStrain
+      );
+      this.setSmoothParam(this.reactorStrainOsc.frequency, 118 + clampedOver * 44);
+    }
+  }
+
   public setMuted(muted: boolean): void {
     this.muted = muted;
     if (this.ctx && this.masterGain) {
@@ -1669,10 +1802,14 @@ export class AudioEngine {
     this.curRcsGain = 0;
     this.curWindGain = 0;
     this.curNapalmGain = 0;
+    this.curReactorGain = 0;
+    this.curReactorStrain = 0;
     this.setSmoothParam(this.mainThrusterGain?.gain, 0);
     this.setSmoothParam(this.rcsGain?.gain, 0);
     this.setSmoothParam(this.windGain?.gain, 0);
     this.setSmoothParam(this.napalmLoopGain?.gain, 0);
+    this.setSmoothParam(this.reactorGain?.gain, 0);
+    this.setSmoothParam(this.reactorStrainGain?.gain, 0);
     try {
       this.activeVoiceSource?.stop();
     } catch {
@@ -2645,10 +2782,24 @@ export class AudioEngine {
    * Pitch-accelerating M314 Motion Tracker ping scaling dynamically with closest
    * hostile distance to the Reactor Core / Sensor node.
    */
-  public playPerimeterMotionPing(distanceMeters: number, maxRangeMeters = 28, pan = 0): void {
+  public playPerimeterMotionPing(
+    distanceMeters: number,
+    maxRangeMeters = 28,
+    pan = 0,
+    closeSwarmCount = 1
+  ): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
     const closeness = 1 - Math.max(0, Math.min(1, distanceMeters / Math.max(4, maxRangeMeters)));
     this.playAlienMotionTrackerPing(closeness, pan);
+    // Swarm cluster double-chirp ("They're inside the perimeter!") when 5+ hostiles converge < 14m
+    if (closeSwarmCount >= 5 && distanceMeters < 14) {
+      const jitterPan = Math.max(-0.75, Math.min(0.75, pan + (Math.random() - 0.5) * 0.28));
+      window.setTimeout(() => {
+        if (!this.muted && this.ctx && this.ctx.state === 'running') {
+          this.playAlienMotionTrackerPing(Math.min(1, closeness + 0.1), jitterPan);
+        }
+      }, 95);
+    }
   }
 
   /**
@@ -2756,7 +2907,8 @@ export class AudioEngine {
     pan = 0,
     overclocked = false,
     volume = 1.0,
-    distanceNorm = 0.45
+    distanceNorm = 0.45,
+    tier: 1 | 2 | 3 = 1
   ): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
     const now = this.ctx.currentTime;
@@ -2766,15 +2918,17 @@ export class AudioEngine {
 
     const ctx = this.ctx;
     const clampedDist = Math.max(0, Math.min(1, distanceNorm));
+    const tierGain = tier === 3 ? 1.16 : tier === 2 ? 1.07 : 1.0;
+    const tierRate = tier === 3 ? 0.89 : tier === 2 ? 0.95 : 1.0;
 
     const panner = ctx.createStereoPanner();
     panner.pan.value = Math.max(-0.78, Math.min(0.78, pan));
 
     const directSend = ctx.createGain();
-    directSend.gain.value = (0.88 - clampedDist * 0.18) * volume;
+    directSend.gain.value = (0.88 - clampedDist * 0.18) * volume * tierGain;
 
     const warehouseWetSend = ctx.createGain();
-    warehouseWetSend.gain.value = (0.44 + clampedDist * 0.24) * volume;
+    warehouseWetSend.gain.value = (0.44 + clampedDist * 0.24) * volume * tierGain;
 
     panner.connect(directSend);
     panner.connect(warehouseWetSend);
@@ -2806,7 +2960,7 @@ export class AudioEngine {
       const src = ctx.createBufferSource();
       src.buffer = roundBuf;
       src.playbackRate.value =
-        (overclocked ? 1.04 : 0.93) * (0.97 + Math.random() * 0.06);
+        (overclocked ? 1.04 : 0.93) * tierRate * (0.97 + Math.random() * 0.06);
 
       const shotGain = ctx.createGain();
       shotGain.gain.value = r === 0 ? 1.0 : 0.94 + Math.random() * 0.06;
@@ -2816,7 +2970,7 @@ export class AudioEngine {
       src.start(shotTime);
     }
 
-    this.scheduleSentryBurstEndRoll(now, latestShotTime, pan, clampedDist, overclocked, volume);
+    this.scheduleSentryBurstEndRoll(now, latestShotTime, pan, clampedDist, overclocked, volume * tierGain);
   }
 
   /**
@@ -2827,8 +2981,11 @@ export class AudioEngine {
     if (!this.ctx || !this.masterGain || this.muted) return;
     if (ammoRatio > 0.25) return;
     const now = this.ctx.currentTime;
-    if (now - this.lastAmmoTickTime < 0.14) return;
+    if (now - this.lastAmmoTickTime < 0.18) return;
     this.lastAmmoTickTime = now;
+
+    // Slightly duck console low-ammo pip when heavy multi-sentry gunfire is firing simultaneously
+    const underFireDuck = now - this.lastPulseBurstTime < 0.085 ? 0.72 : 1.0;
 
     const ctx = this.ctx;
     const osc = ctx.createOscillator();
@@ -2839,7 +2996,7 @@ export class AudioEngine {
     osc.frequency.exponentialRampToValueAtTime(f * 0.82, now + 0.024);
 
     g.gain.setValueAtTime(0.0001, now);
-    g.gain.linearRampToValueAtTime(0.055 * volume, now + 0.004);
+    g.gain.linearRampToValueAtTime(0.052 * volume * underFireDuck, now + 0.004);
     g.gain.exponentialRampToValueAtTime(0.0001, now + 0.028);
 
     osc.connect(g);
@@ -3015,14 +3172,24 @@ export class AudioEngine {
         rate = 1.12 + Math.random() * 0.22;
         formantHz = 1480 + Math.random() * 340;
         break;
+      case 'QUEEN':
+        rate = 0.62 + Math.random() * 0.1;
+        formantHz = 620 + Math.random() * 160;
+        break;
+      case 'CRUSHER':
       case 'PRAETORIAN':
         rate = 0.72 + Math.random() * 0.14;
         formantHz = 760 + Math.random() * 210;
+        break;
+      case 'SCREAMER':
+        rate = 1.18 + Math.random() * 0.24;
+        formantHz = 1650 + Math.random() * 360;
         break;
       case 'STALKER':
         rate = 0.94 + Math.random() * 0.22;
         formantHz = 1280 + Math.random() * 320;
         break;
+      case 'SPITTER':
       case 'BURSTER':
         rate = 0.88 + Math.random() * 0.18;
         formantHz = 980 + Math.random() * 260;
@@ -3189,13 +3356,77 @@ export class AudioEngine {
   }
 
   /**
-   * Cryo-Stasis Valve liquid-nitrogen pressurized hiss.
+   * Helper: Plays a spatialized HD Perimeter corridor foley clip coupled cleanly into the
+   * metallic hallway reverb bus (`sentryWarehouseWetInput`) so every station sound lives in one acoustic space.
+   */
+  private playCorridorBuffer(
+    assetId: string,
+    pan: number,
+    gainVal: number,
+    rate: number,
+    wetSendVal = 0.42,
+    lowpassHz = 4200
+  ): boolean {
+    if (!this.ctx || !this.masterGain || this.muted) return false;
+    const buf = this.buffers.get(assetId);
+    if (!buf) return false;
+
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const onset = this.bufferOnsets.get(assetId) ?? 0;
+
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = Math.max(-0.82, Math.min(0.82, pan));
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = lowpassHz;
+    lp.Q.value = 0.68;
+
+    const g = ctx.createGain();
+    g.gain.value = gainVal;
+
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate;
+
+    src.connect(lp);
+    lp.connect(g);
+    g.connect(panner);
+    panner.connect(this.masterGain);
+
+    if (this.sentryWarehouseWetInput && wetSendVal > 0.01) {
+      const wet = ctx.createGain();
+      wet.gain.value = wetSendVal;
+      panner.connect(wet);
+      wet.connect(this.sentryWarehouseWetInput);
+    }
+
+    src.start(now, onset);
+    return true;
+  }
+
+  /**
+   * Cryo-Stasis Valve liquid-nitrogen pressurized hiss (HD ElevenLabs foley + corridor reverb).
    */
   public playCryoVentHiss(pan = 0, volume = 0.78): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
     const now = this.ctx.currentTime;
     if (now - this.lastCryoHissTime < 0.45) return;
     this.lastCryoHissTime = now;
+
+    if (
+      this.playCorridorBuffer(
+        'perim_cryo_blast',
+        pan,
+        0.46 * volume,
+        0.95 + Math.random() * 0.1,
+        0.45,
+        3800
+      )
+    ) {
+      return;
+    }
 
     const ctx = this.ctx;
     const sr = ctx.sampleRate;
@@ -3231,10 +3462,22 @@ export class AudioEngine {
   }
 
   /**
-   * Arc-Welder electrical sizzle + heavy steel bulkhead clang.
+   * Arc-Welder electrical sizzle + heavy steel bulkhead clang (HD ElevenLabs foley).
    */
   public playArcWelderSeal(pan = 0, volume = 0.9): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
+    if (
+      this.playCorridorBuffer(
+        'perim_arc_weld',
+        pan,
+        0.64 * volume,
+        0.96 + Math.random() * 0.08,
+        0.42,
+        4600
+      )
+    ) {
+      return;
+    }
     const now = this.ctx.currentTime;
     const ctx = this.ctx;
     const panner = ctx.createStereoPanner();
@@ -3290,13 +3533,26 @@ export class AudioEngine {
   }
 
   /**
-   * Heavy metallic hull-thud when hostiles batter a welded blast door (coupled into warehouse reverb).
+   * Heavy metallic hull-thud when hostiles batter a welded blast door (HD ElevenLabs foley + hallway reverb).
    */
   public playDoorBatterThud(pan = 0, volume = 0.85): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
     const now = this.ctx.currentTime;
-    if (now - this.lastDoorThudTime < 0.22) return;
+    if (now - this.lastDoorThudTime < 0.24) return;
     this.lastDoorThudTime = now;
+
+    if (
+      this.playCorridorBuffer(
+        'perim_door_batter',
+        pan,
+        0.58 * volume,
+        0.92 + Math.random() * 0.16,
+        0.58,
+        2800
+      )
+    ) {
+      return;
+    }
 
     const ctx = this.ctx;
     const panner = ctx.createStereoPanner();
@@ -3328,7 +3584,7 @@ export class AudioEngine {
   public playArmorRicochet(pan = 0, volume = 0.78): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
     const now = this.ctx.currentTime;
-    if (now - this.lastRicochetTime < 0.09) return;
+    if (now - this.lastRicochetTime < 0.2) return;
     this.lastRicochetTime = now;
 
     const ctx = this.ctx;
@@ -3367,13 +3623,26 @@ export class AudioEngine {
   }
 
   /**
-   * Corrosive molecular acid pool sizzle & detonation pop.
+   * Corrosive molecular acid pool sizzle & detonation pop (HD ElevenLabs foley).
    */
   public playAcidCorrosionSizzle(pan = 0, volume = 0.78): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
     const now = this.ctx.currentTime;
     if (now - this.lastAcidSizzleTime < 0.28) return;
     this.lastAcidSizzleTime = now;
+
+    if (
+      this.playCorridorBuffer(
+        'perim_acid_sizzle',
+        pan,
+        0.48 * volume,
+        0.94 + Math.random() * 0.14,
+        0.38,
+        3600
+      )
+    ) {
+      return;
+    }
 
     const ctx = this.ctx;
     const sr = ctx.sampleRate;
@@ -3408,10 +3677,15 @@ export class AudioEngine {
   }
 
   /**
-   * Emergency Airlock Vent Purge violent decompression roar.
+   * Emergency Airlock Vent Purge violent decompression roar (HD ElevenLabs foley + corridor reverb).
    */
   public playAirlockDecompression(pan = 0, volume = 0.95): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
+    if (
+      this.playCorridorBuffer('perim_airlock_purge', pan, 0.88 * volume, 0.98, 0.55, 4200)
+    ) {
+      return;
+    }
     const now = this.ctx.currentTime;
     const ctx = this.ctx;
 
@@ -3537,10 +3811,22 @@ export class AudioEngine {
   }
 
   /**
-   * M40 Strobe Flare pyrotechnic pop & magnesium hiss.
+   * M40 Strobe Flare pyrotechnic pop & magnesium hiss (HD ElevenLabs foley).
    */
   public playStrobeFlareIgnite(pan = 0, volume = 0.82): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
+    if (
+      this.playCorridorBuffer(
+        'perim_flare_ignite',
+        pan,
+        0.6 * volume,
+        0.96 + Math.random() * 0.08,
+        0.4,
+        4600
+      )
+    ) {
+      return;
+    }
     const now = this.ctx.currentTime;
     const ctx = this.ctx;
     this.synthToggleSwitch(now, 1.35, volume * 0.9);
@@ -3562,10 +3848,13 @@ export class AudioEngine {
   }
 
   /**
-   * Overclock Power Bus capacitor surge hum.
+   * Overclock Power Bus capacitor surge hum (HD ElevenLabs foley).
    */
   public playOverclockSurge(pan = 0, volume = 0.85): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
+    if (this.playCorridorBuffer('perim_overclock_surge', pan, 0.72 * volume, 1.0, 0.28, 4200)) {
+      return;
+    }
     const now = this.ctx.currentTime;
     const ctx = this.ctx;
     const osc = ctx.createOscillator();
@@ -3819,7 +4108,7 @@ export class AudioEngine {
    * or sensor unit onto a colony corridor tile!
    */
   public playWeaponDeployEmplace(
-    kind: 'SENTRY_PULSE' | 'INCINERATOR' | 'CRYO_VALVE' | 'MOTION_RELAY',
+    kind: 'SENTRY_PULSE' | 'INCINERATOR' | 'RAIL_LANCE' | 'CRYO_VALVE' | 'SHOCK_COIL' | 'MOTION_RELAY',
     pan = 0,
     volume = 0.92
   ): void {
@@ -3849,7 +4138,7 @@ export class AudioEngine {
       hallSend.connect(this.sentryWarehouseWetInput);
     }
 
-    const isHeavyGun = kind === 'SENTRY_PULSE' || kind === 'INCINERATOR';
+    const isHeavyGun = kind === 'SENTRY_PULSE' || kind === 'INCINERATOR' || kind === 'RAIL_LANCE';
     const assetId = isHeavyGun ? 'sentry_deploy_tripod' : 'hardware_deploy_mount';
     const fallbackAssetId = isHeavyGun ? 'hardware_deploy_mount' : 'sentry_deploy_tripod';
     const chosenId = this.buffers.has(assetId)
@@ -3866,11 +4155,15 @@ export class AudioEngine {
       const baseRate =
         kind === 'SENTRY_PULSE'
           ? 0.98
-          : kind === 'INCINERATOR'
-            ? 0.87
-            : kind === 'CRYO_VALVE'
-              ? 0.92
-              : 1.06;
+          : kind === 'RAIL_LANCE'
+            ? 0.82
+            : kind === 'INCINERATOR'
+              ? 0.87
+              : kind === 'SHOCK_COIL'
+                ? 1.02
+                : kind === 'CRYO_VALVE'
+                  ? 0.92
+                  : 1.06;
       src.playbackRate.value = baseRate + (Math.random() - 0.5) * 0.06;
       src.connect(panner);
       src.start(now, onset);
@@ -3880,5 +4173,198 @@ export class AudioEngine {
     // Procedural fallback: heavy tripod thud + mounting clamp clunk + locking pin snap
     this.synthLandingThud(now, isHeavyGun ? 0.95 : 1.15, volume * 0.55);
     this.playButtonLatchLock(isHeavyGun ? 0.82 : 1.04, volume * 0.78);
+  }
+
+  /**
+   * MU-TH-UR 6000 Intercom Tactical Voice Callouts (350Hz-3400Hz Nostromo shipboard bandpass bus).
+   * Rate-limited per callout ID so urgent warnings cut cleanly through gunfire without ever overlapping!
+   */
+  public playPerimeterIntercomVoice(id: PerimeterVoiceId, minCooldownSec = 7.0): void {
+    if (!this.ctx || !this.intercomInput || this.muted) return;
+    const now = this.ctx.currentTime;
+    const lastForId = this.lastPerimVoiceById.get(id) ?? -99;
+    if (now - lastForId < minCooldownSec) return;
+    if (now - this.lastVoiceTime < 2.2 && id !== 'queen') return;
+
+    const bufKey = `perim_voice_${id}`;
+    const buf = this.buffers.get(bufKey);
+    if (!buf) return;
+
+    this.lastPerimVoiceById.set(id, now);
+    this.lastVoiceTime = now;
+
+    try {
+      this.activeVoiceSource?.stop();
+    } catch {
+      /* ignore */
+    }
+
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const g = this.ctx.createGain();
+    g.gain.value = id === 'queen' ? 1.05 : 0.92;
+    src.connect(g);
+    g.connect(this.intercomInput);
+    src.start(now, this.bufferOnsets.get(bufKey) ?? 0);
+    this.activeVoiceSource = src;
+  }
+
+  /** Heavy industrial breaker trip into blackout OR contactor slam power restoration. */
+  public playReactorBreakerEvent(tripped: boolean): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const asset = tripped ? 'perim_breaker_blackout' : 'perim_breaker_restore';
+    if (this.playCorridorBuffer(asset, 0, tripped ? 0.92 : 0.78, 1.0, 0.48, 3800)) {
+      return;
+    }
+    this.playButtonLatchLock(tripped ? 0.55 : 1.15, 0.95);
+  }
+
+  /** M99 Electromagnetic Rail-Lance heavy corridor shot + sub-bass punch. */
+  public playRailLanceShot(pan = 0, tier: 1 | 2 | 3 = 1): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const rate = tier === 3 ? 0.88 : tier === 2 ? 0.94 : 1.0;
+    if (this.playCorridorBuffer('perim_rail_lance', pan, 0.82, rate, 0.58, 3800)) {
+      return;
+    }
+    this.synthLandingThud(this.ctx.currentTime, 0.65, 0.85);
+  }
+
+  /** Arc-Shock Coil Tesla discharge snap. */
+  public playShockCoilArc(pan = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+    if (now - this.lastShockCoilTime < 0.25) return;
+    this.lastShockCoilTime = now;
+    if (
+      this.playCorridorBuffer(
+        'perim_shock_coil',
+        pan,
+        0.52,
+        0.92 + Math.random() * 0.16,
+        0.4,
+        4600
+      )
+    ) {
+      return;
+    }
+    this.playButtonLatchLock(1.4, 0.45);
+  }
+
+  /** M18 Proximity Claymore directional corridor detonation. */
+  public playClaymoreDetonation(pan = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    if (
+      this.playCorridorBuffer(
+        'perim_claymore_blast',
+        pan,
+        0.9,
+        0.94 + Math.random() * 0.1,
+        0.65,
+        3400
+      )
+    ) {
+      return;
+    }
+    this.synthLandingThud(this.ctx.currentTime, 0.52, 0.95);
+  }
+
+  /** Xeno Queen Matriarch / Crusher Boss arrival roar with brief gunfire duck & sub-bass hull tremor! */
+  public playQueenMatriarchRoar(pan = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+
+    // Brief dramatic gunfire dip so Crusher / Queen arrival cuts unmistakably through active barrages
+    if (this.sentryDirectWallInput) {
+      const gParam = this.sentryDirectWallInput.gain;
+      gParam.cancelScheduledValues(now);
+      gParam.setValueAtTime(Math.max(0.42, gParam.value), now);
+      gParam.linearRampToValueAtTime(0.42, now + 0.06);
+      gParam.setValueAtTime(0.42, now + 0.48);
+      gParam.linearRampToValueAtTime(1.0, now + 1.15);
+    }
+
+    // Sub-bass structural deck tremor (74Hz -> 29Hz) underneath the echoing boss roar
+    const sub = ctx.createOscillator();
+    const subG = ctx.createGain();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(74, now);
+    sub.frequency.exponentialRampToValueAtTime(29, now + 0.85);
+    subG.gain.setValueAtTime(0.0001, now);
+    subG.gain.linearRampToValueAtTime(0.32, now + 0.04);
+    subG.gain.exponentialRampToValueAtTime(0.0001, now + 0.92);
+    sub.connect(subG);
+    subG.connect(this.masterGain);
+    sub.start(now);
+    sub.stop(now + 0.96);
+
+    if (this.playCorridorBuffer('perim_queen_roar', pan, 0.95, 0.96, 0.72, 3200)) {
+      return;
+    }
+    this.playXenomorphScreech('SWARM', 'QUEEN', pan, 0.25, 1.15);
+  }
+
+  /** Crystalline Cryo+Pulse SHATTER impact crunch! */
+  public playCryoShatterCrunch(pan = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+    if (now - this.lastShatterTime < 0.2) return;
+    this.lastShatterTime = now;
+    this.playCorridorBuffer(
+      'perim_shatter_crunch',
+      pan,
+      0.5,
+      0.95 + Math.random() * 0.14,
+      0.32,
+      5200
+    );
+  }
+
+  /** Superheated gun barrel thermal lock OR Coolant Flush pressurized steam vent hiss! */
+  public playThermalSteamVent(pan = 0, volume = 0.75): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+    if (now - this.lastSteamTime < 0.35) return;
+    this.lastSteamTime = now;
+    this.playCorridorBuffer(
+      'perim_thermal_steam',
+      pan,
+      0.56 * volume,
+      0.95 + Math.random() * 0.1,
+      0.38,
+      4400
+    );
+  }
+
+  /** Satisfying Nostromo console hydraulic wave-clear confirmation chime. */
+  public playWaveClearedChime(): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    if (this.playCorridorBuffer('perim_wave_clear', 0, 0.72, 1.0, 0.2, 4800)) {
+      return;
+    }
+    this.playButtonLatchLock(1.12, 0.85);
+  }
+
+  /** Tactile hardware upgrade confirmation (richer harmonic chord for MK-III specialization!). */
+  public playUpgradeConfirmChime(isMk3 = false): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    this.playButtonLatchLock(isMk3 ? 1.15 : 1.02, 0.85);
+    const notes = isMk3 ? [523.25, 659.25, 1046.5] : [440, 659.25];
+    notes.forEach((hz, idx) => {
+      const t0 = now + 0.04 + idx * 0.065;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(hz, t0);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.linearRampToValueAtTime(isMk3 ? 0.13 : 0.095, t0 + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
+      osc.connect(g);
+      g.connect(this.masterGain!);
+      osc.start(t0);
+      osc.stop(t0 + 0.2);
+    });
   }
 }

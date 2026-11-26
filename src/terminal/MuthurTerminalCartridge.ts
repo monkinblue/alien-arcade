@@ -2052,7 +2052,7 @@ export class MuthurTerminalCartridge implements Cartridge {
         id: 'slot-card-2',
         cmd: 'RUN 2',
         title: 'SLOT 02: PERIMETER CAD',
-        rankedTag: '★ RANKED: SEC-01 / ENDLESS',
+        rankedTag: '★ RANKED: ENDLESS SIEGE',
         sub: slotSub('perimeter'),
         col: '#FFB000',
       },

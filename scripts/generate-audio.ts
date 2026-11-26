@@ -356,6 +356,144 @@ const SOUND_ASSETS: SoundGenAsset[] = [
     durationSeconds: 1.1,
     promptInfluence: 0.74,
   },
+
+  // Hadley's Perimeter 2.0 HD Foley, Reactor Dynamics, Bosses & New Weapons
+  {
+    filename: 'perim_reactor_hum_loop.mp3',
+    prompt:
+      'Deep pressurized industrial spacecraft nuclear fusion reactor turbine hum and steady warm 60Hz high-voltage power bus transformer drone heard inside an armored control bunker, seamless loop, dark 1979 sci-fi ambience, no music.',
+    loop: true,
+    durationSeconds: 8.0,
+    promptInfluence: 0.78,
+  },
+  {
+    filename: 'perim_breaker_blackout.mp3',
+    prompt:
+      'Massive heavy industrial high-voltage electrical circuit breaker slamming open with a violent metallic clunk followed by deep powering-down reactor turbine groan fading into eerie silence, realistic 1980s sci-fi industrial foley, no music.',
+    loop: false,
+    durationSeconds: 2.2,
+    promptInfluence: 0.82,
+  },
+  {
+    filename: 'perim_breaker_restore.mp3',
+    prompt:
+      'Heavy steel industrial high-voltage electrical contactor slamming shut followed by rapid rising capacitor charge whine and reactor bus powering back online, realistic sci-fi control room foley, no music.',
+    loop: false,
+    durationSeconds: 1.6,
+    promptInfluence: 0.8,
+  },
+  {
+    filename: 'perim_airlock_purge.mp3',
+    prompt:
+      'Violent spacecraft airlock emergency decompression blowout, loud pneumatic pressure hatch release followed by explosive rushing vacuum wind roar sucking through a steel corridor and heavy bulkhead lock slam, cinema foley, no music.',
+    loop: false,
+    durationSeconds: 1.9,
+    promptInfluence: 0.82,
+  },
+  {
+    filename: 'perim_cryo_blast.mp3',
+    prompt:
+      'High-pressure liquid nitrogen cryogenic floor valve erupting inside a steel corridor, sharp pressurized cold gas blast hiss followed by crackling instant frost freezing sound, crisp industrial foley, no music.',
+    loop: false,
+    durationSeconds: 1.2,
+    promptInfluence: 0.8,
+  },
+  {
+    filename: 'perim_arc_weld.mp3',
+    prompt:
+      'Heavy steel bulkhead blast door slamming closed followed by intense sizzling high-voltage electric arc welding torch crackling and spitting sparks onto thick metal plate, realistic industrial foley, no music.',
+    loop: false,
+    durationSeconds: 1.5,
+    promptInfluence: 0.82,
+  },
+  {
+    filename: 'perim_flare_ignite.mp3',
+    prompt:
+      'Sharp tactical military magnesium strobe flare pyrotechnic pop ignition followed by intense bright crackling chemical flare burn hiss inside a metal hallway, realistic foley, no music.',
+    loop: false,
+    durationSeconds: 1.2,
+    promptInfluence: 0.8,
+  },
+  {
+    filename: 'perim_overclock_surge.mp3',
+    prompt:
+      'Heavy industrial sci-fi power bus capacitor overload surge, deep electrical relay engagement thump followed by rising high-energy analog transformer whine and energized magnetic hum, 1980s sci-fi foley, no music.',
+    loop: false,
+    durationSeconds: 1.3,
+    promptInfluence: 0.8,
+  },
+  {
+    filename: 'perim_door_batter.mp3',
+    prompt:
+      'Heavy terrifying creature slamming violently against a thick welded steel bulkhead door in a dark industrial corridor, loud booming hollow metal impact clang and stressed groaning steel vibration, horror cinema foley, no music.',
+    loop: false,
+    durationSeconds: 0.95,
+    promptInfluence: 0.82,
+  },
+  {
+    filename: 'perim_acid_sizzle.mp3',
+    prompt:
+      'Intense corrosive molecular acid eating violently through thick steel deck plating, wet bubbling chemical fizz and sharp metallic dissolving sizzle, 1986 Aliens horror cinema foley, no music.',
+    loop: false,
+    durationSeconds: 1.1,
+    promptInfluence: 0.82,
+  },
+  {
+    filename: 'perim_rail_lance.mp3',
+    prompt:
+      'Massive military electromagnetic railgun sniper cannon firing down a steel industrial hallway, visceral sub-bass sonic crack thunderclap followed by brief crisp capacitor recharge whine, realistic sci-fi weapon foley, no music.',
+    loop: false,
+    durationSeconds: 1.2,
+    promptInfluence: 0.84,
+  },
+  {
+    filename: 'perim_queen_roar.mp3',
+    prompt:
+      'Terrifying gigantic 1986 Aliens movie Xenomorph Queen matriarch roar, earth-shaking deep sub-bass resonant reptilian-insectoid bellow erupting into a ferocious piercing shriek echoing down huge metallic industrial halls, no music.',
+    loop: false,
+    durationSeconds: 2.6,
+    promptInfluence: 0.84,
+  },
+  {
+    filename: 'perim_shock_coil.mp3',
+    prompt:
+      'High-voltage industrial Tesla arc shock coil discharging a violent blue electrical lightning bolt snap and crackling ozone arc buzz inside a metal corridor, realistic foley, no music.',
+    loop: false,
+    durationSeconds: 0.95,
+    promptInfluence: 0.82,
+  },
+  {
+    filename: 'perim_claymore_blast.mp3',
+    prompt:
+      'Directional military claymore corridor mine detonating violently inside an enclosed steel colony hallway, sharp concussive blast bang with spraying metallic shrapnel clatter and muffled hallway boom, cinema foley, no music.',
+    loop: false,
+    durationSeconds: 1.4,
+    promptInfluence: 0.84,
+  },
+  {
+    filename: 'perim_shatter_crunch.mp3',
+    prompt:
+      'Sharp visceral crystalline frozen ice-armor shattering crunch and brittle fracture snap when heavy bullets crack frozen carapace, crisp cinema impact foley, no music.',
+    loop: false,
+    durationSeconds: 0.8,
+    promptInfluence: 0.8,
+  },
+  {
+    filename: 'perim_thermal_steam.mp3',
+    prompt:
+      'Superheated heavy machine gun barrel emergency pressurized steam relief valve venting loudly, sharp sudden hissing hot steam burst fading quickly, realistic mechanical weapon foley, no music.',
+    loop: false,
+    durationSeconds: 1.1,
+    promptInfluence: 0.8,
+  },
+  {
+    filename: 'perim_wave_clear.mp3',
+    prompt:
+      'Crisp 1979 Nostromo sci-fi tactical command console wave-cleared confirmation, heavy hydraulic perimeter lock clunk followed by warm solemn analog dual-tone avionics telemetry chime, no music.',
+    loop: false,
+    durationSeconds: 1.5,
+    promptInfluence: 0.78,
+  },
 ];
 
 // Program #3: ORBITAL INTERCEPT // FLAK NET (Hyper-Realistic Movie-Quality Field Recordings)
@@ -734,6 +872,31 @@ const VOICE_CALLOUTS: VoiceCalloutAsset[] = [
   {
     filename: 'voice_hull_breach.mp3',
     text: 'Critical hull breach. Descent signal lost.',
+  },
+  // Hadley's Perimeter 2.0 MU-TH-UR Intercom Voice Callouts
+  {
+    filename: 'perim_voice_grate_breach.mp3',
+    text: 'Warning. Sub-floor grate breach.',
+  },
+  {
+    filename: 'perim_voice_sentry_dry.mp3',
+    text: 'Caution. Sentry ammunition depleted.',
+  },
+  {
+    filename: 'perim_voice_door_failing.mp3',
+    text: 'Alert. Bulkhead seal failing.',
+  },
+  {
+    filename: 'perim_voice_overload.mp3',
+    text: 'Warning. Reactor overload imminent.',
+  },
+  {
+    filename: 'perim_voice_queen.mp3',
+    text: 'Critical alert. Matriarch bio-signature detected.',
+  },
+  {
+    filename: 'perim_voice_protocol.mp3',
+    text: 'Tactical protocol requisition ready.',
   },
 ];
 

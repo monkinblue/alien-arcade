@@ -51,6 +51,11 @@ export class FlowFieldPathfinder {
     return true;
   }
 
+  public getFlowDistance(col: number, row: number): number {
+    if (col < 0 || col >= this.cols || row < 0 || row >= this.rows) return 1e9;
+    return this.standardDist[row * this.cols + col];
+  }
+
   public getWeldedDoorAtCell(
     doors: Map<string, BlastDoorState>,
     col: number,
