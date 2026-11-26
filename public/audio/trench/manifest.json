@@ -1,7 +1,7 @@
 {
-  "version": 1,
-  "generatedAt": "2026-11-23T00:58:49.930Z",
-  "voiceId": null,
+  "version": 2,
+  "generatedAt": "2026-11-26T02:32:51.218Z",
+  "voiceId": "Xb7hH8MSUJpSbSDYk0k2",
   "assets": {
     "f16_turbine_loop": {
       "path": "/audio/trench/f16_turbine_loop.mp3",
@@ -27,6 +27,11 @@
       "path": "/audio/trench/cmds_flare_pop.mp3",
       "category": "sfx",
       "bytes": 18433
+    },
+    "cmds_flare_thud": {
+      "path": "/audio/trench/cmds_flare_thud.mp3",
+      "category": "sfx",
+      "bytes": 9238
     },
     "hull_impact_thud": {
       "path": "/audio/trench/hull_impact_thud.mp3",
@@ -72,6 +77,11 @@
       "path": "/audio/trench/trench_low_hull_alarm.mp3",
       "category": "sfx",
       "bytes": 23030
+    },
+    "betty_chaff_flare": {
+      "path": "/audio/trench/betty_chaff_flare.mp3",
+      "category": "voice",
+      "bytes": 22612
     }
   }
 }

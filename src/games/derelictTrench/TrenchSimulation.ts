@@ -23,7 +23,8 @@ export interface TrenchAudioCallbacks {
   onGunHitConfirm(pan: number): void;
   onBonusChime(isResupply: boolean): void;
   onMissileLaunch(side: -1 | 1): void;
-  onCmdsPop(): void;
+  onCmdsVoice(): void;
+  onCmdsPop(pan: number, beatIndex: number): void;
   onHullImpactThud(pan: number): void;
   onRwrSpikeChirp(urgent: boolean): void;
   onMuffledExplosion(pan: number, heavy: boolean): void;
@@ -161,6 +162,7 @@ export class TrenchSimulation {
   // Chaff / Flare Countermeasure Dispenser System (CMDS)
   public cmdsRemaining: number = TRENCH_CONSTANTS.CMDS_MAX_COUNT;
   public cmdsCooldown = 0;
+  public cmdsActiveTimer = 0;
 
   // Hull, Scoring, NOE Multiplier & Game Over Input Lockout
   public hull: number = TRENCH_CONSTANTS.HULL_MAX;
@@ -194,10 +196,13 @@ export class TrenchSimulation {
   private elapsedSec = 0;
   private milDetentHoldTimer = 0;
   private prevThrottleUp = false;
-  private samLaunchSide: -1 | 1 = 1;
   private ceilingSamTimer = 0;
   private purgeDamageSoundTimer = 0;
   private terrainMaskBonusCooldown = 0;
+  private cmdsBurstRemaining = 0;
+  private cmdsBurstBeatTimer = 0;
+  private cmdsBurstBeatIndex = 0;
+  private cmdsBurstDecoyedTotal = 0;
 
   constructor(audioCb: TrenchAudioCallbacks) {
     this.audioCb = audioCb;
@@ -281,6 +286,11 @@ export class TrenchSimulation {
 
     this.cmdsRemaining = TRENCH_CONSTANTS.CMDS_MAX_COUNT;
     this.cmdsCooldown = 0;
+    this.cmdsActiveTimer = 0;
+    this.cmdsBurstRemaining = 0;
+    this.cmdsBurstBeatTimer = 0;
+    this.cmdsBurstBeatIndex = 0;
+    this.cmdsBurstDecoyedTotal = 0;
 
     this.hull = TRENCH_CONSTANTS.HULL_MAX;
     this.lastDeathCause = 'TERRAIN IMPACT';
@@ -375,43 +385,60 @@ export class TrenchSimulation {
   }
 
   /**
-   * Immediately launches an authentic incoming SAM missile from the nearest forward SAM site
-   * (or ridge flank if none in range) for RWR / CMDS / break-turn testing.
+   * Finds the closest intact SAM_SITE structure within maxRangeM (strongly preferring sites
+   * visible ahead of the aircraft so launches originate visibly off launcher rails).
+   */
+  private findNearestIntactSamSite(maxRangeM: number, requireReady = false): CanyonTarget | null {
+    let bestSite: CanyonTarget | null = null;
+    let bestScore = Infinity;
+
+    for (const t of this.targets) {
+      if (t.destroyed || t.kind !== 'SAM_SITE') continue;
+      if (requireReady && (t.fireCooldown ?? 0) > 0) continue;
+      const dist = Math.hypot(t.x - this.x, t.y - this.y, t.z - this.z);
+      if (dist < 180 || dist > maxRangeM) continue;
+      const isBehind = t.z < this.z - 220;
+      const score = dist + (isBehind ? 1100 : 0);
+      if (score < bestScore) {
+        bestScore = score;
+        bestSite = t;
+      }
+    }
+
+    return bestSite;
+  }
+
+  /**
+   * Immediately launches an authentic incoming SAM missile from the nearest intact SAM site
+   * for RWR / CMDS / break-turn testing (never spawns phantom flank missiles).
    */
   public triggerSamLaunchNow(): { launched: boolean; samId: number | null; source: string } {
     if (this.phase !== 'FLYING') {
       return { launched: false, samId: null, source: 'NOT_FLYING' };
     }
 
-    let bestSite: CanyonTarget | null = null;
-    let bestDist = Infinity;
-    for (const t of this.targets) {
-      if (t.destroyed || t.kind !== 'SAM_SITE') continue;
-      if (t.z < this.z + 220) continue;
-      const d = Math.hypot(t.x - this.x, t.y - this.y, t.z - this.z);
-      if (d <= 2600 && d < bestDist) {
-        bestDist = d;
-        bestSite = t;
+    let bestSite = this.findNearestIntactSamSite(3800, false);
+    if (!bestSite) {
+      let fallbackDist = Infinity;
+      for (const t of this.targets) {
+        if (t.destroyed || t.kind !== 'SAM_SITE') continue;
+        const d = Math.hypot(t.x - this.x, t.y - this.y, t.z - this.z);
+        if (d < fallbackDist) {
+          fallbackDist = d;
+          bestSite = t;
+        }
       }
     }
 
     if (bestSite) {
-      bestSite.muzzleFlashTimer = 0.25;
-      this.spawnEnemySamFrom(bestSite.x, bestSite.y + 18, bestSite.z);
+      bestSite.muzzleFlashTimer = 0.55;
+      this.spawnEnemySamFrom(bestSite.x, bestSite.y + 18, bestSite.z, bestSite.id);
       this.samIncomingActive = true;
       const latest = this.enemySams[this.enemySams.length - 1];
       return { launched: true, samId: latest?.id ?? null, source: `SAM_SITE_${bestSite.id}` };
     }
 
-    const flankZ = this.z + 1150;
-    const flankX =
-      this.terrain.getCanyonCenterX(flankZ) +
-      this.samLaunchSide * (this.terrain.getCanyonHalfWidth(flankZ) * 0.85);
-    this.samLaunchSide = this.samLaunchSide === 1 ? -1 : 1;
-    this.spawnEnemySamFrom(flankX, this.terrain.sampleHeight(flankX, flankZ) + 28, flankZ);
-    this.samIncomingActive = true;
-    const latest = this.enemySams[this.enemySams.length - 1];
-    return { launched: true, samId: latest?.id ?? null, source: 'RIDGE_BATTERY' };
+    return { launched: false, samId: null, source: 'NO_INTACT_SAM_SITES' };
   }
 
   private applySectorDifficulty(secNum: number): void {
@@ -625,33 +652,26 @@ export class TrenchSimulation {
       });
     }
 
-    // 2. Hostile SAM Sites & Airborne Bandits within 3,400m
+    // 2. Hostile SAM Sites & Airborne Bandits within 3,800m
+    //    (Ceiling breach radar spikes also map directly to the real tracking SAM_SITE!)
+    const ceilingTrackingSite =
+      this.ceilingBreached && this.ceilingSamTimer > 0.15
+        ? this.findNearestIntactSamSite(3800, false)
+        : null;
+
     for (const t of this.targets) {
       if (t.destroyed || t.kind === 'RESUPPLY_CACHE') continue;
       const rel = worldToRelBearing(t.x, t.z);
-      if (rel.distM > 3400) continue;
-      const locking = (t.samLockTimer ?? 0) > 0.15;
+      const maxScopeM = t.kind === 'SAM_SITE' ? 3800 : 3400;
+      if (rel.distM > maxScopeM) continue;
+      const locking = (t.samLockTimer ?? 0) > 0.15 || t.id === ceilingTrackingSite?.id;
       contacts.push({
         id: `tgt-${t.id}`,
         symbol: t.kind === 'SAM_SITE' ? 'S' : 'B',
         bearingRad: rel.bearingRad,
-        rangeNorm: Math.max(0.28, Math.min(0.88, rel.distM / 3500)),
+        rangeNorm: Math.max(0.28, Math.min(0.88, rel.distM / 3900)),
         lethal: locking || (t.kind === 'SAM_SITE' && rel.distM < 1600),
         flashing: locking,
-      });
-    }
-
-    // 3. Ceiling SAM exposure radar spike if above sector radar ceiling
-    if (this.ceilingBreached && this.ceilingSamTimer > 0.15) {
-      const flankX = this.terrain.getCanyonCenterX(this.z + 1200) + this.samLaunchSide * 550;
-      const rel = worldToRelBearing(flankX, this.z + 1200);
-      contacts.push({
-        id: 'sam-ceiling-radar',
-        symbol: 'S',
-        bearingRad: rel.bearingRad,
-        rangeNorm: 0.44,
-        lethal: true,
-        flashing: true,
       });
     }
 
@@ -899,6 +919,7 @@ export class TrenchSimulation {
     if (this.hitConfirmTimer > 0) this.hitConfirmTimer = Math.max(0, this.hitConfirmTimer - dt);
     if (this.gunCooldown > 0) this.gunCooldown = Math.max(0, this.gunCooldown - dt);
     if (this.cmdsCooldown > 0) this.cmdsCooldown = Math.max(0, this.cmdsCooldown - dt);
+    if (this.cmdsActiveTimer > 0) this.cmdsActiveTimer = Math.max(0, this.cmdsActiveTimer - dt);
     if (this.purgeDamageSoundTimer > 0) {
       this.purgeDamageSoundTimer = Math.max(0, this.purgeDamageSoundTimer - dt);
     }
@@ -1130,26 +1151,31 @@ export class TrenchSimulation {
       }
     }
 
-    // 7. Dynamic Sector Radar Ceiling & Fair 3.5-Second SAM Lock Warning!
+    // 7. CMDS Chaff / Flare Deployment ([C] / [F]) + Rhythmic 4-Beat Dispenser Cadence
+    if (input.deployCmdsPressed) {
+      this.tryDeployCmds();
+    }
+    this.stepCmdsDispenser(dt);
+
+    // 8. Dynamic Sector Radar Ceiling & Fair 3.5-Second SAM Lock Warning
+    //    (100% authentic: launches strictly from real intact SAM_SITE towers — zero phantom spawns!)
     this.ceilingBreached = this.raltM > this.sectorRadarCeilingM;
-    if (this.ceilingBreached) {
+    const ceilingSite = this.ceilingBreached ? this.findNearestIntactSamSite(3800, true) : null;
+    if (this.cmdsActiveTimer > 0) {
+      // Active chaff cloud suppresses ceiling radar lock acquisition!
+      this.ceilingSamTimer = Math.max(0, this.ceilingSamTimer - dt * 3.5);
+    } else if (this.ceilingBreached && ceilingSite) {
       this.ceilingSamTimer += dt;
       if (this.ceilingSamTimer >= TRENCH_CONSTANTS.SAM_LOCK_WARNING_SEC) {
-        const flankZ = this.z + 1500;
-        const flankX =
-          this.terrain.getCanyonCenterX(flankZ) +
-          this.samLaunchSide * (this.terrain.getCanyonHalfWidth(flankZ) * 1.15);
-        this.samLaunchSide = this.samLaunchSide === 1 ? -1 : 1;
-        this.spawnEnemySamFrom(flankX, this.terrain.sampleHeight(flankX, flankZ) + 28, flankZ);
+        ceilingSite.samLockTimer = 0;
+        ceilingSite.samWasLocking = false;
+        ceilingSite.fireCooldown = Math.max(4.4, 6.4 - this.sectorNumber * 0.45);
+        ceilingSite.muzzleFlashTimer = 0.55;
+        this.spawnEnemySamFrom(ceilingSite.x, ceilingSite.y + 18, ceilingSite.z, ceilingSite.id);
         this.ceilingSamTimer = 0;
       }
     } else {
       this.ceilingSamTimer = Math.max(0, this.ceilingSamTimer - dt * 2.2);
-    }
-
-    // 8. CMDS Chaff / Flare Deployment ([C] / [F])
-    if (input.deployCmdsPressed) {
-      this.tryDeployCmds();
     }
 
     // 9. Pre-spawn upcoming sector when approaching within 3,600m of sector end
@@ -1162,7 +1188,7 @@ export class TrenchSimulation {
     this.stepMissileSeeker(dt);
 
     // Track highest active SAM lock countdown for crisp fair 3.5s RWR/HUD countdown
-    let maxSamLock = this.ceilingBreached ? this.ceilingSamTimer : 0;
+    let maxSamLock = this.ceilingBreached && ceilingSite ? this.ceilingSamTimer : 0;
     for (const t of this.targets) {
       if (!t.destroyed && t.kind === 'SAM_SITE' && (t.samLockTimer ?? 0) > maxSamLock) {
         maxSamLock = t.samLockTimer ?? 0;
@@ -1211,7 +1237,7 @@ export class TrenchSimulation {
     }
   }
 
-  private spawnEnemySamFrom(sx: number, sy: number, sz: number): void {
+  private spawnEnemySamFrom(sx: number, sy: number, sz: number, sourceSiteId?: number): void {
     const dx = this.x - sx;
     const dy = this.y - sy;
     const dz = this.z - sz;
@@ -1221,11 +1247,12 @@ export class TrenchSimulation {
 
     this.enemySams.push({
       id: this.nextIdRef.value++,
+      sourceSiteId,
       x: sx,
       y: sy,
       z: sz,
       vx: (dx / len) * initSpeed,
-      vy: Math.max(0.28, dy / len) * initSpeed, // Crisp upward launch arc off the rail!
+      vy: Math.max(0.32, dy / len) * initSpeed, // Crisp upward booster launch arc off the SAM rails!
       vz: (dz / len) * initSpeed,
       speed: initSpeed,
       maxSpeed,
@@ -1234,6 +1261,19 @@ export class TrenchSimulation {
       decoyedByFlareId: null,
       trail: [{ x: sx, y: sy, z: sz }],
     });
+
+    // Vivid booster ignition bloom + sparks right at the SAM site launcher rails
+    this.explosions.push({
+      x: sx,
+      y: sy,
+      z: sz,
+      age: 0,
+      duration: 0.42,
+      maxRadius: 26,
+      color: '#FFB000',
+    });
+    this.spawnSparks(sx, sy, sz, '#FFF6CC', 16);
+    this.spawnSparks(sx, sy, sz, '#FF5522', 12);
 
     this.weaponCueText = '⚠ SAM LAUNCHED // POP CMDS [C/F] + HARD 7G BREAK ⚠';
     this.weaponCueTimer = 1.85;
@@ -1249,37 +1289,72 @@ export class TrenchSimulation {
 
     this.cmdsRemaining--;
     this.cmdsCooldown = TRENCH_CONSTANTS.CMDS_COOLDOWN_SEC;
-    this.audioCb.onCmdsPop();
+    this.cmdsActiveTimer = TRENCH_CONSTANTS.CMDS_ACTIVE_PROTECTION_SEC;
+    this.cmdsBurstRemaining = TRENCH_CONSTANTS.CMDS_SALVO_BEATS;
+    this.cmdsBurstBeatTimer = 0;
+    this.cmdsBurstBeatIndex = 0;
+    this.cmdsBurstDecoyedTotal = 0;
 
     // Immediately break ALL active SAM radar locks across sites & ceiling!
     this.ceilingSamTimer = 0;
     for (const t of this.targets) {
       if (t.kind === 'SAM_SITE') {
         t.samLockTimer = 0;
+        t.samWasLocking = false;
       }
     }
 
-    const spawnedFlares: CmdsFlare[] = [];
-    for (let i = 0; i < 10; i++) {
-      const side = i % 2 === 0 ? -1 : 1;
-      const isChaff = i >= 6;
-      const spreadSide = side * (26 + Math.random() * 34);
-      const spreadDown = -(14 + Math.random() * 20);
-      const ejectBack = -(50 + Math.random() * 40);
+    // Authentic fighter-jet VCS cockpit voice callout: "Chaff, flare."
+    this.audioCb.onCmdsVoice();
+
+    // Immediately fire Beat #1 of the 4-beat rhythmic salvo (t = 0.00s, 0.23s, 0.46s, 0.69s)
+    this.ejectCmdsSalvoBeat();
+  }
+
+  private stepCmdsDispenser(dt: number): void {
+    if (this.cmdsBurstRemaining <= 0) return;
+    this.cmdsBurstBeatTimer -= dt;
+    while (this.cmdsBurstRemaining > 0 && this.cmdsBurstBeatTimer <= 0) {
+      this.ejectCmdsSalvoBeat();
+    }
+  }
+
+  private ejectCmdsSalvoBeat(): void {
+    const beatIdx = this.cmdsBurstBeatIndex;
+    const primarySide: -1 | 1 = beatIdx % 2 === 0 ? -1 : 1;
+    this.cmdsBurstBeatIndex++;
+    this.cmdsBurstRemaining--;
+    this.cmdsBurstBeatTimer += TRENCH_CONSTANTS.CMDS_BEAT_INTERVAL_SEC;
+
+    // Rhythmic muffled cockpit cartridge thud synced 1:1 with physical flare+chaff ejection!
+    this.audioCb.onCmdsPop(primarySide * 0.24, beatIdx);
+    this.screenShake = Math.max(this.screenShake, 1.8);
+
+    // Eject 2 blazing IR decoy flares (left & right pods) + 1 shimmering radar-chaff bundle per beat
+    const beatSpecs: Array<{ side: -1 | 1; isChaff: boolean }> = [
+      { side: primarySide, isChaff: false },
+      { side: primarySide === 1 ? -1 : 1, isChaff: false },
+      { side: primarySide, isChaff: true },
+    ];
+
+    for (const spec of beatSpecs) {
+      const spreadSide = spec.side * (24 + Math.random() * 32);
+      const spreadDown = -(14 + Math.random() * 18);
+      const ejectBack = -(48 + Math.random() * 38);
 
       const sx =
         this.x +
-        this.basis.right.x * (side * 2.4) -
+        this.basis.right.x * (spec.side * 2.4) -
         this.basis.up.x * 1.4 -
         this.basis.forward.x * 3.4;
       const sy =
         this.y +
-        this.basis.right.y * (side * 2.4) -
+        this.basis.right.y * (spec.side * 2.4) -
         this.basis.up.y * 1.4 -
         this.basis.forward.y * 3.4;
       const sz =
         this.z +
-        this.basis.right.z * (side * 2.4) -
+        this.basis.right.z * (spec.side * 2.4) -
         this.basis.up.z * 1.4 -
         this.basis.forward.z * 3.4;
 
@@ -1304,35 +1379,44 @@ export class TrenchSimulation {
           this.basis.up.z * spreadDown +
           this.basis.forward.z * ejectBack,
         age: 0,
-        maxAge: isChaff ? 2.4 : 3.6,
-        isChaff,
+        maxAge: spec.isChaff ? 2.6 : 3.6,
+        isChaff: spec.isChaff,
         trail: [{ x: sx, y: sy, z: sz }],
       };
       this.flares.push(flare);
-      if (!isChaff) spawnedFlares.push(flare);
     }
 
-    // Decoy all incoming SAM missiles within CMDS_DECOY_RANGE_M (1,100m!)
-    let decoyedCount = 0;
+    const newlyDecoyed = this.decoyIncomingSamsWithinRange();
+    if (beatIdx === 0 && newlyDecoyed === 0 && this.cmdsBurstDecoyedTotal === 0) {
+      this.weaponCueText = `CHAFF, FLARE // SAFE ${TRENCH_CONSTANTS.CMDS_ACTIVE_PROTECTION_SEC.toFixed(1)}S (${this.cmdsRemaining} REM)`;
+      this.weaponCueTimer = 1.6;
+    }
+  }
+
+  private decoyIncomingSamsWithinRange(): number {
+    const activeFlares = this.flares.filter((f) => !f.isChaff && f.age < f.maxAge - 0.15);
+    if (activeFlares.length === 0) return 0;
+
+    let newlyDecoyed = 0;
     for (let i = 0; i < this.enemySams.length; i++) {
       const sam = this.enemySams[i];
       if (sam.decoyedByFlareId !== null) continue;
       const dist = Math.hypot(sam.x - this.x, sam.y - this.y, sam.z - this.z);
-      if (dist <= TRENCH_CONSTANTS.CMDS_DECOY_RANGE_M && spawnedFlares.length > 0) {
-        const targetFlare = spawnedFlares[i % spawnedFlares.length];
+      if (dist <= TRENCH_CONSTANTS.CMDS_DECOY_RANGE_M) {
+        const targetFlare = activeFlares[activeFlares.length - 1 - (newlyDecoyed % activeFlares.length)];
         sam.decoyedByFlareId = targetFlare.id;
-        decoyedCount++;
+        newlyDecoyed++;
+        this.cmdsBurstDecoyedTotal++;
       }
     }
 
-    if (decoyedCount > 0) {
-      this.weaponCueText = `CMDS DECOYED ${decoyedCount} SAM${decoyedCount > 1 ? 'S' : ''} // LOCK BROKEN`;
-      this.weaponCueTimer = 1.45;
-      this.score += decoyedCount * 250;
-    } else {
-      this.weaponCueText = `CMDS DEPLOYED // CHAFF + FLARES (${this.cmdsRemaining} REM)`;
-      this.weaponCueTimer = 1.1;
+    if (newlyDecoyed > 0) {
+      this.score += newlyDecoyed * 250;
+      const total = Math.max(newlyDecoyed, this.cmdsBurstDecoyedTotal);
+      this.weaponCueText = `CMDS DECOYED ${total} SAM${total > 1 ? 'S' : ''} // SAFE ${this.cmdsActiveTimer.toFixed(1)}S`;
+      this.weaponCueTimer = Math.max(this.weaponCueTimer, 1.55);
     }
+    return newlyDecoyed;
   }
 
   private fireVulcanRound(): void {
@@ -1623,7 +1707,11 @@ export class TrenchSimulation {
         const inRange = dist >= 220 && dist <= TRENCH_CONSTANTS.SAM_ENGAGE_RANGE_M;
         const exposedAltitude = this.raltM > this.sectorRadarCeilingM || dist < 1750;
 
-        if (inRange && exposedAltitude && (t.fireCooldown ?? 0) <= 0) {
+        if (this.cmdsActiveTimer > 0) {
+          // Active CMDS chaff cloud jams SAM site radar tracking for the full protection window!
+          t.samLockTimer = Math.max(0, (t.samLockTimer ?? 0) - dt * 3.5);
+          t.samWasLocking = false;
+        } else if (inRange && exposedAltitude && (t.fireCooldown ?? 0) <= 0) {
           const los = this.terrain.hasLineOfSight(
             { x: t.x, y: t.y + 12, z: t.z },
             { x: this.x, y: this.y, z: this.z }
@@ -1637,8 +1725,9 @@ export class TrenchSimulation {
               t.samLockTimer = 0;
               t.samWasLocking = false;
               t.fireCooldown = Math.max(4.4, 6.4 - this.sectorNumber * 0.45);
-              t.muzzleFlashTimer = 0.35;
-              this.spawnEnemySamFrom(t.x, t.y + 18, t.z);
+              t.muzzleFlashTimer = 0.55;
+              this.ceilingSamTimer = Math.max(0, this.ceilingSamTimer - 1.5);
+              this.spawnEnemySamFrom(t.x, t.y + 18, t.z, t.id);
             }
           } else {
             // Ducking behind a central mesa or ridge breaks SAM radar lock cleanly!
@@ -2029,6 +2118,11 @@ export class TrenchSimulation {
    * - Defeated cleanly by popping [C/F] CMDS flares, pulling a hard 7G+ break-turn, or masking behind a mesa!
    */
   private stepEnemySams(dt: number): void {
+    // Continuous active CMDS protection window: decoy any SAM entering < 1,100m while flares/chaff are live!
+    if (this.cmdsActiveTimer > 0 && this.enemySams.length > 0) {
+      this.decoyIncomingSamsWithinRange();
+    }
+
     for (let i = this.enemySams.length - 1; i >= 0; i--) {
       const s = this.enemySams[i];
       s.age += dt;
@@ -2267,6 +2361,9 @@ export class TrenchSimulation {
     this.buffetIntensity = 0;
     this.samIncomingActive = false;
     this.samLockActive = false;
+    this.cmdsActiveTimer = 0;
+    this.cmdsBurstRemaining = 0;
+    this.cmdsBurstBeatTimer = 0;
     this.hitFlashTimer = 0.65;
     this.screenShake = 15;
     this.gunFiringNow = false;

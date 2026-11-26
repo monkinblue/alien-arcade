@@ -42,8 +42,11 @@ export const TRENCH_CONSTANTS = {
 
   // Chaff / Flare Countermeasure Dispenser System (CMDS)
   CMDS_MAX_COUNT: 8,
-  CMDS_COOLDOWN_SEC: 1.5,
+  CMDS_COOLDOWN_SEC: 2.0,
   CMDS_DECOY_RANGE_M: 1100,
+  CMDS_SALVO_BEATS: 4, // 4 rhythmic cartridge pops ("thud-thud-thud-thud")
+  CMDS_BEAT_INTERVAL_SEC: 0.23, // 0.00s, 0.23s, 0.46s, 0.69s
+  CMDS_ACTIVE_PROTECTION_SEC: 2.5, // Continuous 2.5s chaff/flare immunity & lock suppression
 } as const;
 
 export type TrenchPhase = 'TITLE' | 'FLYING' | 'GAME_OVER';
@@ -138,6 +141,7 @@ export interface TacticalMissile {
 
 export interface EnemySamMissile {
   id: number;
+  sourceSiteId?: number;
   x: number;
   y: number;
   z: number;

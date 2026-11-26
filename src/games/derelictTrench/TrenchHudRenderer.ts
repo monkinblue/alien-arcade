@@ -766,12 +766,13 @@ export class TrenchHudRenderer {
     ctx.fill();
 
     // Below Right Tape: High-Contrast Crisp Weapons & CMDS Stores Block (`VVI`, `GUN`, `MSL`, `CMDS`)!
-    const rightBlockW = Math.round(184 * Math.max(0.85, hudScale));
+    const rightBlockW = Math.round(202 * Math.max(0.85, hudScale));
     const rightBlockX = rightX + tapeW - rightBlockW + 6;
     ctx.save();
     ctx.fillStyle = 'rgba(2, 9, 5, 0.72)';
     ctx.fillRect(rightBlockX, blockTopY, rightBlockW, 88);
-    ctx.strokeStyle = 'rgba(68, 255, 119, 0.28)';
+    ctx.strokeStyle =
+      sim.cmdsActiveTimer > 0 ? 'rgba(68, 255, 119, 0.65)' : 'rgba(68, 255, 119, 0.28)';
     ctx.lineWidth = 1.1;
     ctx.strokeRect(rightBlockX, blockTopY, rightBlockW, 88);
 
@@ -796,11 +797,13 @@ export class TrenchHudRenderer {
           ? '#FFB000'
           : '#8EF5AB';
     const cmdsCol =
-      sim.cmdsRemaining <= 0
-        ? COLORS.RED_KLAXON
-        : sim.cmdsCooldown > 0
-          ? 'rgba(255, 176, 0, 0.78)'
-          : '#44FFDD';
+      sim.cmdsActiveTimer > 0
+        ? '#44FF77'
+        : sim.cmdsRemaining <= 0
+          ? COLORS.RED_KLAXON
+          : sim.cmdsCooldown > 0
+            ? 'rgba(255, 176, 0, 0.78)'
+            : '#44FFDD';
 
     ctx.font = 'bold 15.5px "JetBrains Mono", monospace';
     ctx.fillStyle = gunCol;
@@ -815,9 +818,11 @@ export class TrenchHudRenderer {
     );
     ctx.fillStyle = cmdsCol;
     ctx.fillText(
-      sim.cmdsCooldown > 0
-        ? `CMDS: ${sim.cmdsRemaining} (${sim.cmdsCooldown.toFixed(1)}S)`
-        : `CMDS: ${sim.cmdsRemaining} [C/F]`,
+      sim.cmdsActiveTimer > 0
+        ? `CMDS: ${sim.cmdsRemaining} SAFE ${sim.cmdsActiveTimer.toFixed(1)}S`
+        : sim.cmdsCooldown > 0
+          ? `CMDS: ${sim.cmdsRemaining} (${sim.cmdsCooldown.toFixed(1)}S)`
+          : `CMDS: ${sim.cmdsRemaining} [C/F]`,
       rightX + tapeW - 2,
       metaY + 63
     );
@@ -1004,6 +1009,35 @@ export class TrenchHudRenderer {
       ctx.font = 'bold 20px "Share Tech Mono", monospace';
       ctx.fillStyle = '#FFB000';
       ctx.fillText('▲ PULL UP // LOW RALT ▲', cx, py + 48);
+    }
+
+    if (sim.cmdsActiveTimer > 0) {
+      const frac = Math.max(
+        0,
+        Math.min(1, sim.cmdsActiveTimer / TRENCH_CONSTANTS.CMDS_ACTIVE_PROTECTION_SEC)
+      );
+      const barW = Math.round(256 * Math.max(0.85, hudScale));
+      const barX = cx - barW * 0.5;
+      const barY = vp.y + vp.height - 70;
+      ctx.save();
+      ctx.fillStyle = 'rgba(2, 16, 8, 0.84)';
+      ctx.fillRect(barX - 8, barY - 17, barW + 16, 26);
+      ctx.strokeStyle = 'rgba(68, 255, 119, 0.75)';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(barX - 8, barY - 17, barW + 16, 26);
+      ctx.fillStyle = 'rgba(68, 255, 119, 0.22)';
+      ctx.fillRect(barX, barY + 1, barW, 4);
+      ctx.fillStyle = '#44FF77';
+      ctx.fillRect(barX, barY + 1, barW * frac, 4);
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 12.5px "Share Tech Mono", monospace';
+      ctx.fillStyle = '#8EF5AB';
+      ctx.fillText(
+        `CHAFF / FLARE ACTIVE // SAM SAFE ${sim.cmdsActiveTimer.toFixed(1)}S`,
+        cx,
+        barY - 4
+      );
+      ctx.restore();
     }
 
     if (sim.weaponCueText && sim.weaponCueTimer > 0) {

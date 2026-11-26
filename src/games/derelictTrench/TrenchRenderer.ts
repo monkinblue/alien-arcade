@@ -680,14 +680,36 @@ export class TrenchRenderer {
         ctx.stroke();
 
         // Twin angled SAM launcher rails flanking tower base
-        ctx.strokeStyle = '#FFB000';
-        ctx.lineWidth = Math.max(1.5, 1.3 + fog * 0.9);
+        const firingFlash = (t.muzzleFlashTimer ?? 0) > 0;
+        const flashFrac = Math.min(1, (t.muzzleFlashTimer ?? 0) / 0.55);
+        ctx.strokeStyle = firingFlash ? '#FFF6CC' : '#FFB000';
+        ctx.lineWidth = Math.max(1.5, (firingFlash ? 2.4 : 1.3) + fog * 0.9);
+        const railLTipX = botP.sx - bw * 1.48;
+        const railLTipY = botP.sy - towerH * 0.72;
+        const railRTipX = botP.sx + bw * 1.48;
+        const railRTipY = botP.sy - towerH * 0.72;
         ctx.beginPath();
         ctx.moveTo(botP.sx - bw * 0.92, botP.sy - towerH * 0.15);
-        ctx.lineTo(botP.sx - bw * 1.48, botP.sy - towerH * 0.72);
+        ctx.lineTo(railLTipX, railLTipY);
         ctx.moveTo(botP.sx + bw * 0.92, botP.sy - towerH * 0.15);
-        ctx.lineTo(botP.sx + bw * 1.48, botP.sy - towerH * 0.72);
+        ctx.lineTo(railRTipX, railRTipY);
         ctx.stroke();
+
+        // Dramatic SAM booster ignition flare bursting directly off the launcher rails!
+        if (firingFlash) {
+          const flareR = Math.max(7, r * (0.85 + flashFrac * 1.15));
+          ctx.fillStyle = `rgba(255, 176, 0, ${(0.35 + flashFrac * 0.5).toFixed(2)})`;
+          ctx.beginPath();
+          ctx.arc(railLTipX, railLTipY, flareR, 0, Math.PI * 2);
+          ctx.arc(railRTipX, railRTipY, flareR, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#FFFFFF';
+          ctx.beginPath();
+          ctx.arc(railLTipX, railLTipY, flareR * 0.48, 0, Math.PI * 2);
+          ctx.arc(railRTipX, railRTipY, flareR * 0.48, 0, Math.PI * 2);
+          ctx.fill();
+        }
 
         // Large rotating parabolic radar dish sweeping atop tower!
         const spin = Math.cos(timeSec * (locking ? 8.5 : 3.2) + t.id);

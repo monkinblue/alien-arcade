@@ -7,6 +7,8 @@ type TrenchRealismSfxId =
   | 'm61_vulcan_burst'
   | 'aim9_missile_launch'
   | 'cmds_flare_pop'
+  | 'cmds_flare_thud'
+  | 'betty_chaff_flare'
   | 'hull_impact_thud'
   | 'trench_conduit_blast';
 
@@ -16,13 +18,15 @@ const REALISM_ASSET_IDS = new Set<TrenchRealismSfxId>([
   'm61_vulcan_burst',
   'aim9_missile_launch',
   'cmds_flare_pop',
+  'cmds_flare_thud',
+  'betty_chaff_flare',
   'hull_impact_thud',
   'trench_conduit_blast',
 ]);
 
 interface TrenchManifestData {
   version: number;
-  assets?: Record<string, { path: string; category?: 'loop' | 'sfx'; bytes: number }>;
+  assets?: Record<string, { path: string; category?: 'loop' | 'sfx' | 'voice'; bytes: number }>;
 }
 
 /**
@@ -1384,58 +1388,134 @@ export class TrenchAudioEngine {
   }
 
   /**
-   * CMDS Chaff/Flare Dispenser: crisp metallic pneumatic pop + brief chemical flare hiss!
+   * Authentic Fighter-Jet Cockpit VCS ("Betty") Callout: "Chaff, flare."
+   * Routed through the Pilot Helmet-Headset Bandpass Bus (350Hz-3400Hz, post-compressor)
+   * so cannon fire and afterburner roar never mask the pilot's helmet audio!
    */
-  public playCmdsPop(): void {
-    if (!this.ensureGraph() || !this.ctx || !this.busInput) return;
+  public playCmdsBettyVoice(): void {
+    if (!this.ensureGraph() || !this.ctx || !this.headsetInput) return;
     const now = this.ctx.currentTime;
 
-    const buf = this.decodedBuffers.get('cmds_flare_pop');
+    const buf = this.decodedBuffers.get('betty_chaff_flare');
     if (buf) {
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
       const g = this.ctx.createGain();
-      g.gain.setValueAtTime(0.82, now);
+      g.gain.setValueAtTime(0.95, now);
       src.connect(g);
-      g.connect(this.busInput);
+      g.connect(this.headsetInput);
       this.trackSource(src);
-      src.start(now, this.bufferOnsets.get('cmds_flare_pop') ?? 0);
+      src.start(now, this.bufferOnsets.get('betty_chaff_flare') ?? 0);
       return;
     }
 
-    // Dual-cartridge pneumatic pop + muffled flare hiss fallback
-    for (let k = 0; k < 2; k++) {
-      const st = now + k * 0.055;
-      const pop = this.ctx.createOscillator();
-      pop.type = 'triangle';
-      pop.frequency.setValueAtTime(240 - k * 25, st);
-      pop.frequency.exponentialRampToValueAtTime(52, st + 0.06);
-      const pg = this.ctx.createGain();
-      pg.gain.setValueAtTime(0.32, st);
-      pg.gain.exponentialRampToValueAtTime(0.001, st + 0.075);
-      pop.connect(pg);
-      pg.connect(this.busInput);
-      this.trackSource(pop);
-      pop.start(st);
-      pop.stop(st + 0.085);
+    // Brief crisp helmet intercom PTT squelch click fallback if TTS MP3 not yet decoded
+    const click = this.ctx.createOscillator();
+    click.type = 'triangle';
+    click.frequency.setValueAtTime(1180, now);
+    click.frequency.exponentialRampToValueAtTime(640, now + 0.045);
+    const cg = this.ctx.createGain();
+    cg.gain.setValueAtTime(0.08, now);
+    cg.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
+    click.connect(cg);
+    cg.connect(this.headsetInput);
+    this.trackSource(click);
+    click.start(now);
+    click.stop(now + 0.06);
+  }
+
+  /**
+   * CMDS Chaff/Flare Dispenser Cartridge Beat ("THUD... THUD... THUD... THUD"):
+   * Triggered 4 times in rhythm (every 0.23s) synced 1:1 with left/right tail pod flare ejections!
+   * Pairs the muffled ElevenLabs cartridge thud sample with a tight pressurized-fuselage low-end thump.
+   */
+  public playCmdsPop(pan = 0, beatIndex = 0): void {
+    if (!this.ensureGraph() || !this.ctx || !this.busInput) return;
+    const now = this.ctx.currentTime;
+
+    const panner = this.ctx.createStereoPanner();
+    panner.pan.setValueAtTime(Math.max(-0.45, Math.min(0.45, pan)), now);
+    panner.connect(this.busInput);
+
+    // Tactile pressurized-fuselage sub-thud on every cartridge squib discharge
+    const rateVar = 0.96 + (beatIndex % 2) * 0.055 - (beatIndex >= 2 ? 0.015 : 0);
+    const subThud = this.ctx.createOscillator();
+    subThud.type = 'sine';
+    subThud.frequency.setValueAtTime(112 * rateVar, now);
+    subThud.frequency.exponentialRampToValueAtTime(38, now + 0.085);
+    const sg = this.ctx.createGain();
+    sg.gain.setValueAtTime(0.001, now);
+    sg.gain.linearRampToValueAtTime(0.42, now + 0.006);
+    sg.gain.exponentialRampToValueAtTime(0.001, now + 0.105);
+    subThud.connect(sg);
+    sg.connect(panner);
+    this.trackSource(subThud);
+    subThud.start(now);
+    subThud.stop(now + 0.115);
+
+    const thudBuf = this.decodedBuffers.get('cmds_flare_thud');
+    if (thudBuf) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = thudBuf;
+      src.playbackRate.setValueAtTime(rateVar, now);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.88, now);
+      src.connect(g);
+      g.connect(panner);
+      this.trackSource(src);
+      src.start(now, this.bufferOnsets.get('cmds_flare_thud') ?? 0);
+      return;
     }
+
+    const popBuf = this.decodedBuffers.get('cmds_flare_pop');
+    if (popBuf) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = popBuf;
+      src.playbackRate.setValueAtTime(0.88 * rateVar, now);
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(1400, now);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.76, now);
+      g.gain.setTargetAtTime(0.001, now + 0.18, 0.045);
+      src.connect(lp);
+      lp.connect(g);
+      g.connect(panner);
+      this.trackSource(src);
+      src.start(now, this.bufferOnsets.get('cmds_flare_pop') ?? 0, 0.34);
+      return;
+    }
+
+    // Crisp pneumatic cartridge pop + muffled flare hiss fallback
+    const pop = this.ctx.createOscillator();
+    pop.type = 'triangle';
+    pop.frequency.setValueAtTime(215 * rateVar, now);
+    pop.frequency.exponentialRampToValueAtTime(48, now + 0.065);
+    const pg = this.ctx.createGain();
+    pg.gain.setValueAtTime(0.32, now);
+    pg.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+    pop.connect(pg);
+    pg.connect(panner);
+    this.trackSource(pop);
+    pop.start(now);
+    pop.stop(now + 0.09);
 
     if (this.brownNoiseBuffer) {
       const hiss = this.ctx.createBufferSource();
       hiss.buffer = this.brownNoiseBuffer;
       const bp = this.ctx.createBiquadFilter();
       bp.type = 'bandpass';
-      bp.frequency.setValueAtTime(1450, now + 0.02);
-      bp.frequency.exponentialRampToValueAtTime(520, now + 0.42);
-      bp.Q.value = 0.9;
+      bp.frequency.setValueAtTime(1150, now + 0.015);
+      bp.frequency.exponentialRampToValueAtTime(420, now + 0.19);
+      bp.Q.value = 0.95;
       const hg = this.ctx.createGain();
-      hg.gain.setValueAtTime(0.24, now + 0.02);
-      hg.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+      hg.gain.setValueAtTime(0.22, now + 0.015);
+      hg.gain.exponentialRampToValueAtTime(0.001, now + 0.21);
       hiss.connect(bp);
       bp.connect(hg);
-      hg.connect(this.busInput);
+      hg.connect(panner);
       this.trackSource(hiss);
-      hiss.start(now + 0.02, Math.random() * 1.2, 0.48);
+      hiss.start(now + 0.015, Math.random() * 1.2, 0.22);
     }
   }
 

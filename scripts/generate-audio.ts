@@ -585,6 +585,14 @@ const TRENCH_SOUND_ASSETS: SoundGenAsset[] = [
     promptInfluence: 0.82,
   },
   {
+    filename: 'cmds_flare_thud.mp3',
+    prompt:
+      'Single heavy muffled pyrotechnic countermeasure flare dispenser cartridge thud heard from inside a pressurized military fighter jet cockpit, solid deep low-frequency fuselage pneumatic thump with tiny crisp metallic release clack and very brief faint sizzle, dry realistic cockpit foley, no music.',
+    loop: false,
+    durationSeconds: 0.55,
+    promptInfluence: 0.85,
+  },
+  {
     filename: 'hull_impact_thud.mp3',
     prompt:
       'Deep, muffled structural fighter aircraft airframe impact thud and brief low-frequency cockpit vibration rattle, realistic pressurized fuselage concussion, zero metallic screeching, no music.',
@@ -663,6 +671,14 @@ const TRENCH_SOUND_ASSETS: SoundGenAsset[] = [
     loop: false,
     durationSeconds: 1.4,
     promptInfluence: 0.8,
+  },
+];
+
+// Program #4 ("DERELICT TRENCH // VECTOR RUN") Cockpit VCS ("Betty") Voice Callouts -> public/audio/trench/
+const TRENCH_VOICE_CALLOUTS: VoiceCalloutAsset[] = [
+  {
+    filename: 'betty_chaff_flare.mp3',
+    text: 'Chaff, flare.',
   },
 ];
 
@@ -955,7 +971,7 @@ async function writeFlakManifestFromDisk(): Promise<AudioManifest> {
   return manifest;
 }
 
-async function writeTrenchManifestFromDisk(): Promise<AudioManifest> {
+async function writeTrenchManifestFromDisk(voiceId: string | null = null): Promise<AudioManifest> {
   const assets: AudioManifest['assets'] = {};
   for (const s of TRENCH_SOUND_ASSETS) {
     const fullPath = path.join(TRENCH_AUDIO_OUT_DIR, s.filename);
@@ -970,10 +986,23 @@ async function writeTrenchManifestFromDisk(): Promise<AudioManifest> {
     }
   }
 
+  for (const v of TRENCH_VOICE_CALLOUTS) {
+    const fullPath = path.join(TRENCH_AUDIO_OUT_DIR, v.filename);
+    const bytes = await fileSizeBytes(fullPath);
+    if (bytes > 512) {
+      const id = v.filename.replace(/\.mp3$/i, '');
+      assets[id] = {
+        path: `/audio/trench/${v.filename}`,
+        category: 'voice',
+        bytes,
+      };
+    }
+  }
+
   const manifest: AudioManifest = {
-    version: 1,
+    version: 2,
     generatedAt: Object.keys(assets).length > 0 ? new Date().toISOString() : null,
-    voiceId: null,
+    voiceId,
     assets,
   };
 
@@ -1118,6 +1147,39 @@ async function main(): Promise<void> {
   }
 
   let voiceId: string | null = null;
+  if (!flakOnly) {
+    // 3b. DERELICT TRENCH Cockpit VCS ("Betty") Callouts -> public/audio/trench/
+    const wantedTrenchVoices = TRENCH_VOICE_CALLOUTS.filter((asset) => {
+      if (!onlySet) return true;
+      const id = asset.filename.replace(/\.mp3$/i, '');
+      return onlySet.has(id) || onlySet.has(asset.filename);
+    });
+    if (wantedTrenchVoices.length > 0) {
+      voiceId = await resolveClinicalFemaleVoiceId(apiKey);
+    }
+    for (const asset of wantedTrenchVoices) {
+      const destPath = path.join(TRENCH_AUDIO_OUT_DIR, asset.filename);
+      const existingBytes = await fileSizeBytes(destPath);
+      if (existingBytes > 5120 && !force) {
+        console.log(`[SKIP] trench/${asset.filename} (${(existingBytes / 1024).toFixed(1)} KB). Pass --force to regenerate.`);
+        skippedCount++;
+        continue;
+      }
+
+      process.stdout.write(`[TTS]  trench/${asset.filename} -> "${asset.text}"... `);
+      try {
+        await generateVoiceCallout(apiKey, voiceId!, asset, destPath);
+        const bytes = await fileSizeBytes(destPath);
+        console.log(`OK (${(bytes / 1024).toFixed(1)} KB)`);
+        generatedCount++;
+      } catch (err) {
+        console.log('FAILED');
+        console.error(`       ${String(err)}`);
+        failedCount++;
+      }
+    }
+  }
+
   if (!flakOnly && !trenchOnly) {
     // 4. MU-TH-UR 6000 TTS Callouts
     const wantedVoices = VOICE_CALLOUTS.filter((asset) => {
@@ -1125,7 +1187,7 @@ async function main(): Promise<void> {
       const id = asset.filename.replace(/\.mp3$/i, '');
       return onlySet.has(id) || onlySet.has(asset.filename);
     });
-    if (wantedVoices.length > 0) {
+    if (wantedVoices.length > 0 && !voiceId) {
       voiceId = await resolveClinicalFemaleVoiceId(apiKey);
     }
     for (const asset of wantedVoices) {
@@ -1152,7 +1214,8 @@ async function main(): Promise<void> {
   }
 
   const flakManifest = await writeFlakManifestFromDisk();
-  const trenchManifest = await writeTrenchManifestFromDisk();
+  const trenchManifest = await writeTrenchManifestFromDisk(voiceId);
+  const totalTrenchExpected = TRENCH_SOUND_ASSETS.length + TRENCH_VOICE_CALLOUTS.length;
   if (!flakOnly && !trenchOnly) {
     const manifest = await writeManifestFromDisk(voiceId);
     const totalExpected = SOUND_ASSETS.length + VOICE_CALLOUTS.length;
@@ -1160,13 +1223,13 @@ async function main(): Promise<void> {
     console.log(` COMPLETE: ${generatedCount} generated, ${skippedCount} skipped, ${failedCount} failed.`);
     console.log(` MANIFEST: ${Object.keys(manifest.assets).length}/${totalExpected} core assets in public/audio/manifest.json`);
     console.log(` FLAK NET: ${Object.keys(flakManifest.assets).length}/${FLAK_NET_SOUND_ASSETS.length} assets in public/audio/flak/manifest.json`);
-    console.log(` TRENCH  : ${Object.keys(trenchManifest.assets).length}/${TRENCH_SOUND_ASSETS.length} assets in public/audio/trench/manifest.json`);
+    console.log(` TRENCH  : ${Object.keys(trenchManifest.assets).length}/${totalTrenchExpected} assets in public/audio/trench/manifest.json`);
     console.log('====================================================================');
   } else {
     console.log('\n====================================================================');
     console.log(` COMPLETE: ${generatedCount} generated, ${skippedCount} skipped, ${failedCount} failed.`);
     console.log(` FLAK NET: ${Object.keys(flakManifest.assets).length}/${FLAK_NET_SOUND_ASSETS.length} assets in public/audio/flak/manifest.json`);
-    console.log(` TRENCH  : ${Object.keys(trenchManifest.assets).length}/${TRENCH_SOUND_ASSETS.length} assets in public/audio/trench/manifest.json`);
+    console.log(` TRENCH  : ${Object.keys(trenchManifest.assets).length}/${totalTrenchExpected} assets in public/audio/trench/manifest.json`);
     console.log('====================================================================');
   }
 
