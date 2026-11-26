@@ -1003,7 +1003,14 @@ export class PerimeterCartridge implements Cartridge {
           if (movedTile) {
             this.lastBuildHoverTile = { col, row };
             this.previewAngleLockedByUser = false;
-            if (this.sim.canPlaceHardwareAt(this.activeTool.buildId, col, row).ok) {
+            const rule = this.tutorialDirector.getSnapshot(this.sim).activePlacementRule;
+            if (
+              rule &&
+              rule.buildId === this.activeTool.buildId &&
+              rule.targetAngle !== undefined
+            ) {
+              this.activeTool.previewAngle = rule.targetAngle;
+            } else if (this.sim.canPlaceHardwareAt(this.activeTool.buildId, col, row).ok) {
               this.activeTool.previewAngle = this.sim.computeDefaultAimAngle(col, row);
             }
           }
@@ -1123,6 +1130,12 @@ export class PerimeterCartridge implements Cartridge {
         // Active Command Ability Deployment Click
         if (this.activeTool.kind === 'ABILITY') {
           const castId = this.activeTool.abilityId;
+          const gate = this.tutorialDirector.validateTargetedAbility(this.sim, castId, virt);
+          if (!gate.ok) {
+            this.host.audio.playMutedAvionicsIndicatorBeep(false);
+            this.showToast(gate.reason ?? 'TARGET THE PULSING DRILL ZONE!');
+            return;
+          }
           const res = this.sim.triggerCommandAbility(castId, virt);
           if (res.ok) {
             this.tutorialDirector.notifyAbilityUsed(castId);
@@ -1165,6 +1178,12 @@ export class PerimeterCartridge implements Cartridge {
             bId === 'SHOCK_COIL' ||
             bId === 'CLAYMORE'
           ) {
+            const tutCheck = this.tutorialDirector.validatePlacement(this.sim, bId, snapCol, snapRow, 0);
+            if (!tutCheck.ok) {
+              this.host.audio.playMutedAvionicsIndicatorBeep(false);
+              this.showToast(tutCheck.reason ?? 'DEPLOY ON THE PULSING TARGET!');
+              return;
+            }
             const deployed = this.sim.deployHardware(bId, snapCol, snapRow, 0);
             if (deployed.ok) {
               if (deployed.placedTurret) {
@@ -1196,15 +1215,32 @@ export class PerimeterCartridge implements Cartridge {
             return;
           }
 
+          // Enforce exact target pad BEFORE starting directional drag in Training Drill!
+          const tutRule = this.tutorialDirector.getSnapshot(this.sim).activePlacementRule;
+          if (
+            this.tutorialDirector.active &&
+            !this.tutorialDirector.graduated &&
+            tutRule &&
+            tutRule.buildId === bId &&
+            (snapCol !== tutRule.col || snapRow !== tutRule.row)
+          ) {
+            this.host.audio.playMutedAvionicsIndicatorBeep(false);
+            this.showToast('DEPLOY ON THE PULSING TARGET PAD IN WEST JUNCTION!');
+            return;
+          }
+
           // Directional Hardware (UA 571-C, M240, M99 Rail-Lance, M314): Begin drag-to-aim anchor!
           const anchorPan = Math.max(
             -0.82,
             Math.min(0.82, ((snapCol * ts + ts * 0.5) / PERIMETER_CONSTANTS.VIRTUAL_W - 0.5) * 1.5)
           );
           this.host.audio.playTurretTripodTouchdown(anchorPan);
-          const initAng = this.previewAngleLockedByUser
-            ? this.activeTool.previewAngle
-            : this.sim.computeDefaultAimAngle(snapCol, snapRow);
+          const initAng =
+            tutRule && tutRule.buildId === bId && tutRule.targetAngle !== undefined
+              ? tutRule.targetAngle
+              : this.previewAngleLockedByUser
+                ? this.activeTool.previewAngle
+                : this.sim.computeDefaultAimAngle(snapCol, snapRow);
           this.dragBuildAnchor = {
             col: snapCol,
             row: snapRow,
@@ -1220,7 +1256,12 @@ export class PerimeterCartridge implements Cartridge {
         if (hitTurret) {
           this.selectedTurretId = hitTurret.id;
           this.selectedDoorId = null;
-          if (e.shiftKey && hitTurret.kind !== 'CRYO_VALVE' && hitTurret.kind !== 'SHOCK_COIL') {
+          if (
+            e.shiftKey &&
+            !(this.tutorialDirector.active && !this.tutorialDirector.graduated) &&
+            hitTurret.kind !== 'CRYO_VALVE' &&
+            hitTurret.kind !== 'SHOCK_COIL'
+          ) {
             this.dragRotateTurretId = hitTurret.id;
           }
           this.host.audio.playSfx('ui_keyclick');
@@ -1262,6 +1303,18 @@ export class PerimeterCartridge implements Cartridge {
       if (this.dragBuildAnchor && this.activeTool.kind === 'BUILD') {
         const anchor = this.dragBuildAnchor;
         this.dragBuildAnchor = null;
+        const tutCheck = this.tutorialDirector.validatePlacement(
+          this.sim,
+          this.activeTool.buildId,
+          anchor.col,
+          anchor.row,
+          anchor.angle
+        );
+        if (!tutCheck.ok) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast(tutCheck.reason ?? 'AIM ALONG THE CORRIDOR GUIDE CONE!');
+          return;
+        }
         const res = this.sim.deployHardware(
           this.activeTool.buildId,
           anchor.col,
@@ -1296,7 +1349,7 @@ export class PerimeterCartridge implements Cartridge {
       (e) => {
         if (this.wikiOpen) {
           e.preventDefault();
-          const step = Math.sign(e.deltaY) * 84;
+          const step = Math.sign(e.deltaY) * 112;
           this.wikiScrollPx = Math.max(
             0,
             Math.min(this.hudRenderer.wikiMaxScrollPx, this.wikiScrollPx + step)
@@ -1352,6 +1405,28 @@ export class PerimeterCartridge implements Cartridge {
   }
 
   private selectBuildTool(buildId: Exclude<BuildToolId, 'NONE'>): void {
+    if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+      const snap = this.tutorialDirector.getSnapshot(this.sim);
+      if (!snap.allowedBuildIds.includes(buildId)) {
+        this.host.audio.playMutedAvionicsIndicatorBeep(false);
+        this.showToast('DRILL LOCK: ONLY THE HIGHLIGHTED TOOL IS ACTIVE FOR THIS STEP');
+        return;
+      }
+      this.lastBuildHoverTile = null;
+      this.previewAngleLockedByUser = false;
+      if (this.activeTool.kind === 'BUILD' && this.activeTool.buildId === buildId) {
+        this.activeTool = { kind: 'INSPECT' };
+        return;
+      }
+      const defAng =
+        snap.activePlacementRule?.buildId === buildId &&
+        snap.activePlacementRule.targetAngle !== undefined
+          ? snap.activePlacementRule.targetAngle
+          : 0;
+      this.activeTool = { kind: 'BUILD', buildId, previewAngle: defAng };
+      return;
+    }
+
     this.lastBuildHoverTile = null;
     this.previewAngleLockedByUser = false;
     if (this.activeTool.kind === 'BUILD' && this.activeTool.buildId === buildId) {
@@ -1362,6 +1437,14 @@ export class PerimeterCartridge implements Cartridge {
   }
 
   private armCommandAbility(abilityId: CommandAbilityId): void {
+    if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+      const snap = this.tutorialDirector.getSnapshot(this.sim);
+      if (!snap.allowedAbilityIds.includes(abilityId)) {
+        this.host.audio.playMutedAvionicsIndicatorBeep(false);
+        this.showToast('DRILL LOCK: COMPLETE THE CURRENT OBJECTIVE FIRST');
+        return;
+      }
+    }
     // Instant map-wide Reactor abilities ([L] Emergency Floodlight & [C] Emergency Coolant Flush)
     if (abilityId === 'FLOODLIGHT' || abilityId === 'COOLANT_FLUSH') {
       const res = this.sim.triggerInstantCommandAbility(abilityId);
@@ -1509,6 +1592,11 @@ export class PerimeterCartridge implements Cartridge {
         }
         break;
       case 'insp-rotate':
+        if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('TURRET AIM LOCKED ON KILLBOX DURING TRAINING DRILL');
+          break;
+        }
         if (this.selectedTurretId) {
           if (
             this.activeTool.kind === 'ROTATE_TURRET' &&
@@ -1522,12 +1610,26 @@ export class PerimeterCartridge implements Cartridge {
         }
         break;
       case 'insp-power':
+        if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('POWER TOGGLE LOCKED DURING TRAINING DRILL');
+          break;
+        }
         if (this.selectedTurretId) {
           const r = this.sim.toggleTurretPower(this.selectedTurretId);
           this.showToast(r.msg);
         }
         break;
       case 'rearm-all': {
+        if (
+          this.tutorialDirector.active &&
+          !this.tutorialDirector.graduated &&
+          !this.tutorialDirector.getSnapshot(this.sim).allowRearm
+        ) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('DRILL LOCK: COMPLETE CURRENT OBJECTIVE FIRST');
+          break;
+        }
         const r = this.sim.rearmAllSentries();
         if (r.ok) this.tutorialDirector.notifyRearmTriggered();
         if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
@@ -1535,30 +1637,63 @@ export class PerimeterCartridge implements Cartridge {
         break;
       }
       case 'reactor-expand': {
+        if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('REACTOR EXPANSION AUTO-MANAGED DURING DRILL');
+          break;
+        }
         const r = this.sim.expandReactorBus();
         if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
         this.showToast(r.msg);
         break;
       }
       case 'seal-fabricate': {
+        if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('CORE SEALS ARE SHIELDED DURING DRILL');
+          break;
+        }
         const r = this.sim.fabricateCoreSeal();
         if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
         this.showToast(r.msg);
         break;
       }
       case 'aux-shed': {
+        if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('SHED AUX LOCKED DURING TRAINING DRILL');
+          break;
+        }
         const r = this.sim.toggleAuxLoadShed();
         if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
         this.showToast(r.msg);
         break;
       }
       case 'insp-upgrade':
+        if (
+          this.tutorialDirector.active &&
+          !this.tutorialDirector.graduated &&
+          !this.tutorialDirector.getSnapshot(this.sim).allowUpgrade
+        ) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('UPGRADES UNLOCK IN DRILL 09/09!');
+          break;
+        }
         if (this.selectedTurretId) {
           const r = this.sim.upgradeTurret(this.selectedTurretId);
           this.showToast(r.msg);
         }
         break;
       case 'insp-upgrade-a':
+        if (
+          this.tutorialDirector.active &&
+          !this.tutorialDirector.graduated &&
+          !this.tutorialDirector.getSnapshot(this.sim).allowUpgrade
+        ) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('UPGRADES UNLOCK IN DRILL 09/09!');
+          break;
+        }
         if (this.selectedTurretId) {
           const r = this.sim.upgradeTurret(this.selectedTurretId, 'A');
           if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
@@ -1566,6 +1701,15 @@ export class PerimeterCartridge implements Cartridge {
         }
         break;
       case 'insp-upgrade-b':
+        if (
+          this.tutorialDirector.active &&
+          !this.tutorialDirector.graduated &&
+          !this.tutorialDirector.getSnapshot(this.sim).allowUpgrade
+        ) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('UPGRADES UNLOCK IN DRILL 09/09!');
+          break;
+        }
         if (this.selectedTurretId) {
           const r = this.sim.upgradeTurret(this.selectedTurretId, 'B');
           if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
@@ -1573,6 +1717,11 @@ export class PerimeterCartridge implements Cartridge {
         }
         break;
       case 'insp-scrap':
+        if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('SCRAPPING DISABLED DURING TRAINING DRILL');
+          break;
+        }
         if (this.selectedTurretId) {
           const r = this.sim.scrapTurret(this.selectedTurretId);
           this.selectedTurretId = null;
@@ -1581,12 +1730,22 @@ export class PerimeterCartridge implements Cartridge {
         break;
       case 'door-weld':
       case 'door-unseal':
+        if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('USE [7] DOOR SEAL ON D-04 IN DRILL 07/09!');
+          break;
+        }
         if (this.selectedDoorId) {
           const r = this.sim.toggleDoorSeal(this.selectedDoorId);
           this.showToast(r.msg);
         }
         break;
       case 'door-repair':
+        if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('DOOR REPAIRS LOCKED DURING TRAINING DRILL');
+          break;
+        }
         if (this.selectedDoorId) {
           const r = this.sim.repairDoorSeal(this.selectedDoorId);
           this.showToast(r.msg);
@@ -1641,6 +1800,8 @@ export class PerimeterCartridge implements Cartridge {
         break;
       case 'perim-drill-next':
       case 'perim-drill-skip':
+        this.activeTool = { kind: 'INSPECT' };
+        this.dragBuildAnchor = null;
         this.tutorialDirector.advanceStep(this.sim);
         break;
       case 'perim-drill-exit':
@@ -1799,17 +1960,17 @@ export class PerimeterCartridge implements Cartridge {
     }
 
     if (this.wikiOpen) {
-      if ((e.code === 'Escape' || e.code === 'KeyH') && !e.repeat) {
+      if ((e.code === 'Escape' || e.code === 'KeyH' || e.code === 'Backspace') && !e.repeat) {
         this.host.audio.playButtonLatchLock(0.92, 0.9);
         this.wikiOpen = false;
       } else if (e.code === 'ArrowDown') {
-        this.wikiScrollPx = Math.min(this.hudRenderer.wikiMaxScrollPx, this.wikiScrollPx + 64);
+        this.wikiScrollPx = Math.min(this.hudRenderer.wikiMaxScrollPx, this.wikiScrollPx + 84);
       } else if (e.code === 'ArrowUp') {
-        this.wikiScrollPx = Math.max(0, this.wikiScrollPx - 64);
+        this.wikiScrollPx = Math.max(0, this.wikiScrollPx - 84);
       } else if (e.code === 'PageDown') {
-        this.wikiScrollPx = Math.min(this.hudRenderer.wikiMaxScrollPx, this.wikiScrollPx + 280);
+        this.wikiScrollPx = Math.min(this.hudRenderer.wikiMaxScrollPx, this.wikiScrollPx + 340);
       } else if (e.code === 'PageUp') {
-        this.wikiScrollPx = Math.max(0, this.wikiScrollPx - 280);
+        this.wikiScrollPx = Math.max(0, this.wikiScrollPx - 340);
       } else if (e.code === 'Home') {
         this.wikiScrollPx = 0;
       } else if (e.code === 'End') {
@@ -2110,7 +2271,13 @@ export class PerimeterCartridge implements Cartridge {
       }
       this.sim.step(clampedDt);
       if (this.tutorialDirector.active && !this.sim.tacticalPaused) {
+        const prevStep = this.tutorialDirector.getSnapshot(this.sim).stepIndex;
         this.tutorialDirector.step(this.sim, clampedDt);
+        const nextSnap = this.tutorialDirector.getSnapshot(this.sim);
+        if (nextSnap.stepIndex !== prevStep || nextSnap.graduated) {
+          this.activeTool = { kind: 'INSPECT' };
+          this.dragBuildAnchor = null;
+        }
       }
       const napalmState = this.sim.getActiveNapalmAudioState();
       this.host.audio.updatePerimeterNapalmBed(napalmState.intensity, napalmState.pan, clampedDt);
@@ -2146,6 +2313,11 @@ export class PerimeterCartridge implements Cartridge {
       selectedDoorId: this.selectedDoorId,
       dragBuildAnchor: this.dragBuildAnchor,
       tutorialBeacons: tutorialDirective.beacons,
+      tutorialPlacementRule: tutorialDirective.activePlacementRule,
+      tutorialAngleCheck: this.tutorialDirector.active
+        ? (buildId, col, row, angle) =>
+            this.tutorialDirector.isAngleWithinActiveRule(this.sim, buildId, col, row, angle)
+        : undefined,
     });
 
     // 2. Render Nostromo Left/Right/Top/Bottom Instrumentation & Modals
@@ -2213,7 +2385,7 @@ export class PerimeterCartridge implements Cartridge {
       glitch: this.glitchIntensity,
       overdrive: overdriveAmt,
       tubeTurnOn: 0,
-      chromaScale: this.wikiOpen ? 0.14 : 0.28, // Ultra-sharp CRT text inside Wiki & HUD edges!
+      chromaScale: this.wikiOpen ? 0.08 : 0.28, // Razor-sharp dedicated console readability inside Wiki!
     };
   }
 }

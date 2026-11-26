@@ -1,7 +1,10 @@
 import { COLORS } from '../constants';
 import type { Vec2, ViewportRect } from '../types';
 import type { PerimeterSimulation } from './PerimeterSimulation';
-import type { TutorialMapBeacon } from './PerimeterTutorialDirector';
+import type {
+  TutorialMapBeacon,
+  TutorialPlacementRule,
+} from './PerimeterTutorialDirector';
 import {
   HARDWARE_SPECS,
   HOSTILE_SPECS,
@@ -9,6 +12,7 @@ import {
   PERIMETER_CONSTANTS,
   WAVE_MUTATORS,
   type ActiveCursorTool,
+  type BuildToolId,
   type HostileEntity,
 } from './types';
 
@@ -29,6 +33,13 @@ export interface BlueprintRenderContext {
   selectedDoorId: string | null;
   dragBuildAnchor: { col: number; row: number; angle: number } | null;
   tutorialBeacons?: TutorialMapBeacon[];
+  tutorialPlacementRule?: TutorialPlacementRule | null;
+  tutorialAngleCheck?: (
+    buildId: Exclude<BuildToolId, 'NONE'>,
+    col: number,
+    row: number,
+    angle: number
+  ) => { enforced: boolean; valid: boolean; hint?: string };
 }
 
 export class PerimeterBlueprintRenderer {
@@ -137,7 +148,10 @@ export class PerimeterBlueprintRenderer {
     // 11. Screen-Legible Diegetic Turret Telemetry Tags (`A-01 // 320 RDS`, `RELOAD 2.1S`, `000 DRY`)
     this.drawDiegeticTurretTags(ctx, rc, tf.scale);
 
-    // 11B. Interactive Training Drill Pulsing Map Beacons & Callout Arrows
+    // 11B. Interactive Training Drill Directional Guide Cone & Pulsing Map Beacons
+    if (rc.tutorialPlacementRule && rc.tutorialPlacementRule.targetAngle !== undefined) {
+      this.drawTutorialGuideCone(ctx, sim, rc.tutorialPlacementRule, timeSec);
+    }
     if (rc.tutorialBeacons && rc.tutorialBeacons.length > 0) {
       this.drawTutorialBeacons(ctx, rc.tutorialBeacons, timeSec, tf.scale);
     }
@@ -2220,9 +2234,13 @@ export class PerimeterBlueprintRenderer {
       const cy = row * ts + ts * 0.5;
       const ang = dragBuildAnchor ? dragBuildAnchor.angle : activeTool.previewAngle;
       const spec = HARDWARE_SPECS[activeTool.buildId];
+      const angleGate = rc.tutorialAngleCheck
+        ? rc.tutorialAngleCheck(activeTool.buildId, col, row, ang)
+        : { enforced: false, valid: true };
+      const placementValid = check.ok && (!angleGate.enforced || angleGate.valid);
 
       ctx.save();
-      if (resolved.snapped && check.ok && cursorVirtual) {
+      if (resolved.snapped && placementValid && cursorVirtual) {
         ctx.strokeStyle = 'rgba(0, 240, 255, 0.55)';
         ctx.lineWidth = 1.5;
         ctx.setLineDash([4, 4]);
@@ -2233,13 +2251,13 @@ export class PerimeterBlueprintRenderer {
         ctx.setLineDash([]);
       }
 
-      ctx.strokeStyle = check.ok ? (resolved.snapped ? '#00F0FF' : '#44FF77') : '#FF3318';
-      ctx.fillStyle = check.ok ? 'rgba(68, 255, 119, 0.16)' : 'rgba(255, 51, 24, 0.16)';
+      ctx.strokeStyle = placementValid ? (resolved.snapped ? '#00F0FF' : '#44FF77') : '#FF3318';
+      ctx.fillStyle = placementValid ? 'rgba(68, 255, 119, 0.16)' : 'rgba(255, 51, 24, 0.20)';
       ctx.lineWidth = 2.4;
       ctx.fillRect(col * ts + 6, row * ts + 6, ts - 12, ts - 12);
       ctx.strokeRect(col * ts + 6, row * ts + 6, ts - 12, ts - 12);
 
-      if (resolved.snapped && check.ok && !dragBuildAnchor) {
+      if (resolved.snapped && placementValid && !dragBuildAnchor) {
         ctx.font = 'bold 11px "Share Tech Mono", monospace';
         ctx.fillStyle = '#00F0FF';
         ctx.textAlign = 'center';
@@ -2247,11 +2265,16 @@ export class PerimeterBlueprintRenderer {
       }
 
       if (check.ok && spec.rangePx > 0) {
-        ctx.strokeStyle =
-          activeTool.buildId === 'RAIL_LANCE' || activeTool.buildId === 'SHOCK_COIL'
-            ? '#00F0FF'
-            : '#FFB000';
-        ctx.lineWidth = 2.0;
+        const coneCol =
+          angleGate.enforced && !angleGate.valid
+            ? '#FF3318'
+            : angleGate.enforced && dragBuildAnchor
+              ? '#44FF77'
+              : activeTool.buildId === 'RAIL_LANCE' || activeTool.buildId === 'SHOCK_COIL'
+                ? '#00F0FF'
+                : '#FFB000';
+        ctx.strokeStyle = coneCol;
+        ctx.lineWidth = angleGate.enforced && !angleGate.valid ? 2.6 : 2.0;
         ctx.setLineDash([6, 5]);
         ctx.beginPath();
         if (spec.coneHalfAngleRad > 0) {
@@ -2267,6 +2290,21 @@ export class PerimeterBlueprintRenderer {
           ctx.arc(cx, cy, spec.rangePx, 0, Math.PI * 2);
         }
         ctx.stroke();
+
+        // Live Red Laser Tripwire preview beam when placing/aiming M314 Motion Relay!
+        if (activeTool.buildId === 'MOTION_RELAY') {
+          const beamEnd = sim.castSightRay({ x: cx, y: cy }, ang, 235);
+          ctx.setLineDash([]);
+          ctx.strokeStyle = angleGate.enforced && !angleGate.valid ? '#FF3318' : '#FF4424';
+          ctx.lineWidth = 3.0;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(beamEnd.x, beamEnd.y);
+          ctx.stroke();
+          ctx.fillStyle = '#FF5533';
+          ctx.fillRect(beamEnd.x - 4, beamEnd.y - 4, 8, 8);
+        }
+
         if (activeTool.buildId === 'CLAYMORE') {
           ctx.strokeStyle = '#FF5522';
           ctx.beginPath();
@@ -2277,14 +2315,100 @@ export class PerimeterBlueprintRenderer {
 
         if (dragBuildAnchor) {
           const deg = Math.round((((ang * 180) / Math.PI) + 360) % 360);
-          ctx.font = 'bold 13px "JetBrains Mono", monospace';
-          ctx.fillStyle = '#FFB000';
+          ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
           ctx.textAlign = 'center';
-          ctx.fillText(`DRAG AIM: ${deg}° (RELEASE TO LOCK)`, cx, cy - 34);
+          if (angleGate.enforced && !angleGate.valid) {
+            ctx.fillStyle = '#FF4422';
+            ctx.fillText(
+              `⚠ AIM ${angleGate.hint ?? 'ALONG GUIDE CONE'}!`,
+              cx,
+              cy - 34
+            );
+          } else if (angleGate.enforced) {
+            ctx.fillStyle = '#44FF77';
+            ctx.fillText(`✓ GOOD AIM (${deg}°) — RELEASE TO DEPLOY!`, cx, cy - 34);
+          } else {
+            ctx.fillStyle = '#FFB000';
+            ctx.fillText(`DRAG AIM: ${deg}° (RELEASE TO LOCK)`, cx, cy - 34);
+          }
         }
       }
       ctx.restore();
     }
+  }
+
+  /**
+   * Draws an unobstructed wall-clipped directional firing-cone / red-tripwire guide ghost
+   * during the Interactive Training Drill so new players immediately see the exact corridor aim!
+   */
+  private drawTutorialGuideCone(
+    ctx: CanvasRenderingContext2D,
+    sim: PerimeterSimulation,
+    rule: TutorialPlacementRule,
+    timeSec: number
+  ): void {
+    if (rule.targetAngle === undefined) return;
+    const ts = sim.blueprint.tileSize;
+    const origin = { x: rule.col * ts + ts * 0.5, y: rule.row * ts + ts * 0.5 };
+    const ang = rule.targetAngle;
+    const spec = HARDWARE_SPECS[rule.buildId];
+    const pulse = 0.5 + 0.5 * Math.sin(timeSec * 6.0);
+
+    ctx.save();
+    if (rule.buildId === 'MOTION_RELAY') {
+      // Red dashed Laser Tripwire guide beam straight across the hallway!
+      const beamEnd = sim.castSightRay(origin, ang, 235);
+      ctx.strokeStyle = `rgba(255, 72, 42, ${(0.55 + pulse * 0.4).toFixed(2)})`;
+      ctx.lineWidth = 4.0;
+      ctx.setLineDash([12, 8]);
+      ctx.lineDashOffset = -timeSec * 42;
+      ctx.beginPath();
+      ctx.moveTo(origin.x, origin.y);
+      ctx.lineTo(beamEnd.x, beamEnd.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (spec.coneHalfAngleRad > 0) {
+      const guideColor = rule.buildId === 'RAIL_LANCE' ? '0, 240, 255' : '68, 255, 119';
+      const maxD = Math.min(spec.rangePx, 480);
+      ctx.fillStyle = `rgba(${guideColor}, ${(0.08 + pulse * 0.08).toFixed(3)})`;
+      ctx.strokeStyle = `rgba(${guideColor}, ${(0.48 + pulse * 0.36).toFixed(2)})`;
+      ctx.lineWidth = 2.4;
+      ctx.setLineDash([10, 7]);
+      ctx.lineDashOffset = -timeSec * 36;
+      ctx.beginPath();
+      ctx.moveTo(origin.x, origin.y);
+      for (let s = 0; s <= 18; s++) {
+        const ra = ang - spec.coneHalfAngleRad + ((spec.coneHalfAngleRad * 2) * s) / 18;
+        const pt = sim.castSightRay(origin, ra, maxD);
+        ctx.lineTo(pt.x, pt.y);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Animated centerline chevrons showing drag direction along the corridor!
+    const centerEnd = sim.castSightRay(origin, ang, Math.min(220, spec.rangePx || 220));
+    const maxLen = Math.hypot(centerEnd.x - origin.x, centerEnd.y - origin.y);
+    const ux = Math.cos(ang);
+    const uy = Math.sin(ang);
+    const px = -uy;
+    const py = ux;
+    for (let k = 0; k < 3; k++) {
+      const dist = 42 + ((k * 52 + timeSec * 72) % Math.max(60, maxLen - 36));
+      if (dist > maxLen - 16) continue;
+      const tipX = origin.x + ux * dist;
+      const tipY = origin.y + uy * dist;
+      ctx.strokeStyle = rule.buildId === 'MOTION_RELAY' ? '#FF5533' : '#FFE082';
+      ctx.lineWidth = 2.6;
+      ctx.beginPath();
+      ctx.moveTo(tipX - ux * 12 + px * 10, tipY - uy * 12 + py * 10);
+      ctx.lineTo(tipX, tipY);
+      ctx.lineTo(tipX - ux * 12 - px * 10, tipY - uy * 12 - py * 10);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   private drawTutorialBeacons(

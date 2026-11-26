@@ -1410,6 +1410,9 @@ export class PerimeterHudRenderer {
       },
     ];
 
+    const drillRestricting =
+      params.tutorialDirective.active && !params.tutorialDirective.graduated;
+
     buildGrid.forEach((item, idx) => {
       const bId = item.id;
       const spec = HARDWARE_SPECS[bId];
@@ -1418,11 +1421,14 @@ export class PerimeterHudRenderer {
       const cx = 12 + col * (cellW + gridGapX);
       const cy = curY + row * (cellH + gridGapY);
 
-      const isSelected = activeTool.kind === 'BUILD' && activeTool.buildId === bId;
+      const drillLocked =
+        drillRestricting && !params.tutorialDirective.allowedBuildIds.includes(bId);
+      const isSelected = !drillLocked && activeTool.kind === 'BUILD' && activeTool.buildId === bId;
       const isCapped =
         (bId === 'ARC_WELDER' && sealedDoors >= maxDoorSeals) ||
         (bId === 'CLAYMORE' && sim.claymores.length >= PERIMETER_CONSTANTS.CLAYMORE_MAX_ACTIVE);
       const canAfford =
+        !drillLocked &&
         !isCapped &&
         sim.scrap >= spec.costScrap &&
         sim.getStaticAllocatedKw() + spec.powerKw <= sim.maxReactorKw;
@@ -1432,60 +1438,80 @@ export class PerimeterHudRenderer {
         rect: { x: rect.x + cx * s, y: rect.y + cy * s, width: cellW * s, height: cellH * s },
         label: spec.name,
       });
-      const hov = hoveredButtonId === btnId;
+      const hov = !drillLocked && hoveredButtonId === btnId;
 
-      ctx.fillStyle = isSelected
-        ? 'rgba(255, 176, 0, 0.25)'
-        : hov
-          ? 'rgba(68, 255, 119, 0.18)'
-          : 'rgba(6, 18, 11, 0.94)';
+      ctx.fillStyle = drillLocked
+        ? 'rgba(3, 9, 5, 0.96)'
+        : isSelected
+          ? 'rgba(255, 176, 0, 0.25)'
+          : hov
+            ? 'rgba(68, 255, 119, 0.18)'
+            : 'rgba(6, 18, 11, 0.94)';
       ctx.fillRect(cx, cy, cellW, cellH);
-      ctx.strokeStyle = isSelected
-        ? '#FFB000'
-        : hov
-          ? '#FFFFFF'
-          : canAfford
-            ? item.cyan
-              ? '#00D8EE'
-              : COLORS.GREEN_PRIMARY
-            : COLORS.GREEN_DIM;
-      ctx.lineWidth = isSelected ? 2.4 : 1.5;
+      ctx.strokeStyle = drillLocked
+        ? 'rgba(32, 68, 44, 0.42)'
+        : isSelected
+          ? '#FFB000'
+          : hov
+            ? '#FFFFFF'
+            : canAfford
+              ? item.cyan
+                ? '#00D8EE'
+                : COLORS.GREEN_PRIMARY
+              : COLORS.GREEN_DIM;
+      ctx.lineWidth = isSelected ? 2.4 : drillLocked ? 1.0 : 1.5;
       ctx.strokeRect(cx, cy, cellW, cellH);
 
       // Right Cost Pill
-      const costTxt = `${spec.costScrap}S`;
+      const costTxt = drillLocked ? 'LOCK' : `${spec.costScrap}S`;
       ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
       const pillW = Math.ceil(ctx.measureText(costTxt).width) + 10;
       const pillX = cx + cellW - pillW - 5;
       const pillY = cy + 4;
-      ctx.fillStyle = canAfford ? 'rgba(34, 24, 4, 0.92)' : 'rgba(42, 10, 8, 0.92)';
+      ctx.fillStyle = drillLocked
+        ? 'rgba(12, 22, 16, 0.8)'
+        : canAfford
+          ? 'rgba(34, 24, 4, 0.92)'
+          : 'rgba(42, 10, 8, 0.92)';
       ctx.fillRect(pillX, pillY, pillW, 17);
-      ctx.strokeStyle = canAfford ? 'rgba(255, 176, 0, 0.72)' : 'rgba(255, 51, 24, 0.72)';
+      ctx.strokeStyle = drillLocked
+        ? 'rgba(44, 78, 56, 0.45)'
+        : canAfford
+          ? 'rgba(255, 176, 0, 0.72)'
+          : 'rgba(255, 51, 24, 0.72)';
       ctx.lineWidth = 1.0;
       ctx.strokeRect(pillX, pillY, pillW, 17);
       ctx.textAlign = 'center';
-      ctx.fillStyle = canAfford ? '#FFC43D' : COLORS.RED_KLAXON;
+      ctx.fillStyle = drillLocked ? '#426B4E' : canAfford ? '#FFC43D' : COLORS.RED_KLAXON;
       ctx.fillText(costTxt, pillX + pillW * 0.5, pillY + 12.5);
 
       // Left Short Title strictly left of cost pill
       ctx.textAlign = 'left';
       ctx.font = 'bold 13px "Share Tech Mono", monospace';
-      ctx.fillStyle = isSelected
-        ? '#FFE082'
-        : hov
-          ? '#FFFFFF'
-          : canAfford
-            ? item.cyan
-              ? '#70F8FF'
-              : '#52FF86'
-            : '#5D9E71';
+      ctx.fillStyle = drillLocked
+        ? '#395E45'
+        : isSelected
+          ? '#FFE082'
+          : hov
+            ? '#FFFFFF'
+            : canAfford
+              ? item.cyan
+                ? '#70F8FF'
+                : '#52FF86'
+              : '#5D9E71';
       ctx.fillText(`[${spec.shortKey}] ${item.shortTitle}`, cx + 6, cy + 17, pillX - cx - 10);
 
       // Line 2 & Line 3 compact technical telemetry
       ctx.font = 'bold 10.5px "JetBrains Mono", monospace';
-      ctx.fillStyle = canAfford ? '#9EF5B8' : '#588C68';
+      ctx.fillStyle = drillLocked ? '#2C4A36' : canAfford ? '#9EF5B8' : '#588C68';
       ctx.fillText(item.line2, cx + 6, cy + 32, cellW - 12);
-      ctx.fillStyle = canAfford ? (item.cyan ? '#9BF8FF' : '#FFB000') : '#506B58';
+      ctx.fillStyle = drillLocked
+        ? '#263E2E'
+        : canAfford
+          ? item.cyan
+            ? '#9BF8FF'
+            : '#FFB000'
+          : '#506B58';
       ctx.fillText(item.line3, cx + 6, cy + cellH - 6, cellW - 12);
     });
 
@@ -1580,37 +1606,58 @@ export class PerimeterHudRenderer {
       const ry = curY + rowIdx * (abH + 5);
       rowItems.forEach((ab, idx) => {
         const ax = 12 + idx * (abW + abGap);
+        const abCmd = ab.id.startsWith('ability-')
+          ? (ab.id.replace('ability-', '') as 'FLARE' | 'OVERCLOCK' | 'PURGE' | 'FLOODLIGHT' | 'COOLANT_FLUSH')
+          : null;
+        const drillLocked =
+          drillRestricting &&
+          (abCmd === null || !params.tutorialDirective.allowedAbilityIds.includes(abCmd));
         const isArmed =
-          Boolean(ab.active) ||
-          (ab.toolId !== undefined &&
-            activeTool.kind === 'ABILITY' &&
-            activeTool.abilityId === ab.toolId);
+          !drillLocked &&
+          (Boolean(ab.active) ||
+            (ab.toolId !== undefined &&
+              activeTool.kind === 'ABILITY' &&
+              activeTool.abilityId === ab.toolId));
         this.buttons.push({
           id: ab.id,
           rect: { x: rect.x + ax * s, y: rect.y + ry * s, width: abW * s, height: abH * s },
           label: ab.top,
         });
-        const hov = hoveredButtonId === ab.id;
+        const hov = !drillLocked && hoveredButtonId === ab.id;
         const acc = ab.accent ?? '#FFB000';
 
-        ctx.fillStyle = isArmed
-          ? 'rgba(255, 176, 0, 0.26)'
-          : hov && ab.ready
-            ? 'rgba(68, 255, 119, 0.20)'
-            : 'rgba(6, 16, 10, 0.92)';
+        ctx.fillStyle = drillLocked
+          ? 'rgba(3, 9, 5, 0.96)'
+          : isArmed
+            ? 'rgba(255, 176, 0, 0.26)'
+            : hov && ab.ready
+              ? 'rgba(68, 255, 119, 0.20)'
+              : 'rgba(6, 16, 10, 0.92)';
         ctx.fillRect(ax, ry, abW, abH);
-        ctx.strokeStyle = isArmed ? acc : ab.ready ? acc : COLORS.GREEN_DIM;
-        ctx.lineWidth = isArmed ? 2.4 : 1.5;
+        ctx.strokeStyle = drillLocked
+          ? 'rgba(32, 68, 44, 0.42)'
+          : isArmed
+            ? acc
+            : ab.ready
+              ? acc
+              : COLORS.GREEN_DIM;
+        ctx.lineWidth = isArmed ? 2.4 : drillLocked ? 1.0 : 1.5;
         ctx.strokeRect(ax, ry, abW, abH);
 
         ctx.textAlign = 'center';
         ctx.font = 'bold 13px "Share Tech Mono", monospace';
-        ctx.fillStyle = ab.ready ? (ab.accent ? '#D4FFFF' : '#FFE082') : COLORS.GREEN_MID;
+        ctx.fillStyle = drillLocked
+          ? '#395E45'
+          : ab.ready
+            ? ab.accent
+              ? '#D4FFFF'
+              : '#FFE082'
+            : COLORS.GREEN_MID;
         ctx.fillText(ab.top, ax + abW * 0.5, ry + 17, abW - 6);
 
         ctx.font = 'bold 11px "JetBrains Mono", monospace';
-        ctx.fillStyle = ab.ready ? '#52FF86' : COLORS.RED_KLAXON;
-        ctx.fillText(ab.sub, ax + abW * 0.5, ry + 33, abW - 6);
+        ctx.fillStyle = drillLocked ? '#2A4432' : ab.ready ? '#52FF86' : COLORS.RED_KLAXON;
+        ctx.fillText(drillLocked ? 'LOCKED' : ab.sub, ax + abW * 0.5, ry + 33, abW - 6);
       });
     });
     curY += abH * 2 + 12;

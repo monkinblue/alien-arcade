@@ -1,12 +1,39 @@
 import type { Vec2 } from '../types';
 import type { PerimeterSimulation } from './PerimeterSimulation';
-import { PERIMETER_CONSTANTS } from './types';
+import {
+  HARDWARE_SPECS,
+  PERIMETER_CONSTANTS,
+  type BuildToolId,
+  type CommandAbilityId,
+} from './types';
 
 export interface TutorialMapBeacon {
   pos: Vec2;
   label: string;
   color: string;
   radiusPx?: number;
+}
+
+export interface TutorialPlacementRule {
+  buildId: Exclude<BuildToolId, 'NONE'>;
+  col: number;
+  row: number;
+  /** Required center aim angle in radians (omitted for omni units like Cryo Valve / Door Weld) */
+  targetAngle?: number;
+  /** Max allowed angular deviation in radians */
+  angleToleranceRad?: number;
+  /** Short plain-English direction cue shown on drag & rejection toasts */
+  aimHint?: string;
+  /** Optional specific blast door ID for ARC_WELDER */
+  doorId?: string;
+}
+
+export interface TutorialAbilityZoneRule {
+  abilityId: CommandAbilityId;
+  center: Vec2;
+  radiusPx: number;
+  label: string;
+  airlockId?: string;
 }
 
 export interface TutorialObjectiveItem {
@@ -25,16 +52,40 @@ export interface TutorialDirectiveSnapshot {
   objectives: TutorialObjectiveItem[];
   beacons: TutorialMapBeacon[];
   highlightButtonIds: string[];
+  /** Strict per-substep allowlists so trainees can ONLY grab what this step requires */
+  allowedBuildIds: Array<Exclude<BuildToolId, 'NONE'>>;
+  allowedAbilityIds: CommandAbilityId[];
+  allowRearm: boolean;
+  allowUpgrade: boolean;
+  allowDoorInspect: boolean;
+  /** Active placement constraint (enforces exact pad/grate/door & reasonable firing angle!) */
+  activePlacementRule: TutorialPlacementRule | null;
+  /** Active targeted ability constraint (e.g. Flare in West Junction, Purge on Airlock W-01) */
+  activeAbilityZone: TutorialAbilityZoneRule | null;
   wikiChapterIdx: number;
   showContinueBtn: boolean;
   continueLabel: string;
 }
 
+function normalizeAngle(a: number): number {
+  let r = a;
+  while (r > Math.PI) r -= Math.PI * 2;
+  while (r < -Math.PI) r += Math.PI * 2;
+  return r;
+}
+
 /**
- * Interactive 9-Stage USCM Tactical Combat Training Drill for Hadley's Perimeter.
- * Runs live inside the real Sector 01 simulation (unranked, core-seal shielded)
- * so brand-new players learn every weapon, combo, vision mechanic, door weld,
- * airlock purge, battery ability, and MK-III branch hands-on!
+ * Idiot-proof Interactive 9-Stage USCM Tactical Combat Training Drill for Hadley's Perimeter.
+ *
+ * Verified unobstructed West Junction killbox geometry (Sector01Blueprint):
+ * - (14, 8) MOUNT_PAD  -> Aim WEST (180°)  straight down open row 8 (cols 14..3, ZERO walls!)
+ * - ( 9, 7) MOUNT_PAD  -> Aim SOUTH (90°)  vertical red M314 Laser Tripwire across cols 9, rows 7..10!
+ *                         (Also within 247px <= 255px Relay Link range of Rail (5,8) & Incin (9,10)!)
+ * - ( 9, 9) DUCT_GRATE -> Omni Cryo-Stasis plume blankets ALL of West Junction (rows 7..10, cols 7..11)!
+ * - ( 5, 8) MOUNT_PAD  -> Aim EAST (0°)    straight down open row 8 (cols 5..15 = 10 full tiles, ZERO walls!)
+ * - ( 9,10) MOUNT_PAD  -> Aim NORTH (-90°) straight up across (9,9) & (9,8) West Junction (ZERO walls!)
+ * - D-04    BLAST_DOOR -> Col 11, rows 8..9 (welding instantly reroutes West paths North & South!)
+ * - AIRLOCK W-01       -> Cols 3..4, rows 6..9 (safely West of Rail (5,8) so trapped swarm waits for Purge!)
  */
 export class PerimeterTutorialDirector {
   public active = false;
@@ -80,7 +131,7 @@ export class PerimeterTutorialDirector {
     sim.eventLogs = [
       'LOG> ★ USCM TACTICAL SIMULATOR INITIALIZED — UNRANKED TRAINING DRILL ★',
       'LOG> REACTOR CORE SHIELDS ENGAGED: YOU CANNOT FAIL THIS ORIENTATION.',
-      'LOG> FOLLOW THE MU-TH-UR DIRECTIVE BANNER ABOVE TO MASTER SECTOR 01.',
+      'LOG> ONLY THE REQUIRED TOOL FOR EACH STEP IS UNLOCKED — FOLLOW THE GUIDES!',
     ];
   }
 
@@ -108,11 +159,14 @@ export class PerimeterTutorialDirector {
     this.stepAdvanceDelaySec = 0;
   }
 
-  /** Called by Cartridge when player clicks [CONTINUE] or [SKIP STEP] */
+  /** Called when player clicks [BEGIN DRILL] or [SKIP STEP] */
   public advanceStep(sim: PerimeterSimulation): void {
     if (!this.active || this.graduated) return;
 
-    // Clear leftover drill enemies/spits when manually skipping so next stage is crisp
+    // If trainee skips a placement stage, auto-ensure the prerequisite hardware exists in the killbox
+    // so downstream stages (like Cryo+Rail, Overclock, MK-III) always work smoothly!
+    this.ensurePrerequisitesBeforeLeavingStep(sim, this.stepIdx);
+
     sim.hostiles = [];
     sim.acidSpits = [];
     sim.eggSacs = [];
@@ -130,19 +184,29 @@ export class PerimeterTutorialDirector {
     this.setupStage(sim, this.stepIdx);
   }
 
-  private getPrimarySentry(sim: PerimeterSimulation) {
-    return sim.turrets.find((t) => t.kind === 'SENTRY_PULSE') ?? sim.turrets[0] ?? null;
+  private ensurePrerequisitesBeforeLeavingStep(sim: PerimeterSimulation, leavingIdx: number): void {
+    if (leavingIdx === 1 && !sim.turrets.some((t) => t.kind === 'SENTRY_PULSE')) {
+      sim.scrap = Math.max(sim.scrap, 120);
+      sim.deployHardware('SENTRY_PULSE', 14, 8, Math.PI);
+    } else if (leavingIdx === 3 && !sim.turrets.some((t) => t.kind === 'MOTION_RELAY')) {
+      sim.scrap = Math.max(sim.scrap, 80);
+      sim.maxReactorKw = Math.max(sim.maxReactorKw, 130);
+      sim.deployHardware('MOTION_RELAY', 9, 7, Math.PI * 0.5);
+    } else if (leavingIdx === 4) {
+      sim.maxReactorKw = Math.max(sim.maxReactorKw, 185);
+      if (!sim.turrets.some((t) => t.kind === 'CRYO_VALVE')) {
+        sim.scrap = Math.max(sim.scrap, 100);
+        sim.deployHardware('CRYO_VALVE', 9, 9, 0);
+      }
+      if (!sim.turrets.some((t) => t.kind === 'RAIL_LANCE')) {
+        sim.scrap = Math.max(sim.scrap, 170);
+        sim.deployHardware('RAIL_LANCE', 5, 8, 0);
+      }
+    }
   }
 
-  /** Computes a walkable corridor spawn point ~260–340px upstream of the player's sentry */
-  private getCorridorSpawnNearSentry(sim: PerimeterSimulation): Vec2 {
-    const primary = this.getPrimarySentry(sim);
-    if (primary && primary.pos.x > sim.blueprint.coreCenter.x + 40) {
-      // Player built on the East side — spawn in East Junction approach!
-      return this.tileCenter(25, 8);
-    }
-    // Default West Junction approach (matches our glowing Pad beacon at [13, 7] / [14, 8])
-    return this.tileCenter(6, 8);
+  private getPrimarySentry(sim: PerimeterSimulation) {
+    return sim.turrets.find((t) => t.kind === 'SENTRY_PULSE') ?? sim.turrets[0] ?? null;
   }
 
   private setupStage(sim: PerimeterSimulation, idx: number): void {
@@ -153,89 +217,82 @@ export class PerimeterTutorialDirector {
 
     switch (idx) {
       case 1: {
-        // Stage 2: Deploy & Aim Sentry
+        // Stage 2: Deploy & Aim UA 571-C Sentry at (14, 8) aimed WEST (180°)
         sim.phase = 'TACTICAL_PREP';
         sim.scrap = Math.max(sim.scrap, 180);
-        sim.pushLog('DRILL 02/09 // SELECT [1] UA 571-C, CLICK PAD & DRAG CONE DOWN WEST CORRIDOR.');
+        sim.pushLog('DRILL 02/09 // CLICK [1] UA 571-C -> CLICK PAD (14,8) & DRAG LEFT DOWN THE CORRIDOR.');
         break;
       }
       case 2: {
-        // Stage 3: Live Contact, Pause & Rearm
+        // Stage 3: Live Contact (3 Drones walking West->East down row 8) & [E] Rearm
         sim.phase = 'WAVE_ACTIVE';
-        const sentry = this.getPrimarySentry(sim);
-        if (!sentry) {
-          // If skipped Stage 2, auto-place a helpful Sentry so Stage 3 works cleanly
-          sim.scrap = Math.max(sim.scrap, 120);
-          sim.deployHardware('SENTRY_PULSE', 14, 8, Math.PI);
-        }
-        const basePos = this.getCorridorSpawnNearSentry(sim);
+        const basePos = this.tileCenter(6, 8);
         for (let i = 0; i < 3; i++) {
           const h = sim.spawnTrainingHostile('VENT-01', 'DRONE', {
-            x: basePos.x + (basePos.x < 960 ? -i * 58 : i * 58),
-            y: basePos.y + (i - 1) * 18,
+            x: basePos.x - i * 54,
+            y: basePos.y + (i - 1) * 16,
           });
-          h.hp = 68;
-          h.maxHp = 68;
+          h.hp = 64;
+          h.maxHp = 64;
         }
         this.dronesSpawned = true;
-        sim.pushLog('DRILL 03/09 // 3 XENO DRONES INBOUND! WATCH SENTRY ENGAGE — THEN TEST [E] REARM.');
+        sim.pushLog('DRILL 03/09 // 3 XENO DRONES INBOUND! WATCH SENTRY ENGAGE — THEN PRESS [E] TO REARM.');
         break;
       }
       case 3: {
-        // Stage 4: Darkness, Cloaked Stalkers, M314 Relay + Tripwire & Flare
+        // Stage 4: M314 Relay at (9, 7) aimed SOUTH (90° vertical tripwire!) + [F] Flare -> 2 Cloaked Stalkers
         sim.phase = 'WAVE_ACTIVE';
         sim.scrap = Math.max(sim.scrap, 180);
         sim.maxReactorKw = Math.max(sim.maxReactorKw, 130);
         sim.flareCooldown = 0;
-        sim.pushLog('DRILL 04/09 // DEPLOY [6] M314 RELAY & DROP [F] M40 FLARE TO REVEAL STALKERS!');
+        sim.pushLog('DRILL 04/09 // DEPLOY [6] M314 RELAY AT TOP PAD & DRAG DOWN TO CAST A LASER TRIPWIRE!');
         break;
       }
       case 4: {
-        // Stage 5: Armor Piercing (Rail-Lance) & Cryo-Shatter Killbox
+        // Stage 5: Cryo Valve at (9, 9) + M99 Rail-Lance at (5, 8) aimed EAST (0° unobstructed 10-tile lane!)
         sim.phase = 'WAVE_ACTIVE';
         sim.scrap = Math.max(sim.scrap, 340);
-        sim.maxReactorKw = Math.max(sim.maxReactorKw, 175);
-        sim.pushLog('DRILL 05/09 // PLACE [4] CRYO VALVE ON GRATE & [3] M99 RAIL-LANCE ON PAD!');
+        sim.maxReactorKw = Math.max(sim.maxReactorKw, 185);
+        sim.pushLog('DRILL 05/09 // PLACE [4] CRYO VALVE ON GRATE, THEN [3] M99 RAIL-LANCE AIMED RIGHT!');
         break;
       }
       case 5: {
-        // Stage 6: Acid Bursters, M240 Incinerator Sterilization & [C] Coolant Flush
+        // Stage 6: M240 Incinerator at (9, 10) aimed NORTH (-90°) + [C] Coolant Flush
         sim.phase = 'WAVE_ACTIVE';
-        sim.scrap = Math.max(sim.scrap, 220);
-        sim.maxReactorKw = Math.max(sim.maxReactorKw, 205);
+        sim.scrap = Math.max(sim.scrap, 240);
+        sim.maxReactorKw = Math.max(sim.maxReactorKw, 220);
         sim.coolantFlushCooldown = 0;
-        // Pre-warm a turret so [C] Coolant Flush feels awesome & vents real heat!
         for (const t of sim.turrets) {
           if (t.kind === 'SENTRY_PULSE' || t.kind === 'RAIL_LANCE') {
             t.heat = Math.max(t.heat, 68);
           }
         }
-        sim.pushLog('DRILL 06/09 // DEPLOY [2] M240 INCINERATOR TO STERILIZE ACID & PRESS [C] FLUSH!');
+        sim.pushLog('DRILL 06/09 // DEPLOY [2] M240 INCINERATOR AIMED UP TO STERILIZE ACID, THEN [C] FLUSH!');
         break;
       }
       case 6: {
-        // Stage 7: Arc-Weld Door Rerouting & Airlock Vent Purge
+        // Stage 7: Weld Blast Door D-04 [7] -> Reroute -> [V] Airlock Purge on Airlock W-01!
         sim.phase = 'WAVE_ACTIVE';
         sim.scrap = Math.max(sim.scrap, 180);
         sim.purgeAvailableThisWave = true;
         this.initialSealedDoorsCount = sim.getActiveSealedDoorCount();
-        sim.pushLog('DRILL 07/09 // WELD ANY BLAST DOOR [7] TO REROUTE PATHS, THEN PURGE [V] AIRLOCK W-01!');
+        sim.pushLog('DRILL 07/09 // WELD BLAST DOOR D-04 [7] TO REROUTE PATHS, THEN [V] PURGE AIRLOCK W-01!');
         break;
       }
       case 7: {
-        // Stage 8: Reactor Reserve Battery, [L] Floodlight & [O] Overclock
+        // Stage 8: Reserve Battery [L] Floodlight & [O] Overclock
         sim.phase = 'WAVE_ACTIVE';
         sim.reserveBattery = 88;
         sim.floodlightCooldown = 0;
         sim.overclockCooldown = 0;
-        sim.pushLog('DRILL 08/09 // FIRE [L] EMERGENCY FLOODLIGHT (60% BAT) & [O] OVERCLOCK ON A TURRET!');
+        sim.pushLog('DRILL 08/09 // FIRE [L] EMERGENCY FLOODLIGHT (60% BAT) & [O] OVERCLOCK ON YOUR TURRETS!');
         break;
       }
       case 8: {
-        // Stage 9: MK-II & Branching MK-III Specializations
+        // Stage 9: Upgrade any turret MK-I -> MK-II -> MK-III Branch A/B
         sim.phase = 'TACTICAL_PREP';
-        sim.scrap = Math.max(sim.scrap, 620);
-        sim.maxReactorKw = Math.max(sim.maxReactorKw, 250);
+        sim.scrap = Math.max(sim.scrap, 650);
+        sim.maxReactorKw = Math.max(sim.maxReactorKw, 260);
         if (sim.turrets.length === 0) {
           sim.deployHardware('SENTRY_PULSE', 14, 8, Math.PI);
         }
@@ -245,9 +302,115 @@ export class PerimeterTutorialDirector {
     }
   }
 
-  public notifyAbilityUsed(
-    abilityId: 'FLARE' | 'OVERCLOCK' | 'PURGE' | 'FLOODLIGHT' | 'COOLANT_FLUSH'
-  ): void {
+  /**
+   * Validates whether a hardware build click/drag satisfies the current drill step's exact
+   * pad/grate/door location AND reasonable firing angle (never letting trainees point into a wall!).
+   */
+  public validatePlacement(
+    sim: PerimeterSimulation,
+    buildId: Exclude<BuildToolId, 'NONE'>,
+    col: number,
+    row: number,
+    angle: number
+  ): { ok: boolean; reason?: string } {
+    if (!this.active || this.graduated) return { ok: true };
+    const snap = this.getSnapshot(sim);
+
+    if (!snap.allowedBuildIds.includes(buildId)) {
+      const req = snap.allowedBuildIds[0];
+      const reqName = req ? `[${HARDWARE_SPECS[req].shortKey}] ${HARDWARE_SPECS[req].code}` : 'CURRENT OBJECTIVE';
+      return { ok: false, reason: `DRILL LOCK: USE ${reqName} FOR THIS STEP` };
+    }
+
+    const rule = snap.activePlacementRule;
+    if (!rule || rule.buildId !== buildId) return { ok: true };
+
+    if (buildId === 'ARC_WELDER' && rule.doorId) {
+      const door = sim.findDoorAtTile(col, row);
+      if (!door || door.def.id !== rule.doorId) {
+        return { ok: false, reason: `CLICK GLOWING BLAST DOOR ${rule.doorId} TO WELD IT!` };
+      }
+      return { ok: true };
+    }
+
+    if (col !== rule.col || row !== rule.row) {
+      return {
+        ok: false,
+        reason:
+          buildId === 'CRYO_VALVE'
+            ? 'PLACE CRYO VALVE ON THE PULSING WEST JUNCTION GRATE!'
+            : 'DEPLOY ON THE PULSING TARGET PAD IN WEST JUNCTION!',
+      };
+    }
+
+    if (rule.targetAngle !== undefined && rule.angleToleranceRad !== undefined) {
+      const diff = Math.abs(normalizeAngle(angle - rule.targetAngle));
+      if (diff > rule.angleToleranceRad) {
+        return {
+          ok: false,
+          reason: `AIM ${rule.aimHint ?? 'ALONG THE GUIDE CONE'}! HOLD & DRAG INTO THE CORRIDOR`,
+        };
+      }
+    }
+
+    return { ok: true };
+  }
+
+  /** Helper used by BlueprintRenderer during live mouse-drag so the cone flashes GREEN (good) vs RED (bad angle)! */
+  public isAngleWithinActiveRule(
+    sim: PerimeterSimulation,
+    buildId: Exclude<BuildToolId, 'NONE'>,
+    col: number,
+    row: number,
+    angle: number
+  ): { enforced: boolean; valid: boolean; hint?: string } {
+    if (!this.active || this.graduated) return { enforced: false, valid: true };
+    const rule = this.getSnapshot(sim).activePlacementRule;
+    if (!rule || rule.buildId !== buildId) return { enforced: false, valid: true };
+    if (col !== rule.col || row !== rule.row) return { enforced: true, valid: false, hint: 'USE PULSING PAD' };
+    if (rule.targetAngle === undefined || rule.angleToleranceRad === undefined) {
+      return { enforced: false, valid: true };
+    }
+    const diff = Math.abs(normalizeAngle(angle - rule.targetAngle));
+    return {
+      enforced: true,
+      valid: diff <= rule.angleToleranceRad,
+      hint: rule.aimHint,
+    };
+  }
+
+  /** Validates whether a targeted ability click ([F] Flare, [V] Purge, [O] Overclock) hits the guided zone! */
+  public validateTargetedAbility(
+    sim: PerimeterSimulation,
+    abilityId: CommandAbilityId,
+    targetPos: Vec2
+  ): { ok: boolean; reason?: string } {
+    if (!this.active || this.graduated) return { ok: true };
+    const snap = this.getSnapshot(sim);
+
+    if (!snap.allowedAbilityIds.includes(abilityId)) {
+      return { ok: false, reason: 'DRILL LOCK: COMPLETE CURRENT OBJECTIVE FIRST' };
+    }
+
+    const zone = snap.activeAbilityZone;
+    if (!zone || zone.abilityId !== abilityId) return { ok: true };
+
+    if (zone.airlockId) {
+      const chamber = sim.findAirlockAt(targetPos);
+      if (!chamber || chamber.id !== zone.airlockId) {
+        return { ok: false, reason: `CLICK PULSING ${zone.label} TO PURGE THE SWARM!` };
+      }
+      return { ok: true };
+    }
+
+    const d = Math.hypot(targetPos.x - zone.center.x, targetPos.y - zone.center.y);
+    if (d > zone.radiusPx) {
+      return { ok: false, reason: `CLICK INSIDE THE PULSING ${zone.label} ZONE!` };
+    }
+    return { ok: true };
+  }
+
+  public notifyAbilityUsed(abilityId: CommandAbilityId): void {
     if (!this.active || this.graduated) return;
     if (this.stepIdx === 3 && abilityId === 'FLARE') {
       this.flareUsedInStep = true;
@@ -273,7 +436,6 @@ export class PerimeterTutorialDirector {
     if (!this.active || this.graduated) return;
     this.stepElapsedSec += dt;
 
-    // Gentle auto-advance timer after completing a stage so player sees green checkmarks & hears chime
     if (this.stepAdvanceDelaySec > 0) {
       this.stepAdvanceDelaySec -= dt;
       if (this.stepAdvanceDelaySec <= 0) {
@@ -282,7 +444,7 @@ export class PerimeterTutorialDirector {
       return;
     }
 
-    // Keep Scrap topped up gently if player recycled or spent elsewhere so drill can never stall
+    // Keep Scrap topped up gently so a trainee can never run dry mid-drill
     if (this.stepIdx === 1 && sim.scrap < 100 && !sim.turrets.some((t) => t.kind === 'SENTRY_PULSE')) {
       sim.scrap = 120;
     } else if (this.stepIdx === 3 && sim.scrap < 65 && !sim.turrets.some((t) => t.kind === 'MOTION_RELAY')) {
@@ -296,31 +458,28 @@ export class PerimeterTutorialDirector {
     } else if (this.stepIdx === 6 && sim.scrap < 60 && !this.doorWeldedInStep) {
       sim.scrap = 75;
     } else if (this.stepIdx === 8 && sim.scrap < 300 && !sim.turrets.some((t) => t.level === 3)) {
-      sim.scrap = 500;
+      sim.scrap = 520;
     }
 
     switch (this.stepIdx) {
       case 0:
-        // Orientation: waits for player to click [BEGIN DRILL]
         break;
 
       case 1: {
-        // Stage 2: Place a UA 571-C Sentry
         if (sim.turrets.some((t) => t.kind === 'SENTRY_PULSE')) {
-          this.triggerStageSuccess(sim, 'UA 571-C SENTRY ONLINE — PREPARING LIVE CONTACT!');
+          this.triggerStageSuccess(sim, 'UA 571-C SENTRY LOCKED ON WEST APPROACH — PREPARING LIVE CONTACT!');
         }
         break;
       }
 
       case 2: {
-        // Stage 3: Kill 3 Drones -> drain ammo -> practice [E] Rearm!
         if (this.dronesSpawned && !this.ammoDrainTriggered && sim.hostiles.length === 0) {
           this.ammoDrainTriggered = true;
           const s = this.getPrimarySentry(sim);
           if (s && s.kind === 'SENTRY_PULSE') {
             s.ammo = Math.min(s.ammo, 68);
             sim.scrap = Math.max(sim.scrap, 120);
-            sim.pushLog('DRILL // DRONES ELIMINATED! SENTRY LOW ON AMMO — PRESS [E] OR CLICK REARM!');
+            sim.pushLog('DRILL // DRONES DOWN! SENTRY LOW AMMO — PRESS [E] OR CLICK [E] REARM ALL!');
           } else {
             this.rearmCompleted = true;
           }
@@ -332,50 +491,47 @@ export class PerimeterTutorialDirector {
             (sCheck && (sCheck.rearmTimer > 0 || sCheck.ammo >= sCheck.maxAmmo)))
         ) {
           this.rearmCompleted = true;
-          this.triggerStageSuccess(sim, 'BELT-LOADER REARM VERIFIED — ADVANCING TO DARKNESS DRILL!');
+          this.triggerStageSuccess(sim, 'BELT-LOADER REARM VERIFIED — ADVANCING TO DARKNESS & TRIPWIRE DRILL!');
         }
         break;
       }
 
       case 3: {
-        // Stage 4: Place M314 Relay + Drop M40 Flare + Kill 2 Cloaked Stalkers!
+        // Substep 4A: Place M314 Relay at (9, 7) aimed SOUTH -> Substep 4B: Drop [F] Flare -> Stalkers!
         const hasRelay = sim.turrets.some((t) => t.kind === 'MOTION_RELAY');
         if (sim.flares.length > 0) this.flareUsedInStep = true;
 
-        if ((hasRelay || this.flareUsedInStep) && !this.stalkersSpawned) {
+        if (hasRelay && this.flareUsedInStep && !this.stalkersSpawned) {
           this.stalkersSpawned = true;
-          const basePos = this.getCorridorSpawnNearSentry(sim);
+          const basePos = this.tileCenter(6, 8);
           for (let i = 0; i < 2; i++) {
             const st = sim.spawnTrainingHostile('VENT-01', 'STALKER', {
-              x: basePos.x + (basePos.x < 960 ? -i * 68 : i * 68),
+              x: basePos.x - i * 56,
               y: basePos.y + (i === 0 ? -12 : 12),
             });
-            st.hp = 80;
-            st.maxHp = 80;
+            st.hp = 78;
+            st.maxHp = 78;
           }
-          sim.pushLog('DRILL // 2 CLOAKED SIGNAL STALKERS INBOUND! ILLUMINATE THEM WITH M314 OR [F] FLARE!');
+          sim.pushLog('DRILL // 2 CLOAKED STALKERS EXPOSED BY FLARE & TRIPWIRE — SENTRY ENGAGING!');
         }
 
         if (hasRelay && this.flareUsedInStep && this.stalkersSpawned && sim.hostiles.length === 0) {
-          this.triggerStageSuccess(sim, 'STALKERS DECLOAKED & ELIMINATED — EXCELLENT SENSOR WORK!');
+          this.triggerStageSuccess(sim, 'STALKERS DECLOAKED & ELIMINATED — SENSOR COVERAGE MASTERED!');
         }
         break;
       }
 
       case 4: {
-        // Stage 5: Place Cryo Valve + Rail-Lance -> Eliminate Armored Praetorian!
+        // Substep 5A: Cryo at (9,9) -> Substep 5B: Rail-Lance at (5,8) aimed EAST -> Armored Praetorian!
         const hasCryo = sim.turrets.some((t) => t.kind === 'CRYO_VALVE');
         const hasRail = sim.turrets.some((t) => t.kind === 'RAIL_LANCE');
         if (hasCryo && hasRail && !this.praetorianSpawned) {
           this.praetorianSpawned = true;
-          const basePos = this.getCorridorSpawnNearSentry(sim);
-          const prt = sim.spawnTrainingHostile('VENT-01', 'PRAETORIAN', {
-            x: basePos.x,
-            y: basePos.y,
-          });
-          prt.hp = 290;
-          prt.maxHp = 290;
-          sim.pushLog('DRILL // ARMORED PRAETORIAN APPROACHING! WATCH CRYO + RAIL-LANCE SHATTER IT!');
+          const spawnPos = this.tileCenter(6, 8);
+          const prt = sim.spawnTrainingHostile('VENT-01', 'PRAETORIAN', spawnPos);
+          prt.hp = 310;
+          prt.maxHp = 310;
+          sim.pushLog('DRILL // ARMORED PRAETORIAN IN WEST JUNCTION! WATCH RAIL-LANCE + CRYO SHATTER IT!');
         }
         if (hasCryo && hasRail && this.praetorianSpawned && sim.hostiles.length === 0) {
           this.triggerStageSuccess(sim, 'ARMORED PRAETORIAN SHATTERED — KILLBOX SYNERGY CONFIRMED!');
@@ -384,22 +540,21 @@ export class PerimeterTutorialDirector {
       }
 
       case 5: {
-        // Stage 6: Deploy M240 Incinerator (sterilize Acid Pool + burn Bursters) & trigger [C] Flush!
+        // Substep 6A: Incinerator at (9,10) aimed NORTH -> Bursters & Acid Pool at (9,9) -> Substep 6B: [C] Flush
         const incin = sim.turrets.find((t) => t.kind === 'INCINERATOR');
         if (incin && !this.acidDemoSpawned) {
           this.acidDemoSpawned = true;
-          const aimX = incin.pos.x + Math.cos(incin.angle) * 115;
-          const aimY = incin.pos.y + Math.sin(incin.angle) * 115;
-          sim.spawnTrainingAcidPool({ x: aimX, y: aimY }, 62);
+          const targetPt = this.tileCenter(9, 9);
+          sim.spawnTrainingAcidPool(targetPt, 58);
           for (let i = 0; i < 2; i++) {
             const b = sim.spawnTrainingHostile('VENT-01', 'BURSTER', {
-              x: aimX + (i === 0 ? -18 : 18),
-              y: aimY + (i === 0 ? -10 : 10),
+              x: targetPt.x + (i === 0 ? -18 : 18),
+              y: targetPt.y - 12,
             });
-            b.hp = 78;
-            b.maxHp = 78;
+            b.hp = 210;
+            b.maxHp = 210;
           }
-          sim.pushLog('DRILL // ACID BURSTERS & CORROSIVE POOL DETECTED — NAPALM STERILIZING!');
+          sim.pushLog('DRILL // ACID BURSTERS & POOL IN WEST JUNCTION — NAPALM STERILIZING FOR BONUS SCRAP!');
         }
         if (
           incin &&
@@ -413,27 +568,27 @@ export class PerimeterTutorialDirector {
       }
 
       case 6: {
-        // Stage 7: Weld 1 Blast Door [7] & Trigger [V] Airlock Purge on W-01!
+        // Substep 7A: Weld D-04 -> Substep 7B: Spawn 6 trapped Skitterers in Airlock W-01 -> [V] Purge!
         if (sim.getActiveSealedDoorCount() > this.initialSealedDoorsCount) {
           this.doorWeldedInStep = true;
         }
-        if (!this.purgeSwarmSpawned && (this.doorWeldedInStep || this.stepElapsedSec > 1.0)) {
+        if (this.doorWeldedInStep && !this.purgeSwarmSpawned) {
           this.purgeSwarmSpawned = true;
-          const al = sim.blueprint.airlocks[0]; // AIRLOCK W-01
+          const al = sim.blueprint.airlocks[0]; // AIRLOCK W-01 (cols 3..4, rows 6..9)
           if (al) {
+            // Spawn in upper chamber of Airlock W-01, safely West of Rail (5,8) so they wait for Purge!
             for (let i = 0; i < 6; i++) {
               const sk = sim.spawnTrainingHostile('VENT-01', 'SKITTERER', {
-                x: al.center.x + ((i % 2) - 0.5) * 34,
-                y: al.center.y + (Math.floor(i / 2) - 1) * 34,
+                x: al.bounds.x + 28 + (i % 2) * 44,
+                y: al.bounds.y + 34 + Math.floor(i / 2) * 34,
               });
-              // Keep them inside Airlock W-01 long enough for a brand-new player to click [V] Purge!
-              sk.speedPxS = 18;
+              sk.speedPxS = 8;
               sk.hp = 26;
               sk.maxHp = 26;
             }
+            sim.pushLog('DRILL // DOOR D-04 SEALED (PATHS REROUTED!) — NOW PRESS [V] & CLICK AIRLOCK W-01!');
           }
         }
-        // Keep purge available until used in this stage
         if (!this.purgeUsedInStep) {
           sim.purgeAvailableThisWave = true;
         }
@@ -444,11 +599,11 @@ export class PerimeterTutorialDirector {
       }
 
       case 7: {
-        // Stage 8: Trigger [L] Floodlight & [O] Overclock
+        // Substep 8A: [L] Floodlight -> Substep 8B: [O] Overclock
         if (sim.floodlightTimer > 0) this.floodUsedInStep = true;
         if (sim.activeOverclockSurgeTimer > 0) this.overclockUsedInStep = true;
         if (!this.floodUsedInStep && sim.reserveBattery < 65) {
-          sim.reserveBattery = 80;
+          sim.reserveBattery = 85;
         }
         if (this.floodUsedInStep && this.overclockUsedInStep) {
           this.triggerStageSuccess(sim, 'REACTOR FLOODLIGHT & OVERCLOCK SURGE MASTERED!');
@@ -486,6 +641,13 @@ export class PerimeterTutorialDirector {
         objectives: [],
         beacons: [],
         highlightButtonIds: [],
+        allowedBuildIds: [],
+        allowedAbilityIds: [],
+        allowRearm: true,
+        allowUpgrade: true,
+        allowDoorInspect: true,
+        activePlacementRule: null,
+        activeAbilityZone: null,
         wikiChapterIdx: 0,
         showContinueBtn: false,
         continueLabel: '',
@@ -501,12 +663,19 @@ export class PerimeterTutorialDirector {
         code: 'CERTIFIED',
         title: 'USCM PERIMETER COMMAND CERTIFICATION COMPLETE!',
         briefingLines: [
-          'You have mastered Hardpoints, Vision & Tripwires, Armor Piercing, Cryo-Shatter, Napalm Sterilization, Door Rerouting, Airlock Purges, Reactor Battery Systems, and MK-III Branches!',
+          'You have mastered Hardpoints, Vision & Tripwires, Unobstructed Rail Lanes, Cryo-Shatter, Acid Sterilization, Door Rerouting, Airlock Purges, Reactor Systems, and MK-III Branches!',
           'You are cleared for RANKED ENDLESS HIVE SIEGE. Watch for Protocol Drafts every 3 waves, Crushers on Wave 5, and the Matriarch Queen on Wave 10!',
         ],
         objectives: [],
         beacons: [],
         highlightButtonIds: [],
+        allowedBuildIds: [],
+        allowedAbilityIds: [],
+        allowRearm: false,
+        allowUpgrade: false,
+        allowDoorInspect: false,
+        activePlacementRule: null,
+        activeAbilityZone: null,
         wikiChapterIdx: 7,
         showContinueBtn: false,
         continueLabel: '',
@@ -514,11 +683,12 @@ export class PerimeterTutorialDirector {
     }
 
     const corePos = sim.blueprint.coreCenter;
-    const westPad = this.tileCenter(14, 8);
-    const westRelayPad = this.tileCenter(9, 7);
-    const westCryoGrate = this.tileCenter(9, 9);
-    const westRailPad = this.tileCenter(13, 7);
-    const westIncinPad = this.tileCenter(9, 10);
+    const sentryPadPos = this.tileCenter(14, 8);
+    const relayPadPos = this.tileCenter(9, 7);
+    const cryoGratePos = this.tileCenter(9, 9);
+    const railPadPos = this.tileCenter(5, 8);
+    const incinPadPos = this.tileCenter(9, 10);
+    const flareZonePos = this.tileCenter(7, 8);
     const doorD04 = sim.doors.get('D-04')?.def.center ?? this.tileCenter(11, 8);
     const airlockW01 = sim.blueprint.airlocks[0]?.center ?? this.tileCenter(4, 8);
 
@@ -533,18 +703,25 @@ export class PerimeterTutorialDirector {
           title: 'ORIENTATION — PROTECT THE CORE & READ THE BLUEPRINT',
           briefingLines: [
             'Protect the glowing REACTOR CORE (center) — if 3 aliens breach it, all 3 Bulkhead Seals blow and the colony falls.',
-            'Aliens emerge from orange corner VENTS & Floor Grates following the dashed lines. Place guns on [+] MOUNT PADS & Cryo/Arc on striped DUCT GRATES.',
+            'Aliens follow the dashed lines from VENTS to the Core. Guns mount on [+] PADS; Cryo/Arc mount on striped GRATES. Only needed tools unlock each step!',
           ],
           objectives: [
             { text: 'LEFT: Reactor kW, 3 Seals, Reserve Battery & Live Weapons Rack', done: true },
-            { text: 'RIGHT: 8 Hardware Units [1-8], Command Abilities & Unit Inspector', done: true },
+            { text: 'RIGHT: Hardware Arsenal [1-8], Command Skills & Unit Inspector', done: true },
           ],
           beacons: [
             { pos: corePos, label: 'REACTOR CORE (3 SEALS)', color: '#44FF77', radiusPx: 54 },
             { pos: this.tileCenter(1, 2), label: 'ALIEN BREACH VENT', color: '#FFB000', radiusPx: 36 },
-            { pos: westRelayPad, label: '[+] MOUNT PAD', color: '#00F0FF', radiusPx: 30 },
+            { pos: relayPadPos, label: '[+] MOUNT PAD', color: '#00F0FF', radiusPx: 30 },
           ],
           highlightButtonIds: [],
+          allowedBuildIds: [],
+          allowedAbilityIds: [],
+          allowRearm: false,
+          allowUpgrade: false,
+          allowDoorInspect: false,
+          activePlacementRule: null,
+          activeAbilityZone: null,
           wikiChapterIdx: 0,
           showContinueBtn: true,
           continueLabel: '► BEGIN DRILL [ENTER]',
@@ -552,6 +729,14 @@ export class PerimeterTutorialDirector {
 
       case 1: {
         const placed = sim.turrets.some((t) => t.kind === 'SENTRY_PULSE');
+        const rule: TutorialPlacementRule = {
+          buildId: 'SENTRY_PULSE',
+          col: 14,
+          row: 8,
+          targetAngle: Math.PI, // Straight WEST down open row 8!
+          angleToleranceRad: (32 * Math.PI) / 180,
+          aimHint: 'LEFT (WEST) DOWN THE CORRIDOR',
+        };
         return {
           active: true,
           graduated: false,
@@ -560,12 +745,21 @@ export class PerimeterTutorialDirector {
           code: 'DRILL 02/09',
           title: 'DEPLOY & AIM YOUR FIRST UA 571-C PULSE SENTRY',
           briefingLines: [
-            'Press [1] (or click [1] UA 571-C on the right panel). Click the pulsing [+] MOUNT PAD near the Core, HOLD & DRAG LEFT to aim down the West Corridor, then release!',
-            'Notice two cone arcs: SOLID INNER ARC = 55% dark vision; DASHED OUTER ARC = 100% range when enemies are illuminated.',
+            'Click [1] UA 571-C on the right (or press 1). Click the pulsing pad beside the Core, HOLD & DRAG LEFT into the glowing corridor guide cone, then release!',
+            'Solid inner arc = 55% dark vision · Dashed outer arc = 100% range when lit. Turrets CANNOT shoot through walls — always aim down open hallways!',
           ],
-          objectives: [{ text: 'Deploy a [1] UA 571-C Pulse Sentry on any [+] Mount Pad', done: placed }],
-          beacons: [{ pos: westPad, label: 'CLICK & DRAG LEFT', color: '#FFB000', radiusPx: 34 }],
-          highlightButtonIds: ['build-SENTRY_PULSE'],
+          objectives: [
+            { text: 'Deploy [1] UA 571-C on the pulsing pad aimed LEFT down West Approach', done: placed },
+          ],
+          beacons: placed ? [] : [{ pos: sentryPadPos, label: 'CLICK & DRAG LEFT (WEST)', color: '#FFB000', radiusPx: 34 }],
+          highlightButtonIds: placed ? [] : ['build-SENTRY_PULSE'],
+          allowedBuildIds: placed ? [] : ['SENTRY_PULSE'],
+          allowedAbilityIds: [],
+          allowRearm: false,
+          allowUpgrade: false,
+          allowDoorInspect: false,
+          activePlacementRule: placed ? null : rule,
+          activeAbilityZone: null,
           wikiChapterIdx: 0,
           showContinueBtn: false,
           continueLabel: '',
@@ -582,15 +776,15 @@ export class PerimeterTutorialDirector {
           code: 'DRILL 03/09',
           title: 'LIVE COMBAT, TACTICAL PAUSE [SPACE] & AMMO REARM [E]',
           briefingLines: [
-            '3 Xeno Drones are advancing! Sentries burn through 320-rd drums & build barrel HEAT (shown on the Left Weapons Rack).',
-            'Tip: Hit [SPACE] anytime to PAUSE and issue orders calmly! When your Sentry runs low, press [E] (or click REARM) to feed a fresh ammo belt.',
+            '3 Xeno Drones are charging straight down West Approach! Watch your Sentry tear them up while burning its 320-rd drum on the Left Weapons Rack.',
+            'Tip: Press [SPACE] anytime to PAUSE calmly! Once the Drones drop, press [E] (or click [E] REARM ALL on the left) to reload your Sentry.',
           ],
           objectives: [
-            { text: 'Eliminate the 3 approaching Xeno Drones', done: dronesCleared },
+            { text: 'Watch your Sentry eliminate all 3 approaching Xeno Drones', done: dronesCleared },
             {
               text: dronesCleared
-                ? 'Press [E] (or click [E] REARM ALL on left) to reload your Sentry!'
-                : 'Wait for Drones to drop, then test Sentry Reload',
+                ? 'Press [E] (or click [E] REARM ALL on left) to feed a fresh ammo belt!'
+                : 'Wait for Drones to drop, then test Sentry Rearm',
               done: this.rearmCompleted,
             },
           ],
@@ -598,13 +792,20 @@ export class PerimeterTutorialDirector {
             ? [
                 {
                   pos: this.getPrimarySentry(sim)!.pos,
-                  label: dronesCleared ? 'PRESS [E] TO REARM!' : 'DEFENDING CORRIDOR',
+                  label: dronesCleared ? 'PRESS [E] TO REARM!' : 'ENGAGING WEST CORRIDOR',
                   color: dronesCleared ? '#FFB000' : '#44FF77',
                   radiusPx: 34,
                 },
               ]
             : [],
           highlightButtonIds: dronesCleared ? ['rearm-all', 'insp-rearm'] : [],
+          allowedBuildIds: [],
+          allowedAbilityIds: [],
+          allowRearm: dronesCleared,
+          allowUpgrade: false,
+          allowDoorInspect: false,
+          activePlacementRule: null,
+          activeAbilityZone: null,
           wikiChapterIdx: 0,
           showContinueBtn: false,
           continueLabel: '',
@@ -614,6 +815,20 @@ export class PerimeterTutorialDirector {
       case 3: {
         const hasRelay = sim.turrets.some((t) => t.kind === 'MOTION_RELAY');
         const stalkersDead = this.stalkersSpawned && sim.hostiles.length === 0;
+        const relayRule: TutorialPlacementRule = {
+          buildId: 'MOTION_RELAY',
+          col: 9,
+          row: 7,
+          targetAngle: Math.PI * 0.5, // Straight SOUTH across West Junction corridor!
+          angleToleranceRad: (32 * Math.PI) / 180,
+          aimHint: 'DOWN (SOUTH) ACROSS THE CORRIDOR',
+        };
+        const flareZone: TutorialAbilityZoneRule = {
+          abilityId: 'FLARE',
+          center: flareZonePos,
+          radiusPx: 230,
+          label: 'WEST JUNCTION FLARE ZONE',
+        };
         return {
           active: true,
           graduated: false,
@@ -622,22 +837,33 @@ export class PerimeterTutorialDirector {
           code: 'DRILL 04/09',
           title: 'DARKNESS, CLOAKED STALKERS & M314 LASER TRIPWIRE',
           briefingLines: [
-            'SIGNAL STALKERS are 100% INVISIBLE in dark corridors! Place an [6] M314 RELAY: it sweeps radar, boosts nearby guns (+24% RNG / +18% DMG), and casts a RED LASER TRIPWIRE that tags any alien crossing it for 5.0s!',
-            'Then press [F] M40 FLARE (0 kW!) and click the dark corridor to light up 2 approaching Stalkers for 100% range + 20% CRIT!',
+            !hasRelay
+              ? 'Step A: Select [6] M314 RELAY, click the pulsing North Alcove pad & DRAG DOWN (SOUTH) so its RED LASER TRIPWIRE spans across the entire hallway!'
+              : 'Step B: Now press [F] M40 FLARE (0 kW!) and click the pulsing West Junction corridor — lighting up 2 incoming cloaked SIGNAL STALKERS!',
+            'Any alien crossing the red Tripwire (even invisible Stalkers!) is full-lit for 5.0s (+20% CRIT & 100% range), AND M314 boosts nearby guns +24% Range!',
           ],
           objectives: [
-            { text: 'Deploy an [6] M314 Motion Relay (drag to aim its red Tripwire!)', done: hasRelay },
-            { text: 'Drop an [F] M40 Strobe Flare in the corridor', done: this.flareUsedInStep },
-            { text: 'Decloak & neutralize both Signal Stalkers', done: stalkersDead },
+            { text: 'Place [6] M314 Relay on top pad & drag DOWN so red Tripwire blocks hallway', done: hasRelay },
+            { text: 'Press [F] FLARE and click inside the pulsing West Junction zone', done: this.flareUsedInStep },
+            { text: 'Decloak & eliminate both approaching Signal Stalkers', done: stalkersDead },
           ],
           beacons: !hasRelay
-            ? [{ pos: westRelayPad, label: 'DEPLOY [6] M314 RELAY', color: '#44FF77', radiusPx: 34 }]
+            ? [{ pos: relayPadPos, label: 'M314 -> DRAG DOWN (SOUTH)', color: '#44FF77', radiusPx: 34 }]
             : !this.flareUsedInStep
-              ? [{ pos: this.tileCenter(8, 8), label: 'DROP [F] FLARE HERE', color: '#FFF0B8', radiusPx: 44 }]
+              ? [{ pos: flareZonePos, label: 'DROP [F] FLARE HERE', color: '#FFF0B8', radiusPx: 48 }]
               : [],
-          highlightButtonIds: [!hasRelay ? 'build-MOTION_RELAY' : '', !this.flareUsedInStep ? 'ability-FLARE' : ''].filter(
-            Boolean
-          ),
+          highlightButtonIds: !hasRelay
+            ? ['build-MOTION_RELAY']
+            : !this.flareUsedInStep
+              ? ['ability-FLARE']
+              : [],
+          allowedBuildIds: !hasRelay ? ['MOTION_RELAY'] : [],
+          allowedAbilityIds: hasRelay && !this.flareUsedInStep ? ['FLARE'] : [],
+          allowRearm: true,
+          allowUpgrade: false,
+          allowDoorInspect: false,
+          activePlacementRule: !hasRelay ? relayRule : null,
+          activeAbilityZone: hasRelay && !this.flareUsedInStep ? flareZone : null,
           wikiChapterIdx: 1,
           showContinueBtn: false,
           continueLabel: '',
@@ -648,33 +874,56 @@ export class PerimeterTutorialDirector {
         const hasCryo = sim.turrets.some((t) => t.kind === 'CRYO_VALVE');
         const hasRail = sim.turrets.some((t) => t.kind === 'RAIL_LANCE');
         const prtDead = this.praetorianSpawned && sim.hostiles.length === 0;
+        const cryoRule: TutorialPlacementRule = {
+          buildId: 'CRYO_VALVE',
+          col: 9,
+          row: 9,
+        };
+        const railRule: TutorialPlacementRule = {
+          buildId: 'RAIL_LANCE',
+          col: 5,
+          row: 8,
+          targetAngle: 0, // Straight EAST down unobstructed 10-tile West Approach!
+          angleToleranceRad: (24 * Math.PI) / 180,
+          aimHint: 'RIGHT (EAST) STRAIGHT DOWN THE HALLWAY',
+        };
         return {
           active: true,
           graduated: false,
           stepIndex: 4,
           totalSteps: this.totalSteps,
           code: 'DRILL 05/09',
-          title: 'ARMOR PIERCING [3] RAIL-LANCE & [4] CRYO-SHATTER COMBO',
+          title: 'ARMOR PIERCING [3] RAIL-LANCE & [4] CRYO-SHATTER KILLBOX',
           briefingLines: [
-            'Heavy PRAETORIANS deflect 70% of frontal Sentry bullets (RICOCHET!). Counter them with a killbox combo:',
-            '[4] CRYO VALVE on a striped Duct Grate slows 58%, cools guns & adds +35% SHATTER CRIT! [3] M99 RAIL-LANCE ignores 100% armor & pierces 4 lined foes!',
+            !hasCryo
+              ? 'Step A: Heavy PRAETORIANS deflect 70% of frontal Sentry fire! Click [4] CRYO VALVE and mount it on the striped DUCT GRATE in West Junction (slows 58% + 35% SHATTER CRIT!).'
+              : !hasRail
+                ? 'Step B: Click [3] M99 RAIL-LANCE, click the pulsing WEST-END PAD, and DRAG RIGHT (EAST) straight down the long hallway! Rail ignores 100% armor & pierces 4 foes!'
+                : 'KILLBOX ARMED! Watch your unobstructed Rail-Lance + Cryo-Shatter + M314 link obliterate the armored Praetorian!',
+            'Notice how M99 Rail-Lance at the hallway mouth has a clear 18-meter straight shot down the corridor — NEVER mount a sniper behind a corner wall!',
           ],
           objectives: [
-            { text: 'Place a [4] Cryo-Stasis Valve on a striped Duct Grate', done: hasCryo },
-            { text: 'Deploy a [3] M99 Rail-Lance on a [+] Mount Pad aimed down-hall', done: hasRail },
-            { text: 'Shatter the armored Praetorian Crusher', done: prtDead },
+            { text: 'Mount [4] Cryo-Stasis Valve on the pulsing West Junction Duct Grate', done: hasCryo },
+            { text: 'Deploy [3] M99 Rail-Lance at hallway mouth aimed RIGHT (EAST)', done: hasRail },
+            { text: 'Shatter the approaching armored Praetorian Crusher', done: prtDead },
           ],
-          beacons: [
-            ...(!hasCryo
-              ? [{ pos: westCryoGrate, label: '[4] CRYO ON GRATE', color: '#9BF8FF', radiusPx: 32 }]
-              : []),
-            ...(!hasRail
-              ? [{ pos: westRailPad, label: '[3] M99 RAIL-LANCE', color: '#00F0FF', radiusPx: 34 }]
-              : []),
-          ],
-          highlightButtonIds: [!hasCryo ? 'build-CRYO_VALVE' : '', !hasRail ? 'build-RAIL_LANCE' : ''].filter(
-            Boolean
-          ),
+          beacons: !hasCryo
+            ? [{ pos: cryoGratePos, label: 'CLICK [4] CRYO ON GRATE', color: '#9BF8FF', radiusPx: 34 }]
+            : !hasRail
+              ? [{ pos: railPadPos, label: 'M99 RAIL -> DRAG RIGHT (EAST)', color: '#00F0FF', radiusPx: 34 }]
+              : [],
+          highlightButtonIds: !hasCryo
+            ? ['build-CRYO_VALVE']
+            : !hasRail
+              ? ['build-RAIL_LANCE']
+              : [],
+          allowedBuildIds: !hasCryo ? ['CRYO_VALVE'] : !hasRail ? ['RAIL_LANCE'] : [],
+          allowedAbilityIds: [],
+          allowRearm: true,
+          allowUpgrade: false,
+          allowDoorInspect: false,
+          activePlacementRule: !hasCryo ? cryoRule : !hasRail ? railRule : null,
+          activeAbilityZone: null,
           wikiChapterIdx: 3,
           showContinueBtn: false,
           continueLabel: '',
@@ -684,6 +933,14 @@ export class PerimeterTutorialDirector {
       case 5: {
         const hasIncin = sim.turrets.some((t) => t.kind === 'INCINERATOR');
         const burstersDead = this.acidDemoSpawned && sim.hostiles.length === 0;
+        const incinRule: TutorialPlacementRule = {
+          buildId: 'INCINERATOR',
+          col: 9,
+          row: 10,
+          targetAngle: -Math.PI * 0.5, // Straight NORTH up into West Junction choke!
+          angleToleranceRad: (32 * Math.PI) / 180,
+          aimHint: 'UP (NORTH) INTO WEST JUNCTION',
+        };
         return {
           active: true,
           graduated: false,
@@ -692,21 +949,31 @@ export class PerimeterTutorialDirector {
           code: 'DRILL 06/09',
           title: 'ACID POOLS, [2] INCINERATOR STERILIZE & [C] COOLANT FLUSH',
           briefingLines: [
-            'ACID BURSTERS leave corrosive pools that melt Doors & Tripwires. [2] M240 INCINERATOR ignores armor, lights targets, AND burns Acid Pools for +15 BONUS SCRAP!',
-            'Press [C] COOLANT FLUSH anytime barrels overheat or Spitters splash acid — it instantly vents -78 HEAT & cleanses acid!',
+            !hasIncin
+              ? 'Step A: Select [2] M240 INCIN, click the pulsing South Alcove pad & DRAG UP (NORTH) into the junction! Napalm burns armor & STERILIZES Acid Pools for +15 BONUS SCRAP!'
+              : 'Step B: Press [C] (or click [C] FLUSH) to instantly vent -78 barrel HEAT across all turrets and cleanse Spitter Acid!',
+            'Acid Bursters explode into green corrosive pools that melt Blast Doors & M314 Tripwires — Incinerators turn acid hazards into free Scrap!',
           ],
           objectives: [
-            { text: 'Deploy an [2] M240 Incinerator on a Mount Pad', done: hasIncin },
-            { text: 'Press [C] (or click [C] FLUSH) to vent weapon heat', done: this.coolantUsedInStep },
-            { text: 'Burn the Acid Bursters & sterilize the Acid Pool', done: burstersDead },
+            { text: 'Deploy [2] M240 Incinerator on South pad aimed UP (NORTH) into junction', done: hasIncin },
+            { text: 'Trigger [C] COOLANT FLUSH to vent barrel heat', done: this.coolantUsedInStep },
+            { text: 'Incinerate the Acid Bursters & sterilize the corrosive pool', done: burstersDead },
           ],
           beacons: !hasIncin
-            ? [{ pos: westIncinPad, label: '[2] M240 INCINERATOR', color: '#FFB000', radiusPx: 34 }]
+            ? [{ pos: incinPadPos, label: 'INCINERATOR -> DRAG UP (NORTH)', color: '#FFB000', radiusPx: 34 }]
             : [],
-          highlightButtonIds: [
-            !hasIncin ? 'build-INCINERATOR' : '',
-            !this.coolantUsedInStep ? 'ability-COOLANT_FLUSH' : '',
-          ].filter(Boolean),
+          highlightButtonIds: !hasIncin
+            ? ['build-INCINERATOR']
+            : !this.coolantUsedInStep
+              ? ['ability-COOLANT_FLUSH']
+              : [],
+          allowedBuildIds: !hasIncin ? ['INCINERATOR'] : [],
+          allowedAbilityIds: hasIncin && !this.coolantUsedInStep ? ['COOLANT_FLUSH'] : [],
+          allowRearm: true,
+          allowUpgrade: false,
+          allowDoorInspect: false,
+          activePlacementRule: !hasIncin ? incinRule : null,
+          activeAbilityZone: null,
           wikiChapterIdx: 3,
           showContinueBtn: false,
           continueLabel: '',
@@ -714,33 +981,53 @@ export class PerimeterTutorialDirector {
       }
 
       case 6: {
+        const doorRule: TutorialPlacementRule = {
+          buildId: 'ARC_WELDER',
+          col: 11,
+          row: 8,
+          doorId: 'D-04',
+        };
+        const purgeZone: TutorialAbilityZoneRule = {
+          abilityId: 'PURGE',
+          center: airlockW01,
+          radiusPx: 140,
+          label: 'AIRLOCK W-01',
+          airlockId: 'AIRLOCK-01',
+        };
         return {
           active: true,
           graduated: false,
           stepIndex: 6,
           totalSteps: this.totalSteps,
           code: 'DRILL 07/09',
-          title: 'REROUTING WITH [7] DOOR SEALS & [V] AIRLOCK PURGE',
+          title: 'FUNNELING WITH [7] DOOR SEALS & [V] AIRLOCK PURGE',
           briefingLines: [
-            'Select [7] DOOR SEAL and click Blast Door D-04 (or any door) to weld it shut — watch the dashed alien paths INSTANTLY reroute around sealed corridors!',
-            'Then press [V] PURGE (1x/wave) and click orange AIRLOCK W-01 to blast the trapped Skitterers backward for 2X DECOMPRESSION KILL score!',
+            !this.doorWeldedInStep
+              ? 'Step A: Click [7] DOOR SEAL and click Blast Door D-04! Watch the dashed green alien path lines INSTANTLY reroute around the sealed corridor!'
+              : 'Step B: A Skitterer swarm is trapped in orange AIRLOCK W-01! Press [V] PURGE and click AIRLOCK W-01 to blow them back for 2X DECOMPRESSION KILL score!',
+            'You can keep up to 3 Blast Doors welded at once to funnel 4 enemy corridors into 2 concentrated killboxes! Airlock Purge recharges every wave.',
           ],
           objectives: [
-            { text: 'Arc-Weld any Blast Door [D-01..D-06] using [7] DOOR SEAL', done: this.doorWeldedInStep },
+            { text: 'Select [7] DOOR SEAL and click glowing Blast Door D-04', done: this.doorWeldedInStep },
             { text: 'Press [V] PURGE and click orange AIRLOCK W-01', done: this.purgeUsedInStep },
           ],
-          beacons: [
-            ...(!this.doorWeldedInStep
-              ? [{ pos: doorD04, label: 'WELD DOOR [7]', color: '#FFB000', radiusPx: 36 }]
-              : []),
-            ...(!this.purgeUsedInStep
-              ? [{ pos: airlockW01, label: 'PURGE [V] AIRLOCK W-01', color: '#FF5522', radiusPx: 54 }]
-              : []),
-          ],
-          highlightButtonIds: [
-            !this.doorWeldedInStep ? 'build-ARC_WELDER' : '',
-            !this.purgeUsedInStep ? 'ability-PURGE' : '',
-          ].filter(Boolean),
+          beacons: !this.doorWeldedInStep
+            ? [{ pos: doorD04, label: 'CLICK [7] WELD DOOR D-04', color: '#FFB000', radiusPx: 38 }]
+            : !this.purgeUsedInStep
+              ? [{ pos: airlockW01, label: 'CLICK [V] PURGE AIRLOCK W-01', color: '#FF5522', radiusPx: 54 }]
+              : [],
+          highlightButtonIds: !this.doorWeldedInStep
+            ? ['build-ARC_WELDER']
+            : !this.purgeUsedInStep
+              ? ['ability-PURGE']
+              : [],
+          allowedBuildIds: !this.doorWeldedInStep ? ['ARC_WELDER'] : [],
+          allowedAbilityIds: this.doorWeldedInStep && !this.purgeUsedInStep ? ['PURGE'] : [],
+          allowRearm: true,
+          allowUpgrade: false,
+          allowDoorInspect: false,
+          activePlacementRule: !this.doorWeldedInStep ? doorRule : null,
+          activeAbilityZone: this.doorWeldedInStep && !this.purgeUsedInStep ? purgeZone : null,
           wikiChapterIdx: 7,
           showContinueBtn: false,
           continueLabel: '',
@@ -748,6 +1035,12 @@ export class PerimeterTutorialDirector {
       }
 
       case 7: {
+        const ocZone: TutorialAbilityZoneRule = {
+          abilityId: 'OVERCLOCK',
+          center: this.tileCenter(9, 8),
+          radiusPx: 640,
+          label: 'TURRET SECTOR',
+        };
         return {
           active: true,
           graduated: false,
@@ -756,18 +1049,35 @@ export class PerimeterTutorialDirector {
           code: 'DRILL 08/09',
           title: 'REACTOR BATTERY, [L] FLOODLIGHT & [O] OVERCLOCK SURGE',
           briefingLines: [
-            'Unused Free kW charges your cyan RESERVE BATTERY (left panel). It automatically buffers Overloads before a 3.5s Blackout — OR spend 60% Battery for [L] FLOODLIGHT (7.5s map-wide vision)!',
-            'Press [L] FLOODLIGHT now, then press [O] OVERCLOCK and click near your turrets for 2X FIRE RATE (+22 kW surge buffered by Battery)!',
+            !this.floodUsedInStep
+              ? 'Step A: Unused kW charges your cyan RESERVE BATTERY (left panel). Press [L] (or click [L] FLOOD) to spend 60% Battery for 7.5s MAP-WIDE FULL ILLUMINATION!'
+              : 'Step B: Press [O] (or click [O] OVRCLK) and click near your turrets for 2X FIRE RATE! Reserve Battery automatically buffers the +22 kW surge!',
+            'If Reactor Overload ever drains Battery to 0%, tap [X] SHED AUX to drop support kW before the 4.0s Breaker Trip triggers a 3.5s Blackout!',
           ],
           objectives: [
-            { text: 'Trigger [L] EMERGENCY FLOODLIGHT (60% Reserve Battery)', done: this.floodUsedInStep },
-            { text: 'Trigger [O] OVERCLOCK on a turret cluster (+22 kW · 2X ROF)', done: this.overclockUsedInStep },
+            { text: 'Press [L] (or click [L] FLOOD) for 7.5s map-wide full vision', done: this.floodUsedInStep },
+            { text: 'Press [O] OVERCLOCK & click near any turret (+22 kW · 2X ROF)', done: this.overclockUsedInStep },
           ],
-          beacons: [],
-          highlightButtonIds: [
-            !this.floodUsedInStep ? 'ability-FLOODLIGHT' : '',
-            !this.overclockUsedInStep ? 'ability-OVERCLOCK' : '',
-          ].filter(Boolean),
+          beacons:
+            this.floodUsedInStep && !this.overclockUsedInStep
+              ? [{ pos: sentryPadPos, label: 'CLICK [O] OVERCLOCK HERE', color: '#FFB000', radiusPx: 44 }]
+              : [],
+          highlightButtonIds: !this.floodUsedInStep
+            ? ['ability-FLOODLIGHT']
+            : !this.overclockUsedInStep
+              ? ['ability-OVERCLOCK']
+              : [],
+          allowedBuildIds: [],
+          allowedAbilityIds: !this.floodUsedInStep
+            ? ['FLOODLIGHT']
+            : !this.overclockUsedInStep
+              ? ['OVERCLOCK']
+              : [],
+          allowRearm: true,
+          allowUpgrade: false,
+          allowDoorInspect: false,
+          activePlacementRule: null,
+          activeAbilityZone: this.floodUsedInStep && !this.overclockUsedInStep ? ocZone : null,
           wikiChapterIdx: 5,
           showContinueBtn: false,
           continueLabel: '',
@@ -778,7 +1088,10 @@ export class PerimeterTutorialDirector {
       default: {
         const hasMk2 = sim.turrets.some((t) => t.level >= 2);
         const hasMk3 = sim.turrets.some((t) => t.level === 3);
-        const targetT = sim.turrets.find((t) => t.level < 3) ?? sim.turrets[0];
+        const targetT =
+          sim.turrets.find((t) => t.level === 2) ??
+          sim.turrets.find((t) => t.level < 3) ??
+          sim.turrets[0];
         return {
           active: true,
           graduated: false,
@@ -787,17 +1100,33 @@ export class PerimeterTutorialDirector {
           code: 'DRILL 09/09',
           title: 'MK-II & BRANCHING MK-III SPECIALIZATIONS — FINAL CHECK!',
           briefingLines: [
-            'Every unit upgrades MK-I -> MK-II (+12% range, +33% power, 0 extra kW) -> then splits into TWO permanent MK-III Branches (A vs. B)!',
-            'Click any turret on the map (or Left Rack), click [U] MK-II in the bottom-right Inspector, then pick Branch III-A or III-B to graduate!',
+            !hasMk2
+              ? 'Step A: Click the pulsing turret on the map (or Left Weapons Rack), then click [U] MK-II in the bottom-right Unit Inspector (+12% range, +33% power, 0 extra kW)!'
+              : 'Step B: Now pick EITHER permanent MK-III Specialization (Branch III-A or Branch III-B) in the bottom-right Unit Inspector to graduate!',
+            'In Endless Hive Siege, you also draft permanent MU-TH-UR Protocols every 3 waves — press [H] anytime to inspect all 12 MK-III branches & formulas!',
           ],
           objectives: [
             { text: 'Click a turret & upgrade it to MK-II ([U] or Inspector button)', done: hasMk2 },
-            { text: 'Choose a permanent MK-III Specialization (Branch A or B)', done: hasMk3 },
+            { text: 'Choose a permanent MK-III Specialization (Branch III-A or III-B)', done: hasMk3 },
           ],
           beacons: targetT
-            ? [{ pos: targetT.pos, label: 'CLICK TO UPGRADE MK-III', color: '#00F0FF', radiusPx: 36 }]
+            ? [
+                {
+                  pos: targetT.pos,
+                  label: hasMk2 ? 'CLICK -> PICK MK-III A / B' : 'CLICK -> UPGRADE MK-II',
+                  color: '#00F0FF',
+                  radiusPx: 36,
+                },
+              ]
             : [],
           highlightButtonIds: hasMk2 ? ['insp-upgrade-a', 'insp-upgrade-b'] : ['insp-upgrade'],
+          allowedBuildIds: [],
+          allowedAbilityIds: [],
+          allowRearm: true,
+          allowUpgrade: true,
+          allowDoorInspect: false,
+          activePlacementRule: null,
+          activeAbilityZone: null,
           wikiChapterIdx: 2,
           showContinueBtn: false,
           continueLabel: '',
