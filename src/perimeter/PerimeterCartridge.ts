@@ -144,6 +144,7 @@ export class PerimeterCartridge implements Cartridge {
     };
 
     // Start fresh Sector 01 briefing on cartridge mount
+    this.runPlaytimeSec = 0;
     this.sim.resetRun('SECTOR_01', true);
     this.callsignDraft = this.manifest.getSavedCallsign();
     this.scoreSubmitted = false;
@@ -193,8 +194,10 @@ export class PerimeterCartridge implements Cartridge {
     }
   }
 
-  private resetSubmissionState(): void {
-    this.runPlaytimeSec = 0;
+  private resetSubmissionState(resetPlaytime = false): void {
+    if (resetPlaytime) {
+      this.runPlaytimeSec = 0;
+    }
     this.scoreSubmitted = false;
     this.submittingScore = false;
     this.submitResultBanner = null;
@@ -823,11 +826,11 @@ export class PerimeterCartridge implements Cartridge {
 
     switch (id) {
       case 'mode-sec01':
-        this.resetSubmissionState();
+        this.resetSubmissionState(true);
         this.sim.resetRun('SECTOR_01', true);
         break;
       case 'mode-endless':
-        this.resetSubmissionState();
+        this.resetSubmissionState(true);
         this.sim.resetRun('ENDLESS_SIEGE', true);
         break;
       case 'briefing-engage':
@@ -907,7 +910,7 @@ export class PerimeterCartridge implements Cartridge {
         void this.submitCurrentRunScore();
         break;
       case 'perim-skip-callsign':
-        this.resetSubmissionState();
+        this.resetSubmissionState(true);
         this.sim.resetRun(this.sim.mode, true);
         break;
       case 'perim-manifest':
@@ -916,7 +919,7 @@ export class PerimeterCartridge implements Cartridge {
         break;
       case 'perim-new-run':
         this.manifestOpen = false;
-        this.resetSubmissionState();
+        this.resetSubmissionState(true);
         this.sim.resetRun(this.sim.mode, true);
         break;
       case 'perim-osd':
@@ -935,12 +938,12 @@ export class PerimeterCartridge implements Cartridge {
         break;
       case 'perim-restart-sec01':
         this.osdMenuOpen = false;
-        this.resetSubmissionState();
+        this.resetSubmissionState(true);
         this.sim.resetRun('SECTOR_01', false);
         break;
       case 'perim-restart-endless':
         this.osdMenuOpen = false;
-        this.resetSubmissionState();
+        this.resetSubmissionState(true);
         this.sim.resetRun('ENDLESS_SIEGE', false);
         break;
       case 'perim-exit-os':
