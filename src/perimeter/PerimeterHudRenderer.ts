@@ -4,6 +4,8 @@ import { drawRankedHudPill, drawRankedTitleRibbon } from '../render/RankedBadge'
 import type { ViewportRect } from '../types';
 import type { PerimeterManifest } from './PerimeterManifest';
 import type { PerimeterSimulation } from './PerimeterSimulation';
+import type { TutorialDirectiveSnapshot } from './PerimeterTutorialDirector';
+import { PerimeterWikiRenderer } from './PerimeterWikiRenderer';
 import {
   HARDWARE_SPECS,
   MK3_BRANCH_SPECS,
@@ -39,6 +41,10 @@ export interface PerimeterHudRenderParams {
   isFullscreen: boolean;
   osdMenuOpen: boolean;
   manifestOpen: boolean;
+  wikiOpen: boolean;
+  wikiChapterIdx: number;
+  wikiScrollPx: number;
+  tutorialDirective: TutorialDirectiveSnapshot;
   callsignDraft: string;
   scoreSubmitted: boolean;
   submittingScore: boolean;
@@ -49,6 +55,10 @@ export interface PerimeterHudRenderParams {
 
 export class PerimeterHudRenderer {
   public buttons: CrtInteractiveButton[] = [];
+  private wikiRenderer = new PerimeterWikiRenderer();
+  public wikiMaxScrollPx = 0;
+  public wikiContentViewport: ViewportRect | null = null;
+  public wikiScrollbarTrack: ViewportRect | null = null;
 
   public computeLayout(w: number, h: number): PerimeterLayout {
     const margin = Math.max(6, Math.round(w * 0.006));
@@ -120,21 +130,72 @@ export class PerimeterHudRenderer {
     this.drawRightRequisitionPanel(ctx, params, layout);
     this.drawBottomEventLog(ctx, params, layout);
 
-    if (params.statusToast) {
-      this.drawToastBanner(ctx, params.statusToast, layout.blueprintViewport);
+    // Highlight targeted HUD buttons during Interactive Training Drill
+    if (
+      params.tutorialDirective.active &&
+      !params.tutorialDirective.graduated &&
+      !params.wikiOpen &&
+      !params.osdMenuOpen &&
+      !params.manifestOpen &&
+      params.tutorialDirective.highlightButtonIds.length > 0
+    ) {
+      this.drawTutorialButtonHighlights(
+        ctx,
+        params.tutorialDirective.highlightButtonIds,
+        params.timeSec
+      );
     }
 
-    if (params.sim.phase === 'BRIEFING') {
+    if (params.statusToast && !params.wikiOpen) {
+      const toastVp =
+        params.tutorialDirective.active && !params.tutorialDirective.graduated
+          ? {
+              ...layout.blueprintViewport,
+              height: Math.max(100, layout.blueprintViewport.height - 134),
+            }
+          : layout.blueprintViewport;
+      this.drawToastBanner(ctx, params.statusToast, toastVp);
+    }
+
+    if (
+      params.tutorialDirective.active &&
+      !params.wikiOpen &&
+      !params.osdMenuOpen &&
+      !params.manifestOpen
+    ) {
+      if (params.tutorialDirective.graduated) {
+        this.drawTutorialGraduationModal(ctx, params);
+      } else {
+        this.drawTutorialDirectiveBanner(ctx, params, layout.blueprintViewport);
+      }
+    }
+
+    if (params.sim.phase === 'BRIEFING' && !params.wikiOpen) {
       this.drawBriefingOverlay(ctx, params);
-    } else if (params.sim.phase === 'PROTOCOL_DRAFT') {
+    } else if (params.sim.phase === 'PROTOCOL_DRAFT' && !params.wikiOpen) {
       this.drawProtocolDraftModal(ctx, params);
-    } else if (params.sim.phase === 'CORE_BREACHED') {
+    } else if (params.sim.phase === 'CORE_BREACHED' && !params.wikiOpen) {
       this.drawEndOfRunOverlay(ctx, params);
-    } else if (params.sim.phase === 'CALLSIGN_ENTRY') {
+    } else if (params.sim.phase === 'CALLSIGN_ENTRY' && !params.wikiOpen) {
       this.drawCallsignEntryModal(ctx, params);
     }
 
-    if (params.osdMenuOpen) {
+    if (params.wikiOpen) {
+      const wr = this.wikiRenderer.render(ctx, {
+        width: params.width,
+        height: params.height,
+        timeSec: params.timeSec,
+        chapterIdx: params.wikiChapterIdx,
+        scrollPx: params.wikiScrollPx,
+        hoveredButtonId: params.hoveredButtonId,
+        trainingActive: params.tutorialDirective.active,
+      });
+      this.wikiMaxScrollPx = wr.maxScrollPx;
+      this.wikiContentViewport = wr.contentViewport;
+      this.wikiScrollbarTrack = wr.scrollbarTrack;
+      // Wiki modal captures all foreground clicks
+      this.buttons = wr.buttons;
+    } else if (params.osdMenuOpen) {
       this.drawCommandOsdModal(ctx, params);
     } else if (params.manifestOpen) {
       this.drawManifestModal(ctx, params);
@@ -158,10 +219,12 @@ export class PerimeterHudRenderer {
     ctx.lineTo(w - 8, layout.topBarH - 1);
     ctx.stroke();
 
-    const compactHeader = w < 1280;
-    const modeBadge = compactHeader
-      ? `ENDLESS SIEGE // W-${String(sim.waveNumber).padStart(2, '0')}`
-      : `ENDLESS HIVE SIEGE // WAVE ${String(sim.waveNumber).padStart(2, '0')}`;
+    const compactHeader = w < 1340;
+    const modeBadge = sim.trainingMode
+      ? `${params.tutorialDirective.code || 'SIM DRILL'} // UNRANKED`
+      : compactHeader
+        ? `ENDLESS // W-${String(sim.waveNumber).padStart(2, '0')}`
+        : `ENDLESS HIVE SIEGE // WAVE ${String(sim.waveNumber).padStart(2, '0')}`;
 
     ctx.font = compactHeader
       ? 'bold 15px "Share Tech Mono", monospace'
@@ -172,23 +235,42 @@ export class PerimeterHudRenderer {
     ctx.fillText(brandStr, 14, 30);
 
     const pillX = Math.round(14 + ctx.measureText(brandStr).width + 10);
-    const rankedPillW = drawRankedHudPill(
-      ctx,
-      pillX,
-      10,
-      26,
-      params.timeSec,
-      true,
-      compactHeader
-    );
-    const titleOffset = pillX + rankedPillW + 10;
+    let badgePillW = 0;
+    if (sim.trainingMode) {
+      const tLbl = '● SIM DRILL';
+      ctx.font = 'bold 12px "Share Tech Mono", monospace';
+      badgePillW = Math.ceil(ctx.measureText(tLbl).width) + 14;
+      ctx.fillStyle = 'rgba(6, 34, 42, 0.94)';
+      ctx.fillRect(pillX, 10, badgePillW, 26);
+      ctx.strokeStyle = '#00F0FF';
+      ctx.lineWidth = 1.6;
+      ctx.strokeRect(pillX, 10, badgePillW, 26);
+      ctx.fillStyle = '#70F8FF';
+      ctx.textAlign = 'center';
+      ctx.fillText(tLbl, pillX + badgePillW * 0.5, 27);
+      ctx.textAlign = 'left';
+      ctx.font = compactHeader
+        ? 'bold 15px "Share Tech Mono", monospace'
+        : 'bold 17px "Share Tech Mono", monospace';
+    } else {
+      badgePillW = drawRankedHudPill(
+        ctx,
+        pillX,
+        10,
+        26,
+        params.timeSec,
+        true,
+        compactHeader
+      );
+    }
+    const titleOffset = pillX + badgePillW + 10;
     const badgeText = `// ${modeBadge}`;
-    ctx.fillStyle = '#FFB000';
+    ctx.fillStyle = sim.trainingMode ? '#00F0FF' : '#FFB000';
     ctx.fillText(badgeText, titleOffset, 30);
     let titleRightEdge = Math.round(titleOffset + ctx.measureText(badgeText).width + 12);
 
     // Optional Perfect Wave Streak Pill (when space permits before top-right buttons)
-    const minRightButtonsWidth = compactHeader ? 585 : 640;
+    const minRightButtonsWidth = compactHeader ? 640 : 715;
     if (sim.perfectWaveStreak >= 1 && titleRightEdge + 112 < w - minRightButtonsWidth) {
       const sTxt = `STREAK ${sim.getStreakMultiplier().toFixed(2)}X`;
       ctx.font = 'bold 12px "JetBrains Mono", monospace';
@@ -229,42 +311,49 @@ export class PerimeterHudRenderer {
         {
           id: 'perim-pause-toggle',
           label: sim.tacticalPaused ? '❚❚ PAUSED' : '[SPACE] PAUSE',
-          w: compactHeader ? 108 : 118,
+          w: compactHeader ? 102 : 114,
           active: sim.tacticalPaused,
           accent: '#FFB000',
         },
         {
+          id: 'perim-wiki-open',
+          label: 'WIKI [H]',
+          w: compactHeader ? 76 : 84,
+          active: params.wikiOpen,
+          accent: '#00F0FF',
+        },
+        {
           id: 'perim-manifest',
           label: 'MANIFEST',
-          w: compactHeader ? 84 : 92,
+          w: compactHeader ? 78 : 88,
           active: params.manifestOpen,
           accent: COLORS.GREEN_BRIGHT,
         },
         {
           id: 'perim-mute',
           label: params.audioMuted ? 'AUDIO: OFF' : 'AUDIO: ON',
-          w: compactHeader ? 88 : 96,
+          w: compactHeader ? 84 : 92,
           active: !params.audioMuted,
           accent: params.audioMuted ? COLORS.RED_KLAXON : COLORS.GREEN_PRIMARY,
         },
         {
           id: 'perim-fullscreen',
           label: params.isFullscreen ? 'EXIT FL' : 'FULLSCR',
-          w: compactHeader ? 78 : 84,
+          w: compactHeader ? 72 : 80,
           active: params.isFullscreen,
           accent: COLORS.AMBER_BRIGHT,
         },
         {
           id: 'perim-osd',
           label: '[TAB] MENU',
-          w: compactHeader ? 96 : 104,
+          w: compactHeader ? 90 : 98,
           active: params.osdMenuOpen,
           accent: '#FFB000',
         },
         {
           id: 'perim-exit-os',
           label: 'MU-TH-UR OS',
-          w: compactHeader ? 106 : 114,
+          w: compactHeader ? 100 : 108,
           active: false,
           accent: '#FFB000',
         },
@@ -1530,16 +1619,18 @@ export class PerimeterHudRenderer {
     const waveH = 38;
     const speedW = 96;
     const waveBtnW = cardW - speedW - 7;
-    const isPrep = sim.phase === 'TACTICAL_PREP';
+    const isLaunchAction = sim.trainingMode
+      ? params.tutorialDirective.showContinueBtn
+      : sim.phase === 'TACTICAL_PREP';
 
     this.buttons.push({
-      id: isPrep ? 'wave-launch' : 'perim-pause-toggle',
+      id: isLaunchAction ? 'wave-launch' : 'perim-pause-toggle',
       rect: { x: rect.x + 12 * s, y: rect.y + curY * s, width: waveBtnW * s, height: waveH * s },
-      label: isPrep ? 'ENGAGE WAVE' : 'TACTICAL PAUSE',
+      label: isLaunchAction ? 'ENGAGE WAVE' : 'TACTICAL PAUSE',
     });
     const waveHov =
-      hoveredButtonId === (isPrep ? 'wave-launch' : 'perim-pause-toggle');
-    ctx.fillStyle = isPrep
+      hoveredButtonId === (isLaunchAction ? 'wave-launch' : 'perim-pause-toggle');
+    ctx.fillStyle = isLaunchAction
       ? waveHov
         ? COLORS.AMBER_BRIGHT
         : COLORS.AMBER_CAUTION
@@ -1547,19 +1638,25 @@ export class PerimeterHudRenderer {
         ? 'rgba(255, 176, 0, 0.25)'
         : 'rgba(12, 34, 20, 0.94)';
     ctx.fillRect(12, curY, waveBtnW, waveH);
-    ctx.strokeStyle = isPrep ? '#FFF3CC' : '#FFB000';
+    ctx.strokeStyle = isLaunchAction ? '#FFF3CC' : '#FFB000';
     ctx.lineWidth = 2.2;
     ctx.strokeRect(12, curY, waveBtnW, waveH);
 
     ctx.textAlign = 'center';
     ctx.font = 'bold 15.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = isPrep ? '#040905' : '#FFB000';
+    ctx.fillStyle = isLaunchAction ? '#040905' : '#FFB000';
     ctx.fillText(
-      isPrep
-        ? `► LAUNCH WAVE ${String(sim.waveNumber).padStart(2, '0')} ◄`
-        : sim.tacticalPaused
-          ? '► RESUME [SPACE]'
-          : '❚❚ TACTICAL PAUSE',
+      sim.trainingMode
+        ? params.tutorialDirective.showContinueBtn
+          ? '► BEGIN DRILL [ENTER] ◄'
+          : sim.tacticalPaused
+            ? '► RESUME [SPACE]'
+            : '❚❚ TACTICAL PAUSE'
+        : isLaunchAction
+          ? `► LAUNCH WAVE ${String(sim.waveNumber).padStart(2, '0')} ◄`
+          : sim.tacticalPaused
+            ? '► RESUME [SPACE]'
+            : '❚❚ TACTICAL PAUSE',
       12 + waveBtnW * 0.5,
       curY + 25
     );
@@ -2078,13 +2175,13 @@ export class PerimeterHudRenderer {
       }
     }
 
-    // Default Tactical Operator Reference inside Inspector
+    // Default Tactical Operator Reference inside Inspector + Quick Wiki & Training Buttons
     ctx.textAlign = 'left';
-    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
+    ctx.font = 'bold 14px "Share Tech Mono", monospace';
     ctx.fillStyle = '#FFB000';
-    ctx.fillText('UNIT INSPECTOR // TACTICAL GUIDE', x + 12, y + 21, w - 24);
+    ctx.fillText('UNIT INSPECTOR // TACTICAL GUIDE', x + 12, y + 20, w - 24);
 
-    ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
+    ctx.font = 'bold 11px "JetBrains Mono", monospace';
     const tips = [
       '• [1-8] ARSENAL: RAIL PIERCES · COIL STUNS · M18 MINE',
       '• UPGRADE MK-I -> MK-II -> BRANCHING MK-III (A / B)',
@@ -2092,12 +2189,49 @@ export class PerimeterHudRenderer {
       '• [C] COOLANT FLUSH VENTS HEAT & CLEARS SPITTER ACID',
       '• [X] SHED AUX FREES kW · [E] REARM ALL · [O×2] QUICK',
       '• EVERY 3 WAVES: PROTOCOL DRAFT · BOSSES W5 / W10+',
-      '• [SPACE] TACTICAL PAUSE · MAGNETIC HARDPOINT SNAP',
     ];
-    const lineStep = Math.min(20, Math.floor((h - 38) / tips.length));
+    const footerBtnH = 26;
+    const availTipsH = Math.max(76, h - 38 - footerBtnH - 12);
+    const lineStep = Math.min(18, Math.floor(availTipsH / tips.length));
     tips.forEach((line, i) => {
       ctx.fillStyle = i === 1 || i === 2 || i === 5 ? '#FFC43D' : '#9EF5B8';
-      ctx.fillText(line, x + 12, y + 42 + i * lineStep, w - 24);
+      ctx.fillText(line, x + 12, y + 39 + i * lineStep, w - 24);
+    });
+
+    // Quick-Launch Wiki [H] & Training Drill [T] Strip inside Inspector
+    const qBtnY = y + h - footerBtnH - 8;
+    const qGap = 6;
+    const qBtnW = (w - 24 - qGap) * 0.5;
+    const quickItems: Array<{ id: string; label: string; accent: string }> = [
+      { id: 'perim-wiki-open', label: '[H] TACTICAL WIKI', accent: '#00F0FF' },
+      {
+        id: sim.trainingMode ? 'perim-drill-exit' : 'perim-drill-start',
+        label: sim.trainingMode ? 'EXIT SIM DRILL' : '[T] TRAINING DRILL',
+        accent: '#FFB000',
+      },
+    ];
+    quickItems.forEach((q, qi) => {
+      const qx = x + 12 + qi * (qBtnW + qGap);
+      const qHov = hoveredButtonId === q.id;
+      this.buttons.push({
+        id: q.id,
+        rect: {
+          x: panelScreenRect.x + qx * s,
+          y: panelScreenRect.y + qBtnY * s,
+          width: qBtnW * s,
+          height: footerBtnH * s,
+        },
+        label: q.label,
+      });
+      ctx.fillStyle = qHov ? 'rgba(0, 240, 255, 0.24)' : 'rgba(6, 20, 14, 0.94)';
+      ctx.fillRect(qx, qBtnY, qBtnW, footerBtnH);
+      ctx.strokeStyle = qHov ? '#FFFFFF' : q.accent;
+      ctx.lineWidth = qHov ? 1.9 : 1.4;
+      ctx.strokeRect(qx, qBtnY, qBtnW, footerBtnH);
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 11.5px "Share Tech Mono", monospace';
+      ctx.fillStyle = qHov ? '#FFFFFF' : q.accent;
+      ctx.fillText(q.label, qx + qBtnW * 0.5, qBtnY + 17, qBtnW - 8);
     });
   }
 
@@ -2200,8 +2334,8 @@ export class PerimeterHudRenderer {
     params: PerimeterHudRenderParams
   ): void {
     const { width: w, height: h, hoveredButtonId } = params;
-    const boxW = Math.min(720, w - 48);
-    const boxH = Math.min(460, h - 46);
+    const boxW = Math.min(740, w - 40);
+    const boxH = Math.min(506, h - 34);
     const bx = (w - boxW) * 0.5;
     const by = (h - boxH) * 0.5;
 
@@ -2271,21 +2405,49 @@ export class PerimeterHudRenderer {
     ];
 
     ctx.textAlign = 'left';
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
+    ctx.font = 'bold 13px "JetBrains Mono", monospace';
     rules.forEach((line, idx) => {
       ctx.fillStyle = idx === 1 || idx === 3 || idx === 5 ? '#FFB000' : COLORS.GREEN_PRIMARY;
-      ctx.fillText(line, bx + 28, by + 174 + idx * 26, boxW - 56);
+      ctx.fillText(line, bx + 28, by + 172 + idx * 25, boxW - 56);
     });
 
+    // Primary Ranked Launch CTA
+    const btnPad = 28;
+    const fullBtnW = boxW - btnPad * 2;
     this.addScaledButton(
       ctx,
       'briefing-engage',
-      { x: w * 0.5 - 220, y: by + boxH - 62, width: 440, height: 44 },
-      '► LAUNCH ENDLESS SIEGE [ENTER] ◄',
+      { x: bx + btnPad, y: by + boxH - 114, width: fullBtnW, height: 44 },
+      '► LAUNCH RANKED ENDLESS SIEGE [ENTER] ◄',
       true,
       hoveredButtonId,
       '#FFB000',
       17
+    );
+
+    // Secondary 2-Column Onboarding Row: Live Interactive Training Drill + Full MU-TH-UR Wiki
+    const secGap = 12;
+    const secW = (fullBtnW - secGap) * 0.5;
+    const secY = by + boxH - 58;
+    this.addScaledButton(
+      ctx,
+      'perim-drill-start',
+      { x: bx + btnPad, y: secY, width: secW, height: 40 },
+      '► INTERACTIVE TRAINING DRILL [T] ◄',
+      false,
+      hoveredButtonId,
+      '#00F0FF',
+      14.5
+    );
+    this.addScaledButton(
+      ctx,
+      'perim-wiki-open',
+      { x: bx + btnPad + secW + secGap, y: secY, width: secW, height: 40 },
+      'MU-TH-UR TACTICAL WIKI [H]',
+      false,
+      hoveredButtonId,
+      '#44FF77',
+      14.5
     );
     ctx.restore();
   }
@@ -2779,8 +2941,8 @@ export class PerimeterHudRenderer {
     params: PerimeterHudRenderParams
   ): void {
     const { width: w, height: h, audioMuted, isFullscreen, sim, hoveredButtonId } = params;
-    const boxW = Math.min(700, w - 48);
-    const boxH = Math.min(368, h - 40);
+    const boxW = Math.min(720, w - 44);
+    const boxH = Math.min(468, h - 30);
     const bx = (w - boxW) * 0.5;
     const by = (h - boxH) * 0.5;
 
@@ -2801,14 +2963,14 @@ export class PerimeterHudRenderer {
     ctx.lineTo(bx + boxW - 22, by + 42);
     ctx.stroke();
 
-    // Top 2-Button Mission Command Strip (Endless Hive Siege is the sole mode)
-    const cmdY = by + 54;
+    // Top 2-Button Mission Command Strip
+    const cmdY = by + 52;
     const cmdGap = 12;
     const cmdW = (boxW - 44 - cmdGap) * 0.5;
     this.addScaledButton(
       ctx,
       'perim-close-modal',
-      { x: bx + 22, y: cmdY, width: cmdW, height: 36 },
+      { x: bx + 22, y: cmdY, width: cmdW, height: 34 },
       '[TAB] RESUME CONSOLE',
       true,
       hoveredButtonId,
@@ -2818,7 +2980,7 @@ export class PerimeterHudRenderer {
     this.addScaledButton(
       ctx,
       'perim-restart-endless',
-      { x: bx + 22 + cmdW + cmdGap, y: cmdY, width: cmdW, height: 36 },
+      { x: bx + 22 + cmdW + cmdGap, y: cmdY, width: cmdW, height: 34 },
       'RESTART ENDLESS SIEGE',
       false,
       hoveredButtonId,
@@ -2826,10 +2988,24 @@ export class PerimeterHudRenderer {
       15
     );
 
-    // Standardized Hardware & System Toggle Rows
-    const rowStartY = cmdY + 50;
-    const rowStep = 50;
+    // Standardized Hardware, Wiki, Training & System Toggle Rows
+    const rowStartY = cmdY + 46;
+    const rowStep = 47;
     const switches = [
+      {
+        id: 'perim-wiki-open',
+        name: 'MU-TH-UR TACTICAL WIKI / FIELD MANUAL [H]',
+        status: 'OPEN FULL DATABASE',
+        active: false,
+        accent: '#00F0FF',
+      },
+      {
+        id: sim.trainingMode ? 'perim-drill-exit' : 'perim-drill-start',
+        name: 'INTERACTIVE TRAINING DRILL (9 LIVE STAGES)',
+        status: sim.trainingMode ? 'EXIT TO ENDLESS SIEGE' : '► LAUNCH SIM DRILL',
+        active: sim.trainingMode,
+        accent: '#00F0FF',
+      },
       {
         id: 'perim-pause-toggle',
         name: 'TACTICAL SIMULATION PAUSE [SPACE]',
@@ -2863,25 +3039,25 @@ export class PerimeterHudRenderer {
     switches.forEach((sw, idx) => {
       const sy = rowStartY + idx * rowStep;
       ctx.fillStyle = 'rgba(8, 22, 13, 0.72)';
-      ctx.fillRect(bx + 22, sy, boxW - 44, 42);
+      ctx.fillRect(bx + 22, sy, boxW - 44, 40);
       ctx.strokeStyle = COLORS.GREEN_DIM;
       ctx.lineWidth = 1.4;
-      ctx.strokeRect(bx + 22, sy, boxW - 44, 42);
+      ctx.strokeRect(bx + 22, sy, boxW - 44, 40);
 
       ctx.textAlign = 'left';
-      ctx.font = 'bold 16px "Share Tech Mono", monospace';
+      ctx.font = 'bold 15px "Share Tech Mono", monospace';
       ctx.fillStyle = COLORS.GREEN_PRIMARY;
-      ctx.fillText(sw.name, bx + 34, sy + 27);
+      ctx.fillText(sw.name, bx + 34, sy + 25, boxW - 306);
 
       this.addScaledButton(
         ctx,
         sw.id,
-        { x: bx + boxW - 268, y: sy + 4, width: 234, height: 34 },
+        { x: bx + boxW - 266, y: sy + 4, width: 232, height: 32 },
         sw.status,
         sw.active,
         hoveredButtonId,
         sw.accent,
-        14
+        13.5
       );
     });
 
@@ -2891,22 +3067,238 @@ export class PerimeterHudRenderer {
     this.addScaledButton(
       ctx,
       'perim-close-modal',
-      { x: bx + 22, y: by + boxH - 48, width: footBtnW, height: 38 },
+      { x: bx + 22, y: by + boxH - 46, width: footBtnW, height: 36 },
       '[TAB / ESC] CLOSE MENU',
       true,
       hoveredButtonId,
       COLORS.GREEN_BRIGHT,
-      15.5
+      15
     );
     this.addScaledButton(
       ctx,
       'perim-exit-os',
-      { x: bx + 22 + footBtnW + footGap, y: by + boxH - 48, width: footBtnW, height: 38 },
+      { x: bx + 22 + footBtnW + footGap, y: by + boxH - 46, width: footBtnW, height: 36 },
       '[EXIT TO MU-TH-UR OS]',
       false,
       hoveredButtonId,
       '#FFB000',
-      15.5
+      15
+    );
+
+    ctx.restore();
+  }
+
+  private drawTutorialButtonHighlights(
+    ctx: CanvasRenderingContext2D,
+    highlightIds: string[],
+    timeSec: number
+  ): void {
+    const pulse = 0.55 + 0.45 * Math.sin(timeSec * 8.5);
+    ctx.save();
+    for (const id of highlightIds) {
+      const btn = this.buttons.find((b) => b.id === id);
+      if (!btn) continue;
+      const r = btn.rect;
+      ctx.strokeStyle = `rgba(0, 240, 255, ${(0.55 + pulse * 0.45).toFixed(2)})`;
+      ctx.lineWidth = 2.8;
+      ctx.strokeRect(r.x - 2, r.y - 2, r.width + 4, r.height + 4);
+      ctx.fillStyle = `rgba(0, 240, 255, ${(0.08 + pulse * 0.12).toFixed(3)})`;
+      ctx.fillRect(r.x, r.y, r.width, r.height);
+    }
+    ctx.restore();
+  }
+
+  private drawTutorialDirectiveBanner(
+    ctx: CanvasRenderingContext2D,
+    params: PerimeterHudRenderParams,
+    bpVp: ViewportRect
+  ): void {
+    const dir = params.tutorialDirective;
+    const { hoveredButtonId } = params;
+
+    const cardW = Math.min(840, bpVp.width - 16);
+    const objCount = dir.objectives.length;
+    const cardH = Math.min(138, 86 + objCount * 17);
+    const cx = Math.round(bpVp.x + (bpVp.width - cardW) * 0.5);
+    const cy = Math.round(bpVp.y + bpVp.height - cardH - 8);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(2, 11, 8, 0.94)';
+    ctx.fillRect(cx, cy, cardW, cardH);
+    this.drawCornerBrackets(ctx, cx, cy, cardW, cardH, 14, '#00F0FF', 2.2);
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.48)';
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(cx + 1, cy + 1, cardW - 2, cardH - 2);
+
+    // Header bar
+    ctx.fillStyle = 'rgba(6, 30, 34, 0.85)';
+    ctx.fillRect(cx + 2, cy + 2, cardW - 4, 24);
+
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 13px "Share Tech Mono", monospace';
+    ctx.fillStyle = '#00F0FF';
+    ctx.fillText(`◈ ${dir.code} // ${dir.title}`, cx + 12, cy + 18, cardW - 270);
+
+    // Top-right compact drill action pills ([WIKI] [SKIP] [EXIT])
+    const btnY = cy + 4;
+    const btnH = 20;
+    const exitW = 54;
+    const skipW = 74;
+    const wikiW = 64;
+    const bxExit = cx + cardW - exitW - 6;
+    const bxSkip = bxExit - skipW - 5;
+    const bxWiki = bxSkip - wikiW - 5;
+
+    this.addScaledButton(
+      ctx,
+      'perim-drill-open-wiki',
+      { x: bxWiki, y: btnY, width: wikiW, height: btnH },
+      'WIKI [H]',
+      false,
+      hoveredButtonId,
+      '#44FF77',
+      11
+    );
+    this.addScaledButton(
+      ctx,
+      'perim-drill-skip',
+      { x: bxSkip, y: btnY, width: skipW, height: btnH },
+      'SKIP STEP',
+      false,
+      hoveredButtonId,
+      '#FFB000',
+      11
+    );
+    this.addScaledButton(
+      ctx,
+      'perim-drill-exit',
+      { x: bxExit, y: btnY, width: exitW, height: btnH },
+      'EXIT',
+      false,
+      hoveredButtonId,
+      '#FF5533',
+      11
+    );
+
+    // Plain-English Coaching Lines (2 concise wrapped lines)
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
+    const textMaxW = dir.showContinueBtn ? cardW - 220 : cardW - 24;
+    dir.briefingLines.forEach((line, idx) => {
+      ctx.fillStyle = idx === 0 ? '#E8FFF0' : '#FFE082';
+      ctx.fillText(line, cx + 12, cy + 42 + idx * 16, textMaxW);
+    });
+
+    // Live Auto-Checking Objectives Checklist
+    const objStartY = cy + 76;
+    dir.objectives.forEach((obj, idx) => {
+      const oy = objStartY + idx * 17;
+      ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
+      ctx.fillStyle = obj.done ? '#44FF77' : '#70F8FF';
+      const mark = obj.done ? '[✓]' : '[ ]';
+      ctx.fillText(`${mark} ${obj.text}`, cx + 14, oy, textMaxW - 6);
+    });
+
+    // Optional Continue / Begin Drill button on Stage 1
+    if (dir.showContinueBtn) {
+      this.addScaledButton(
+        ctx,
+        'perim-drill-next',
+        { x: cx + cardW - 196, y: cy + cardH - 42, width: 184, height: 32 },
+        dir.continueLabel,
+        true,
+        hoveredButtonId,
+        '#FFB000',
+        13.5
+      );
+    }
+
+    ctx.restore();
+  }
+
+  private drawTutorialGraduationModal(
+    ctx: CanvasRenderingContext2D,
+    params: PerimeterHudRenderParams
+  ): void {
+    const { width: w, height: h, hoveredButtonId } = params;
+    const dir = params.tutorialDirective;
+    const boxW = Math.min(720, w - 44);
+    const boxH = 310;
+    const bx = (w - boxW) * 0.5;
+    const by = (h - boxH) * 0.5;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(1, 5, 3, 0.72)';
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.fillStyle = 'rgba(4, 14, 9, 0.98)';
+    ctx.fillRect(bx, by, boxW, boxH);
+    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 22, '#44FF77', 2.8);
+
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 23px "Share Tech Mono", monospace';
+    ctx.fillStyle = '#44FF77';
+    ctx.fillText(`★ ${dir.title} ★`, w * 0.5, by + 44, boxW - 44);
+
+    ctx.font = 'bold 13px "JetBrains Mono", monospace';
+    ctx.fillStyle = '#C8FAD8';
+    ctx.fillText(
+      'ALL 9 USCM TACTICAL DRILL MODULES PASSED // FULL SECTOR 01 CLEARANCE GRANTED',
+      w * 0.5,
+      by + 74,
+      boxW - 48
+    );
+
+    ctx.fillStyle = '#FFE082';
+    ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
+    ctx.fillText(
+      'REMEMBER: FUNNEL WITH DOOR SEALS [7] · LIGHT DARK CORRIDORS [6/F/L] · STERILIZE ACID [2]',
+      w * 0.5,
+      by + 114,
+      boxW - 48
+    );
+    ctx.fillStyle = '#70F8FF';
+    ctx.fillText(
+      'PRESS [H] ANYTIME DURING PLAY TO CONSULT THE FULL MU-TH-UR TACTICAL WIKI & STATS',
+      w * 0.5,
+      by + 140,
+      boxW - 48
+    );
+
+    const pad = 28;
+    const fullW = boxW - pad * 2;
+    this.addScaledButton(
+      ctx,
+      'perim-drill-exit',
+      { x: bx + pad, y: by + boxH - 114, width: fullW, height: 44 },
+      '► LAUNCH RANKED ENDLESS HIVE SIEGE [ENTER] ◄',
+      true,
+      hoveredButtonId,
+      '#FFB000',
+      16.5
+    );
+
+    const gap = 12;
+    const halfW = (fullW - gap) * 0.5;
+    this.addScaledButton(
+      ctx,
+      'perim-wiki-open',
+      { x: bx + pad, y: by + boxH - 58, width: halfW, height: 38 },
+      'OPEN FULL TACTICAL WIKI [H]',
+      false,
+      hoveredButtonId,
+      '#00F0FF',
+      14.5
+    );
+    this.addScaledButton(
+      ctx,
+      'perim-drill-start',
+      { x: bx + pad + halfW + gap, y: by + boxH - 58, width: halfW, height: 38 },
+      'REPLAY TRAINING DRILL',
+      false,
+      hoveredButtonId,
+      '#44FF77',
+      14.5
     );
 
     ctx.restore();

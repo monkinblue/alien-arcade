@@ -97,6 +97,7 @@ export class PerimeterSimulation {
 
   public mode: PerimeterMode = 'ENDLESS_SIEGE';
   public phase: PerimeterPhase = 'BRIEFING';
+  public trainingMode = false;
   public tacticalPaused = false;
   public fastForward2x = false;
 
@@ -198,6 +199,7 @@ export class PerimeterSimulation {
   public resetRun(mode: PerimeterMode = 'ENDLESS_SIEGE', showBriefing = false): void {
     this.mode = mode;
     this.phase = showBriefing ? 'BRIEFING' : 'TACTICAL_PREP';
+    this.trainingMode = false;
     this.tacticalPaused = false;
     this.fastForward2x = false;
 
@@ -1697,13 +1699,33 @@ export class PerimeterSimulation {
     this.stepXenomorphChaosAudio(simDt);
     this.stepMotionTrackerAudio(rawDt);
 
-    // 4. Check Wave Completion
-    if (this.phase === 'WAVE_ACTIVE') {
+    // 4. Check Wave Completion (Training Drill director manages its own stage progression)
+    if (this.phase === 'WAVE_ACTIVE' && !this.trainingMode) {
       const anyPending = this.spawnQueue.some((s) => s.remaining > 0);
       if (!anyPending && this.hostiles.length === 0 && this.eggSacs.length === 0) {
         this.completeCurrentWave();
       }
     }
+  }
+
+  /** Spawns a live hostile during the unranked Interactive Training Drill */
+  public spawnTrainingHostile(
+    ventId: string,
+    kind: HostileKind,
+    overridePos?: Vec2
+  ): HostileEntity {
+    this.spawnHostile(ventId, kind, overridePos);
+    return this.hostiles[this.hostiles.length - 1];
+  }
+
+  /** Spawns a corrosive acid hazard pool for the Incinerator sterilization drill */
+  public spawnTrainingAcidPool(pos: Vec2, radius = 64): void {
+    this.acidPools.push({
+      pos: { x: pos.x, y: pos.y },
+      radius,
+      remainingSec: 28,
+      maxSec: 28,
+    });
   }
 
   private spawnHostile(ventId: string, kind: HostileKind, overridePos?: Vec2): void {
@@ -2311,7 +2333,7 @@ export class PerimeterSimulation {
           const darkRange =
             spec.rangePx *
             rlyMult *
-            (t.level >= 2 ? 1.12 : 1.0) *
+            (t.level === 3 ? 1.22 : t.level === 2 ? 1.12 : 1.0) *
             PERIMETER_CONSTANTS.DARK_CORRIDOR_RANGE_MULT;
           const dx = h.pos.x - t.pos.x;
           const dy = h.pos.y - t.pos.y;
@@ -2501,7 +2523,8 @@ export class PerimeterSimulation {
 
       // 3. Directional Combat Turrets (UA 571-C Sentry, M240 Incinerator, M99 Rail-Lance)
       const rlyRangeMult = t.relayMatrixBoosted ? 1.32 : t.relayBoosted ? 1.24 : 1.0;
-      const fullRange = spec.rangePx * rlyRangeMult * (t.level >= 2 ? 1.12 : 1.0);
+      const fullRange =
+        spec.rangePx * rlyRangeMult * (t.level === 3 ? 1.22 : t.level === 2 ? 1.12 : 1.0);
       const darkRange = fullRange * PERIMETER_CONSTANTS.DARK_CORRIDOR_RANGE_MULT;
 
       // Acquire highest-priority VERIFIED target inside cone (100% range if illuminated, 55% if dark!)
@@ -3227,6 +3250,28 @@ export class PerimeterSimulation {
   }
 
   private handleCoreSealBreach(breacher: HostileEntity): void {
+    if (this.trainingMode) {
+      // Unranked Training Drill shield: demonstrate shockwave without losing a seal or ending drill!
+      this.sealLostFlashTimer = 1.1;
+      this.audioCb.onSyncGlitch(0.45);
+      this.spawnSparks(this.blueprint.coreCenter, 18, '#00F0FF');
+      for (let i = this.hostiles.length - 1; i >= 0; i--) {
+        const other = this.hostiles[i];
+        if (
+          Math.hypot(
+            other.pos.x - this.blueprint.coreCenter.x,
+            other.pos.y - this.blueprint.coreCenter.y
+          ) <= 180
+        ) {
+          this.hostiles.splice(i, 1);
+        }
+      }
+      this.pushLog(
+        `SIMULATION SHIELD HELD // REPULSED ${HOSTILE_SPECS[breacher.kind].name} AT CORE (TRAINING MODE)`
+      );
+      return;
+    }
+
     this.bulkheadSeals = Math.max(0, this.bulkheadSeals - 1);
     this.sealLostThisWave = true;
     this.perfectWaveStreak = 0;

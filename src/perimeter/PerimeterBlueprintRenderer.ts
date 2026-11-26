@@ -1,6 +1,7 @@
 import { COLORS } from '../constants';
 import type { Vec2, ViewportRect } from '../types';
 import type { PerimeterSimulation } from './PerimeterSimulation';
+import type { TutorialMapBeacon } from './PerimeterTutorialDirector';
 import {
   HARDWARE_SPECS,
   HOSTILE_SPECS,
@@ -27,6 +28,7 @@ export interface BlueprintRenderContext {
   selectedTurretId: string | null;
   selectedDoorId: string | null;
   dragBuildAnchor: { col: number; row: number; angle: number } | null;
+  tutorialBeacons?: TutorialMapBeacon[];
 }
 
 export class PerimeterBlueprintRenderer {
@@ -95,10 +97,11 @@ export class PerimeterBlueprintRenderer {
     // 1. Structural CAD Blueprint Grid, Bulkheads, Shafts, Grates & Rooms
     this.drawBlueprintArchitecture(ctx, rc);
 
-    // 2. Subtle Tactical Flow-Route Preview Lines (during Prep, Pause, or Arc-Welder tool)
+    // 2. Subtle Tactical Flow-Route Preview Lines (during Prep, Pause, Training, or Arc-Welder tool)
     if (
       sim.phase === 'TACTICAL_PREP' ||
       sim.tacticalPaused ||
+      sim.trainingMode ||
       (rc.activeTool.kind === 'BUILD' && rc.activeTool.buildId === 'ARC_WELDER')
     ) {
       this.drawFlowRouteVectors(ctx, sim, timeSec);
@@ -133,6 +136,11 @@ export class PerimeterBlueprintRenderer {
 
     // 11. Screen-Legible Diegetic Turret Telemetry Tags (`A-01 // 320 RDS`, `RELOAD 2.1S`, `000 DRY`)
     this.drawDiegeticTurretTags(ctx, rc, tf.scale);
+
+    // 11B. Interactive Training Drill Pulsing Map Beacons & Callout Arrows
+    if (rc.tutorialBeacons && rc.tutorialBeacons.length > 0) {
+      this.drawTutorialBeacons(ctx, rc.tutorialBeacons, timeSec, tf.scale);
+    }
 
     // 12. Interactive Build / Cone-Aiming / Command-Ability Cursor Preview
     this.drawInteractiveCursorPreview(ctx, rc);
@@ -2277,5 +2285,78 @@ export class PerimeterBlueprintRenderer {
       }
       ctx.restore();
     }
+  }
+
+  private drawTutorialBeacons(
+    ctx: CanvasRenderingContext2D,
+    beacons: TutorialMapBeacon[],
+    timeSec: number,
+    scale: number
+  ): void {
+    const invScale = 1 / Math.max(0.35, scale);
+    const pulse = 0.5 + 0.5 * Math.sin(timeSec * 6.5);
+    const expand = (timeSec * 1.15) % 1;
+
+    ctx.save();
+    for (const b of beacons) {
+      const baseR = b.radiusPx ?? 34;
+
+      // Expanding outer radar ping ring
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, (1 - expand) * 0.85);
+      ctx.strokeStyle = b.color;
+      ctx.lineWidth = 3.2;
+      ctx.beginPath();
+      ctx.arc(b.pos.x, b.pos.y, baseR * (0.75 + expand * 1.1), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      // Rotating dashed inner targeting ring
+      ctx.save();
+      ctx.translate(b.pos.x, b.pos.y);
+      ctx.rotate(timeSec * 1.4);
+      ctx.strokeStyle = b.color;
+      ctx.lineWidth = 2.6;
+      ctx.setLineDash([10, 7]);
+      ctx.beginPath();
+      ctx.arc(0, 0, baseR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+
+      // Bouncing downward tactical pointer chevron + screen-legible pill badge
+      const bob = Math.sin(timeSec * 7.5) * 6;
+      const tipY = b.pos.y - baseR - 8 + bob;
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.moveTo(b.pos.x, tipY);
+      ctx.lineTo(b.pos.x - 10, tipY - 14);
+      ctx.lineTo(b.pos.x + 10, tipY - 14);
+      ctx.closePath();
+      ctx.fill();
+
+      const fontPx = Math.round(12.5 * invScale);
+      ctx.font = `bold ${fontPx}px "Share Tech Mono", monospace`;
+      const tw = ctx.measureText(b.label).width;
+      const padX = 9 * invScale;
+      const pillH = Math.round(21 * invScale);
+      const pillW = tw + padX * 2;
+      const pillX = Math.max(
+        18,
+        Math.min(PERIMETER_CONSTANTS.VIRTUAL_W - pillW - 18, b.pos.x - pillW * 0.5)
+      );
+      const pillY = Math.max(24, tipY - 18 - pillH);
+
+      ctx.fillStyle = `rgba(3, 12, 8, ${(0.9 + pulse * 0.08).toFixed(2)})`;
+      ctx.fillRect(pillX, pillY, pillW, pillH);
+      ctx.strokeStyle = b.color;
+      ctx.lineWidth = 1.8 * invScale;
+      ctx.strokeRect(pillX, pillY, pillW, pillH);
+
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillText(b.label, pillX + pillW * 0.5, pillY + pillH * 0.72);
+    }
+    ctx.restore();
   }
 }

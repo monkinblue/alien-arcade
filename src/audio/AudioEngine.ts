@@ -47,6 +47,8 @@ export class AudioEngine {
   private sentryDirectWallInput: GainNode | null = null;
   private sentryWarehouseWetInput: GainNode | null = null;
   private sentryRollingTailBus: GainNode | null = null;
+  // Dedicated 3.5s cavernous steel-corridor PA reverb bus for station-wide alarms (round-over chime)
+  private stationAlarmHallInput: GainNode | null = null;
   // Cancel-and-replace last-shot rolling echo wave (fires ONLY once when a burst stops!)
   private activeSentryTail: {
     src: AudioBufferSourceNode;
@@ -4447,8 +4449,181 @@ export class AudioEngine {
   }
 
   /**
-   * Satisfying Nostromo console / station wave-clear siren & lock chime with subtle
-   * metallic corridor reverb and soft dual-tap hallway echo!
+   * Lazily initializes a dedicated 3.5s cavernous steel-corridor PA reverb bus for
+   * station-wide alarms (e.g. wave-clear siren), bypassing the muffled bulkhead gun bus.
+   */
+  private getOrInitStationAlarmHallBus(ctx: AudioContext): GainNode | null {
+    if (this.stationAlarmHallInput) return this.stationAlarmHallInput;
+    if (!this.masterGain) return null;
+
+    const input = ctx.createGain();
+    input.gain.value = 1.0;
+
+    const convolver = ctx.createConvolver();
+    convolver.normalize = false;
+    convolver.buffer = this.buildStationAlarmHallIr(ctx);
+
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 170;
+    hp.Q.value = 0.7;
+
+    const hallBody = ctx.createBiquadFilter();
+    hallBody.type = 'peaking';
+    hallBody.frequency.value = 660;
+    hallBody.Q.value = 0.9;
+    hallBody.gain.value = 2.0;
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 2900;
+    lp.Q.value = 0.65;
+
+    const wetOut = ctx.createGain();
+    wetOut.gain.value = 0.68;
+
+    input.connect(convolver);
+    convolver.connect(hp);
+    hp.connect(hallBody);
+    hallBody.connect(lp);
+    lp.connect(wetOut);
+    wetOut.connect(this.masterGain);
+
+    this.stationAlarmHallInput = input;
+    return input;
+  }
+
+  /**
+   * Synthesizes a stereo 3.50s cavernous metallic station-corridor Impulse Response
+   * (smooth brown/pink diffusion, alternating bulkhead early reflections, progressive
+   * high-frequency distance damping, cosine fadeout, and L2 unit-energy normalization)
+   * so the wave-clear alarm leaves a haunting ~3-second trailing echo down the halls.
+   */
+  private buildStationAlarmHallIr(ctx: AudioContext): AudioBuffer {
+    const sr = ctx.sampleRate;
+    const durSec = 3.5;
+    const len = Math.floor(sr * durSec);
+    const ir = ctx.createBuffer(2, len, sr);
+    const chL = ir.getChannelData(0);
+    const chR = ir.getChannelData(1);
+
+    let seed = 19790525;
+    const rand = (): number => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return (seed / 0xffffffff) * 2 - 1;
+    };
+
+    // 1. Alternating steel-bulkhead early corridor slapback reflections (34ms..380ms)
+    const earlyTaps: Array<{ ms: number; ampL: number; ampR: number }> = [
+      { ms: 34, ampL: 0.76, ampR: 0.28 },
+      { ms: 71, ampL: 0.30, ampR: 0.72 },
+      { ms: 124, ampL: -0.58, ampR: 0.34 },
+      { ms: 192, ampL: 0.32, ampR: -0.54 },
+      { ms: 275, ampL: 0.44, ampR: 0.28 },
+      { ms: 380, ampL: -0.24, ampR: 0.40 },
+    ];
+
+    let tapL = 0;
+    let tapR = 0;
+    for (const tap of earlyTaps) {
+      const idx = Math.floor((tap.ms / 1000) * sr);
+      const smearLen = Math.floor(sr * 0.011);
+      for (let k = 0; k < smearLen && idx + k < len; k++) {
+        const u = k / Math.max(1, smearLen - 1);
+        const w = Math.sin(u * Math.PI) * Math.exp(-u * 1.4);
+        tapL = (tapL + 0.2 * rand()) / 1.2;
+        tapR = (tapR + 0.2 * rand()) / 1.2;
+        chL[idx + k] += tap.ampL * w * tapL * 2.2;
+        chR[idx + k] += tap.ampR * w * tapR * 2.2;
+      }
+    }
+
+    // 2. Smooth 3.5s decorrelated cavernous station tail with progressive high-end damping
+    let b0L = 0, b1L = 0, b2L = 0, brownL = 0;
+    let b0R = 0, b1R = 0, b2R = 0, brownR = 0;
+    let lpLowL = 0, lpLowR = 0;
+    let lpMidL = 0, lpMidR = 0;
+    const alphaLow = 1 - Math.exp((-2 * Math.PI * 1050) / sr);
+    const preDelaySamp = Math.floor(sr * 0.032);
+    const fadeSamples = Math.floor(sr * 0.52);
+
+    for (let i = preDelaySamp; i < len; i++) {
+      const t = (i - preDelaySamp) / sr;
+      const buildUp = 1 - Math.exp(-t / 0.055);
+      const endFade =
+        i > len - fadeSamples
+          ? 0.5 * (1 + Math.cos(((i - (len - fadeSamples)) / fadeSamples) * Math.PI))
+          : 1.0;
+
+      const wL = rand();
+      const wR = rand();
+
+      b0L = 0.99765 * b0L + wL * 0.099046;
+      b1L = 0.963 * b1L + wL * 0.2965164;
+      b2L = 0.57 * b2L + wL * 1.0526913;
+      const pinkL = (b0L + b1L + b2L) * 0.17;
+      brownL = (brownL + 0.07 * wL) / 1.07;
+
+      b0R = 0.99765 * b0R + wR * 0.099046;
+      b1R = 0.963 * b1R + wR * 0.2965164;
+      b2R = 0.57 * b2R + wR * 1.0526913;
+      const pinkR = (b0R + b1R + b2R) * 0.17;
+      brownR = (brownR + 0.07 * wR) / 1.07;
+
+      // Time-darkening air-absorption cutoff: 2700Hz early -> 460Hz deep corridor!
+      const dynCut = 460 + 2240 * Math.exp(-t / 0.85);
+      const alphaDyn = 1 - Math.exp((-2 * Math.PI * dynCut) / sr);
+
+      const srcL = brownL * 1.35 + pinkL * 1.15;
+      const srcR = brownR * 1.35 + pinkR * 1.15;
+
+      lpLowL += alphaLow * (srcL - lpLowL);
+      lpLowR += alphaLow * (srcR - lpLowR);
+      lpMidL += alphaDyn * (srcL - lpMidL);
+      lpMidR += alphaDyn * (srcR - lpMidR);
+
+      const midBandL = lpMidL - lpLowL * 0.65;
+      const midBandR = lpMidR - lpLowR * 0.65;
+
+      // Long 1.05s low-mid corridor sustain + 0.68s metallic shimmer -> audible 3+ sec tail!
+      const envLow = Math.exp(-t / 1.05) * buildUp * endFade;
+      const envMid = Math.exp(-t / 0.68) * buildUp * endFade;
+
+      chL[i] += lpLowL * envLow * 1.05 + midBandL * envMid * 0.92;
+      chR[i] += lpLowR * envLow * 1.05 + midBandR * envMid * 0.92;
+    }
+
+    // Smooth 2-pole anti-fizz rolloff at 2850Hz + True L2 unit-energy normalization
+    let s1L = 0, s1R = 0, s2L = 0, s2R = 0;
+    const alphaLp = 1 - Math.exp((-2 * Math.PI * 2850) / sr);
+    let sumSq = 0;
+    for (let i = 0; i < len; i++) {
+      s1L += alphaLp * (chL[i] - s1L);
+      s1R += alphaLp * (chR[i] - s1R);
+      s2L += alphaLp * (s1L - s2L);
+      s2R += alphaLp * (s1R - s2R);
+      chL[i] = s2L;
+      chR[i] = s2R;
+      sumSq += s2L * s2L + s2R * s2R;
+    }
+
+    const l2Norm = Math.sqrt(Math.max(1e-12, sumSq * 0.5));
+    const gainScale = 1.05 / l2Norm;
+    for (let i = 0; i < len; i++) {
+      chL[i] *= gainScale;
+      chR[i] *= gainScale;
+    }
+    chL[0] = 0;
+    chR[0] = 0;
+    chL[len - 1] = 0;
+    chR[len - 1] = 0;
+
+    return ir;
+  }
+
+  /**
+   * Satisfying Nostromo console / station wave-clear siren & lock chime with a
+   * haunting ~3-second trailing metallic corridor echo and darkening stereo hall bounces!
    */
   public playWaveClearedChime(): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
@@ -4465,7 +4640,7 @@ export class AudioEngine {
     src.buffer = buf;
     src.playbackRate.value = 1.0;
 
-    // Warm station-speaker lowpass + main dry send
+    // Warm station-speaker lowpass + main dry send (keeps core alarm tone crisp & punchy)
     const mainLp = ctx.createBiquadFilter();
     mainLp.type = 'lowpass';
     mainLp.frequency.value = 4400;
@@ -4478,43 +4653,57 @@ export class AudioEngine {
     mainLp.connect(dryGain);
     dryGain.connect(this.masterGain);
 
-    // Metallic corridor hall convolution reverb send
+    // Tight metallic room body send
     if (this.sentryWarehouseWetInput) {
-      const hallSend = ctx.createGain();
-      hallSend.gain.value = 0.56;
-      mainLp.connect(hallSend);
-      hallSend.connect(this.sentryWarehouseWetInput);
+      const nearRoomSend = ctx.createGain();
+      nearRoomSend.gain.value = 0.28;
+      mainLp.connect(nearRoomSend);
+      nearRoomSend.connect(this.sentryWarehouseWetInput);
     }
 
-    // Subtle dual-tap corridor echo (+220ms left, +490ms right) filtered warm so it sits naturally in the station
-    const echoLp = ctx.createBiquadFilter();
-    echoLp.type = 'lowpass';
-    echoLp.frequency.value = 2150;
-    echoLp.Q.value = 0.7;
-    mainLp.connect(echoLp);
+    // Dedicated 3.5-second cavernous station PA hall convolution send
+    const alarmHallBus = this.getOrInitStationAlarmHallBus(ctx);
+    if (alarmHallBus) {
+      const directHallSend = ctx.createGain();
+      directHallSend.gain.value = 0.72;
+      mainLp.connect(directHallSend);
+      directHallSend.connect(alarmHallBus);
+    }
 
+    // 4-tap darkening stereo corridor echo cascade (+0.36s..+2.02s), each feeding the 3.5s
+    // cavernous hall bus so distant steel-corridor echoes trail cleanly for ~3 full seconds after!
     const taps = [
-      { delaySec: 0.22, gain: 0.24, pan: -0.24 },
-      { delaySec: 0.49, gain: 0.11, pan: 0.26 },
+      { delaySec: 0.36, gain: 0.26, pan: -0.34, cutoffHz: 2650, hallSend: 0.45 },
+      { delaySec: 0.82, gain: 0.15, pan: 0.38, cutoffHz: 1950, hallSend: 0.55 },
+      { delaySec: 1.38, gain: 0.085, pan: -0.42, cutoffHz: 1400, hallSend: 0.62 },
+      { delaySec: 2.02, gain: 0.045, pan: 0.44, cutoffHz: 980, hallSend: 0.68 },
     ];
     for (const tap of taps) {
-      const delay = ctx.createDelay(1.0);
+      const delay = ctx.createDelay(2.5);
       delay.delayTime.value = tap.delaySec;
+
+      const tapLp = ctx.createBiquadFilter();
+      tapLp.type = 'lowpass';
+      tapLp.frequency.value = tap.cutoffHz;
+      tapLp.Q.value = 0.65;
+
       const g = ctx.createGain();
       g.gain.value = tap.gain;
+
       const p = ctx.createStereoPanner();
       p.pan.value = tap.pan;
 
-      echoLp.connect(delay);
-      delay.connect(g);
+      mainLp.connect(delay);
+      delay.connect(tapLp);
+      tapLp.connect(g);
       g.connect(p);
       p.connect(this.masterGain);
 
-      if (this.sentryWarehouseWetInput) {
+      if (alarmHallBus) {
         const tapWet = ctx.createGain();
-        tapWet.gain.value = 0.34;
+        tapWet.gain.value = tap.hallSend;
         p.connect(tapWet);
-        tapWet.connect(this.sentryWarehouseWetInput);
+        tapWet.connect(alarmHallBus);
       }
     }
 
