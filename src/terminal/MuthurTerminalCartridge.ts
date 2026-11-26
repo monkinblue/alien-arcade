@@ -1545,7 +1545,7 @@ export class MuthurTerminalCartridge implements Cartridge {
     );
 
     // Responsive Monospace Font Sizing inside Main Terminal
-    const fontPx = Math.max(12.5, Math.min(17.5, Math.floor(Math.min(mainW / 46, contentH / 26))));
+    const fontPx = Math.max(13.5, Math.min(18.5, Math.floor(Math.min(mainW / 44, contentH / 25))));
     const lineStep = Math.round(fontPx * 1.56);
     const textLeft = mainX + Math.max(14, Math.round(fontPx * 1.0));
     let curY = contentTop + Math.max(26, Math.round(fontPx * 1.75));
@@ -2087,9 +2087,9 @@ export class MuthurTerminalCartridge implements Cartridge {
       ctx.lineWidth = hov ? 2.4 : 1.8;
       ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
 
-      const titleFont = cardH >= 64 ? 15.5 : 14;
-      const rankFont = cardH >= 64 ? 11 : 10;
-      const subFont = cardH >= 64 ? 12.5 : 11.5;
+      const titleFont = cardH >= 64 ? 16 : 14.5;
+      const rankFont = cardH >= 64 ? 12 : 11;
+      const subFont = cardH >= 64 ? 13 : 12;
 
       ctx.textAlign = 'left';
       ctx.font = `bold ${titleFont}px "Share Tech Mono", monospace`;

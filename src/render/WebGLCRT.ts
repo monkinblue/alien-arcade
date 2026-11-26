@@ -26,24 +26,21 @@ uniform float uDtFrames;
 void main() {
   vec2 texel = 1.0 / max(uResolution, vec2(1.0));
 
+  // Subtle sub-pixel beam warmth (keeps static UI text clean without multi-pixel smear)
   vec3 c0 = texture2D(uSourceTex, vUv).rgb;
-  vec3 cL = texture2D(uSourceTex, vUv - vec2(texel.x * 1.0, 0.0)).rgb;
-  vec3 cR = texture2D(uSourceTex, vUv + vec2(texel.x * 1.15, 0.0)).rgb;
-  vec3 beam = c0 * 0.66 + cL * 0.18 + cR * 0.16;
+  vec3 cL = texture2D(uSourceTex, clamp(vUv - vec2(texel.x * 0.75, 0.0), 0.001, 0.999)).rgb;
+  vec3 cR = texture2D(uSourceTex, clamp(vUv + vec2(texel.x * 0.75, 0.0), 0.001, 0.999)).rgb;
+  vec3 beam = c0 * 0.86 + cL * 0.07 + cR * 0.07;
 
-  vec3 prev0 = texture2D(uPrevTex, clamp(vUv - vec2(texel.x * 0.38, 0.0), 0.001, 0.999)).rgb;
-  vec3 prevSmear = (
-    prev0 * 0.76 +
-    texture2D(uPrevTex, clamp(vUv + vec2(texel.x * 1.05, 0.0), 0.001, 0.999)).rgb * 0.14 +
-    texture2D(uPrevTex, clamp(vUv - vec2(0.0, texel.y * 0.85), 0.001, 0.999)).rgb * 0.10
-  );
+  // Aligned persistence buffer: moving vectors leave lush P39 trails; static text stays clean
+  vec3 prev = texture2D(uPrevTex, vUv).rgb;
 
   vec3 channelDecay = pow(
     vec3(uDecayBase - 0.008, uDecayBase + 0.008, uDecayBase - 0.025),
     vec3(uDtFrames)
   );
-  vec3 decayed = prevSmear * channelDecay;
-  decayed *= smoothstep(0.016, 0.060, max(decayed.r, max(decayed.g, decayed.b)));
+  vec3 decayed = prev * channelDecay;
+  decayed *= smoothstep(0.015, 0.056, max(decayed.r, max(decayed.g, decayed.b)));
 
   gl_FragColor = vec4(max(beam, decayed), 1.0);
 }
@@ -165,75 +162,86 @@ void main() {
     }
   }
 
-  vec2 rawSampleUv = clamp(uv + shockUvOffset + vec2(hvJitterX + tearShift, 0.0), 0.001, 0.999);
+  vec2 uvMin = texel * 0.5;
+  vec2 uvMax = 1.0 - uvMin;
+  vec2 rawSampleUv = clamp(uv + shockUvOffset + vec2(hvJitterX + tearShift, 0.0), uvMin, uvMax);
 
-  // Subtle vintage raster stepping so lines feel authentically 1979 without blurring text
-  float rasterPitch = max(1.0, (1.05 + 0.45 * dial) * uDpr);
-  vec2 gridDims = max(vec2(300.0), floor(uResolution / rasterPitch));
-  vec2 quantUv = (floor(rawSampleUv * gridDims) + 0.5) / gridDims;
-  vec2 sampleUv = mix(rawSampleUv, quantUv, 0.62);
+  // Native 1:1 texel-locked sampling at flat precision mode (dial=0) so UI glyphs stay razor-sharp;
+  // vintage raster stepping only engages smoothly when CRT intensity dial is raised above 0.
+  vec2 sampleUv = rawSampleUv;
+  if (dial > 0.005) {
+    float rasterPitch = max(1.0, (1.0 + 0.45 * dial) * uDpr);
+    vec2 gridDims = max(vec2(300.0), floor(uResolution / rasterPitch));
+    vec2 quantUv = (floor(rawSampleUv * gridDims) + 0.5) / gridDims;
+    sampleUv = mix(rawSampleUv, quantUv, dial * 0.45);
+  }
 
   // =========================================================================
-  // SUBTLE HORIZONTAL RGB BEAM MISCONVERGENCE (Warm-Amber / Cool-Violet Fringe)
-  // Stronger toward the curved CRT edges, matching the 1979 reference monitor!
+  // BALANCED 1979 ANALOG RGB BEAM CONVERGENCE (Warm-Amber / Cool-Violet Edge)
+  // Retains signature Nostromo CRT sheen without double-vision on small HUD text!
   // =========================================================================
+  vec3 sampMid = texture2D(uSourceTex, sampleUv).rgb;
+
   float chroma = clamp(uChromaScale, 0.0, 1.0);
-  float misconvPx = (0.95 + cornerR2 * 2.35) * (0.45 + 0.65 * dial) * uDpr * chroma
+  float eventDisturb = clamp(totalDisturb * 0.90 + shockChromaBoost * 0.95 + turnOn, 0.0, 1.0);
+  float misconvPx = (0.55 + cornerR2 * 1.15) * (0.40 + 0.60 * dial) * uDpr * chroma
                   + totalDisturb * 2.8 * uDpr
                   + shockChromaBoost * 5.2 * uDpr
                   + turnOn * turnOn * 20.0 * uDpr;
   vec2 misconvVec = vec2(misconvPx * texel.x, tubeCentered.y * 0.30 * misconvPx * texel.y);
 
-  vec3 sampLeft  = texture2D(uSourceTex, clamp(sampleUv - misconvVec, 0.001, 0.999)).rgb;
-  vec3 sampMid   = texture2D(uSourceTex, sampleUv).rgb;
-  vec3 sampRight = texture2D(uSourceTex, clamp(sampleUv + misconvVec, 0.001, 0.999)).rgb;
+  vec3 sampLeft  = texture2D(uSourceTex, clamp(sampleUv - misconvVec, uvMin, uvMax)).rgb;
+  vec3 sampRight = texture2D(uSourceTex, clamp(sampleUv + misconvVec, uvMin, uvMax)).rgb;
 
   float lumLeft  = max(sampLeft.r, max(sampLeft.g, sampLeft.b));
   float lumMid   = max(sampMid.r, max(sampMid.g, sampMid.b));
   float lumRight = max(sampRight.r, max(sampRight.g, sampRight.b));
 
-  float warmFringeMask = max(0.0, lumLeft - lumMid * 0.68);
-  float coolFringeMask = max(0.0, lumRight - lumMid * 0.68);
-  float fringeAmt = mix(0.28, 1.0, chroma);
+  float warmFringeMask = max(0.0, lumLeft - lumMid * 0.70);
+  float coolFringeMask = max(0.0, lumRight - lumMid * 0.70);
+  float idleFringe = mix(0.20, 0.78, chroma);
+  float fringeAmt = clamp(max(idleFringe, eventDisturb), 0.0, 1.0);
+  float warmStrength = mix(0.26 + 0.22 * cornerR2, 0.42 + 0.34 * cornerR2, max(dial, eventDisturb));
+  float coolStrength = mix(0.28 + 0.24 * cornerR2, 0.44 + 0.38 * cornerR2, max(dial, eventDisturb));
 
   vec3 liveC = sampMid
-             + vec3(1.00, 0.64, 0.14) * warmFringeMask * (0.38 + 0.32 * cornerR2) * fringeAmt
-             + vec3(0.48, 0.30, 1.00) * coolFringeMask * (0.42 + 0.38 * cornerR2) * fringeAmt;
+             + vec3(1.00, 0.64, 0.14) * warmFringeMask * warmStrength * fringeAmt
+             + vec3(0.48, 0.30, 1.00) * coolFringeMask * coolStrength * fringeAmt;
 
   // =========================================================================
-  // PHOSPHOR PERSISTENCE TRAILS (Golden-Amber & P39 Green)
+  // PHOSPHOR PERSISTENCE TRAILS (Golden-Amber & P39 Green Glow)
   // =========================================================================
-  vec3 accumC = texture2D(uAccumTex, quantUv).rgb * 0.72 +
-                texture2D(uAccumTex, clamp(quantUv - vec2(1.6 / gridDims.x, 0.0), 0.001, 0.999)).rgb * 0.28;
+  vec3 accumC = texture2D(uAccumTex, sampleUv).rgb * 0.88 +
+                texture2D(uAccumTex, clamp(sampleUv - vec2(texel.x * 0.45, 0.0), uvMin, uvMax)).rgb * 0.12;
   vec3 ghostTail = max(accumC - sampMid, vec3(0.0));
   float tailWarmth = smoothstep(0.04, 0.30, ghostTail.r - ghostTail.g * 0.65);
   vec3 trailTint = mix(vec3(0.86, 1.02, 0.78), vec3(1.08, 0.78, 0.28), tailWarmth);
-  vec3 beamWithPersistence = liveC + ghostTail * trailTint * (0.68 + 0.32 * dial);
+  vec3 beamWithPersistence = liveC + ghostTail * trailTint * (0.68 + 0.30 * dial);
 
   // =========================================================================
-  // FURTHER REDUCED, TIGHT SUB-PIXEL HALATION / BLOOM (0% at dial=0)
+  // TIGHT AUTHENTIC P39 PHOSPHOR HALATION / GLOW (Lush CRT Aura, Crisp Text)
   // =========================================================================
   vec3 localHalo = vec3(0.0);
-  float rTight = (0.85 + dial * 0.85) * uDpr;
-  float rMid = (1.85 + dial * 1.45) * uDpr;
+  float rTight = (0.95 + dial * 0.80) * uDpr;
+  float rMid = (1.95 + dial * 1.40) * uDpr;
 
-  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2( rTight, 0.0) * texel, 0.001, 0.999)).rgb * 0.16;
-  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(-rTight, 0.0) * texel, 0.001, 0.999)).rgb * 0.16;
-  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(0.0,  rTight) * texel, 0.001, 0.999)).rgb * 0.16;
-  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(0.0, -rTight) * texel, 0.001, 0.999)).rgb * 0.16;
+  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2( rTight, 0.0) * texel, uvMin, uvMax)).rgb * 0.16;
+  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(-rTight, 0.0) * texel, uvMin, uvMax)).rgb * 0.16;
+  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(0.0,  rTight) * texel, uvMin, uvMax)).rgb * 0.16;
+  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(0.0, -rTight) * texel, uvMin, uvMax)).rgb * 0.16;
 
-  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2( rMid,  rMid) * 0.71 * texel, 0.001, 0.999)).rgb * 0.09;
-  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(-rMid,  rMid) * 0.71 * texel, 0.001, 0.999)).rgb * 0.09;
-  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2( rMid, -rMid) * 0.71 * texel, 0.001, 0.999)).rgb * 0.09;
-  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(-rMid, -rMid) * 0.71 * texel, 0.001, 0.999)).rgb * 0.09;
+  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2( rMid,  rMid) * 0.71 * texel, uvMin, uvMax)).rgb * 0.09;
+  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(-rMid,  rMid) * 0.71 * texel, uvMin, uvMax)).rgb * 0.09;
+  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2( rMid, -rMid) * 0.71 * texel, uvMin, uvMax)).rgb * 0.09;
+  localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(-rMid, -rMid) * 0.71 * texel, uvMin, uvMax)).rgb * 0.09;
 
-  vec3 bloomCol = max(localHalo - vec3(0.055), vec3(0.0)) * (0.15 * dial);
+  vec3 bloomCol = max(localHalo - vec3(0.11), vec3(0.0)) * (0.13 + 0.14 * dial);
   float bloomWarmth = smoothstep(0.03, 0.25, bloomCol.r - bloomCol.g * 0.65);
-  vec3 bloomTint = mix(vec3(0.84, 1.00, 0.88), vec3(1.10, 0.80, 0.34), bloomWarmth);
+  vec3 bloomTint = mix(vec3(0.84, 1.02, 0.88), vec3(1.10, 0.80, 0.34), bloomWarmth);
 
-  // Restored Deep CRT Contrast Floor + Subtle Shockwave Phosphor Surge
-  vec3 cathodeFloor = vec3(0.012, 0.025, 0.016) * (1.0 - cornerR2 * 0.38);
-  vec3 col = cathodeFloor + beamWithPersistence * 0.96 + bloomCol * bloomTint;
+  // Deep Nostromo CRT Contrast Floor + Subtle Shockwave Phosphor Surge
+  vec3 cathodeFloor = vec3(0.012, 0.025, 0.016) * (1.0 - cornerR2 * 0.36);
+  vec3 col = cathodeFloor + beamWithPersistence * 1.02 + bloomCol * bloomTint;
   if (shockRingGlow > 0.001) {
     col += vec3(0.36, 0.95, 0.56) * shockRingGlow * 0.14;
   }
@@ -249,52 +257,54 @@ void main() {
   }
 
   // =========================================================================
-  // PROMINENT 1970s TRINITRON VERTICAL APERTURE GRILLE + INTERLOCKED SCANLINES
-  // Exact integer physical pixel pitch prevents moire banding at all DPIs!
-  // Localized shockwave offset bends scanlines & phosphor grille outward!
+  // AUTHENTIC 1970s TRINITRON VERTICAL APERTURE GRILLE + INTERLOCKED SCANLINES
+  // Exact integer physical pixel pitch (zero moire at DPR 1.0, 1.5, 2.0!).
+  // Single-wire column geometry + balanced spot bloom keeps crisp 1979 phosphor
+  // bar texture visibly woven across text without chopping thin letter stems!
   // =========================================================================
-  float colPeriod = max(3.0, floor(2.8 * uDpr + 0.5)); // Integer physical px width per vertical phosphor column
-  float rowPeriod = max(2.0, floor(2.0 * uDpr + 0.5)); // Integer physical px height per scanline
+  float colPeriod = max(3.0, floor(3.0 * uDpr + 0.5));
+  float rowPeriod = max(2.0, floor(2.0 * uDpr + 0.5));
 
   vec2 grilleCoord = gl_FragCoord.xy + shockUvOffset * uResolution * 0.9;
-  float colPhase = (mod(floor(grilleCoord.x), colPeriod) + 0.5) / colPeriod;
-  float rowPhase = (mod(floor(grilleCoord.y), rowPeriod) + 0.5) / rowPeriod;
+  float colNorm = mod(floor(grilleCoord.x), colPeriod) / colPeriod;
+  float rowNorm = mod(floor(grilleCoord.y), rowPeriod) / rowPeriod;
 
-  // Crisp vertical phosphor segment with dark vertical tungsten wire gap at column boundary
-  float distColCenter = abs(colPhase - 0.5) * 2.0; // 0 at stripe center, 1 at wire gap
-  float verticalGrille = 1.0 - (0.42 + 0.26 * dial) * smoothstep(0.42, 0.96, distColCenter);
+  // Distinct vertical phosphor segment with tungsten wire gap on 1-of-N columns
+  float distColCenter = abs(colNorm - 0.5) * 2.0;
+  float verticalGrille = 1.0 - (0.27 + 0.26 * dial) * smoothstep(0.50, 0.98, distColCenter);
 
-  // Subtle RGB phosphor tint across each vertical Trinitron column triad
-  float subTriad = colPhase - 0.5;
+  // Authentic Trinitron RGB phosphor triad micro-tint
+  float subTriad = colNorm - 0.5;
   vec3 apertureTint = vec3(
-    1.0 + subTriad * 0.14,
-    1.0 - abs(subTriad) * 0.06,
-    1.0 - subTriad * 0.16
+    1.0 + subTriad * (0.09 + 0.06 * dial),
+    1.0 - abs(subTriad) * (0.04 + 0.025 * dial),
+    1.0 - subTriad * (0.10 + 0.07 * dial)
   );
 
-  // Interlocking horizontal scanline gap
-  float distRowCenter = abs(rowPhase - 0.5) * 2.0;
-  float horizScan = 1.0 - (0.22 + 0.20 * dial) * smoothstep(0.45, 0.98, distRowCenter);
+  // True alternating horizontal scanlines across all DPR scales
+  float distRowCenter = abs(rowNorm - 0.5) * 2.0;
+  float horizScan = 1.0 - (0.18 + 0.20 * dial) * smoothstep(0.48, 0.98, distRowCenter);
 
   float peakLum = clamp(max(col.r, max(col.g, col.b)), 0.0, 1.0);
-  // Keep vertical wire gaps distinct even on bright glowing contours (like the reference photo!)
-  float combinedMask = mix(verticalGrille * horizScan, mix(verticalGrille, 1.0, 0.22), peakLum * 0.32);
+  float brightSpot = smoothstep(0.20, 0.88, peakLum);
+  float rawMask = verticalGrille * horizScan;
+  float combinedMask = mix(rawMask, mix(rawMask, 1.0, 0.36), brightSpot);
   col *= combinedMask * apertureTint;
 
-  // Soft analog highlight roll-off + 60Hz flicker
-  col = col / (1.0 + col * 0.12);
-  col *= 1.0 - (0.008 + 0.012 * dial) * sin(uTime * 376.991);
+  // Soft analog highlight roll-off + subtle 60Hz cathode hum
+  col = col / (1.0 + col * 0.10);
+  col *= 1.0 - (0.007 + 0.011 * dial) * sin(uTime * 376.991);
 
-  float snowAmt = uInterference * 0.13 + uGlitch * 0.26 + uOverdrive * 0.03 + 0.014;
+  float snowAmt = uInterference * 0.13 + uGlitch * 0.26 + uOverdrive * 0.03 + 0.012;
   float snow = hash12(floor(gl_FragCoord.xy / max(1.0, uDpr)) + vec2(floor(uTime * 30.0) * 17.3, 9.1)) - 0.5;
   col += vec3(0.28, 0.72, 0.42) * snow * snowAmt;
 
-  // Subtle Curved Glass Corner Glare & Deep Inner Bezel Vignette (scales cleanly from 0% flat to 100% tube)
+  // Subtle Curved Glass Corner Glare & Moody Nostromo Edge Vignette
   vec2 glarePos1 = tubeCentered - vec2(-0.34, 0.42);
   float warmLampGlare = exp(-dot(glarePos1, glarePos1) * 5.8) * (0.048 * dial);
   col += vec3(0.90, 0.78, 0.60) * warmLampGlare;
 
-  float vignette = clamp(1.0 - cornerR2 * (0.06 + 0.24 * dial), 0.40, 1.0);
+  float vignette = clamp(1.0 - cornerR2 * (0.055 + 0.24 * dial), 0.42, 1.0);
   float edgeShadow = smoothstep(0.0, 0.055, 1.0 - max(abs(tubeCentered.x), abs(tubeCentered.y)));
   col *= vignette * mix(1.0, mix(0.26, 1.0, edgeShadow), dial);
 

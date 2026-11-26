@@ -68,9 +68,9 @@ export class PerimeterHudRenderer {
     const baseRightW = 368;
     const basePanelH = 744;
 
-    const scaleW = (w * 0.345) / (baseLeftW + baseRightW);
+    const scaleW = (w * 0.382) / (baseLeftW + baseRightW);
     const scaleH = (h - topBarH - margin - 6) / basePanelH;
-    const hudScale = Math.max(0.62, Math.min(1.18, Math.min(scaleW, scaleH)));
+    const hudScale = Math.max(0.70, Math.min(1.18, Math.min(scaleW, scaleH)));
 
     const leftW = Math.round(baseLeftW * hudScale);
     const rightW = Math.round(baseRightW * hudScale);
@@ -511,9 +511,9 @@ export class PerimeterHudRenderer {
     ctx.lineTo(threshX, batY + 16);
     ctx.stroke();
 
-    ctx.font = 'bold 11px "Share Tech Mono", monospace';
+    ctx.font = 'bold 11.5px "Share Tech Mono", monospace';
     ctx.textAlign = 'left';
-    ctx.fillStyle = batReady ? '#9BF8FF' : '#8EF5AB';
+    ctx.fillStyle = batReady ? '#9BF8FF' : '#A6FCC2';
     ctx.fillText('RES BAT', 14, batY + 13);
     ctx.textAlign = 'right';
     ctx.fillStyle = batReady ? '#00F0FF' : '#FFB000';
@@ -547,7 +547,7 @@ export class PerimeterHudRenderer {
     ctx.lineWidth = 1.4;
     ctx.strokeRect(10, engY, engW, engH);
     ctx.textAlign = 'center';
-    ctx.font = 'bold 11px "Share Tech Mono", monospace';
+    ctx.font = 'bold 11.5px "Share Tech Mono", monospace';
     ctx.fillStyle = canExpand ? '#9BF8FF' : COLORS.GREEN_MID;
     ctx.fillText(
       expandCapped ? 'BUS 360kW MAX' : `+15kW (${expandCost}S)`,
@@ -874,9 +874,9 @@ export class PerimeterHudRenderer {
     ctx.lineWidth = 1.2;
     ctx.strokeRect(x + 6, stripY, w - 12, 22);
 
-    ctx.font = 'bold 11px "JetBrains Mono", monospace';
+    ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
     ctx.textAlign = 'left';
-    ctx.fillStyle = anyDry ? '#FF3318' : anyLowAmmo ? '#FFB000' : '#8EF5AB';
+    ctx.fillStyle = anyDry ? '#FF3318' : anyLowAmmo ? '#FFB000' : '#A6FCC2';
     const rdsSummary =
       totalMaxAmmo > 0 ? `RDS:${String(totalAmmo).padStart(4, '0')}` : 'RDS:----';
     ctx.fillText(rdsSummary, x + 11, stripY + 15);
@@ -899,18 +899,18 @@ export class PerimeterHudRenderer {
       const maxSlots = Math.min(4, Math.max(1, Math.floor(availH / (slotH + 6))));
       for (let i = 0; i < maxSlots; i++) {
         const sy = listTop + i * (slotH + 6);
-        ctx.strokeStyle = 'rgba(38, 102, 58, 0.42)';
+        ctx.strokeStyle = 'rgba(56, 138, 82, 0.52)';
         ctx.lineWidth = 1.2;
         ctx.setLineDash([4, 4]);
         ctx.strokeRect(x + 6, sy, w - 12, slotH);
         ctx.setLineDash([]);
 
         ctx.textAlign = 'left';
-        ctx.font = 'bold 11.5px "Share Tech Mono", monospace';
-        ctx.fillStyle = 'rgba(68, 255, 119, 0.42)';
+        ctx.font = 'bold 12px "Share Tech Mono", monospace';
+        ctx.fillStyle = 'rgba(104, 248, 148, 0.72)';
         ctx.fillText(`HARDPOINT 0${i + 1} // UNASSIGNED`, x + 14, sy + 18);
-        ctx.font = '10.5px "JetBrains Mono", monospace';
-        ctx.fillStyle = 'rgba(59, 224, 104, 0.30)';
+        ctx.font = 'bold 11px "JetBrains Mono", monospace';
+        ctx.fillStyle = 'rgba(84, 214, 124, 0.62)';
         ctx.fillText('SELECT [1-8] TO DEPLOY WEAPON', x + 14, sy + 34);
       }
       ctx.restore();
@@ -1211,7 +1211,7 @@ export class PerimeterHudRenderer {
           );
         } else {
           ctx.textAlign = 'left';
-          ctx.font = '10.5px "JetBrains Mono", monospace';
+          ctx.font = 'bold 11px "JetBrains Mono", monospace';
           ctx.fillStyle = COLORS.GREEN_MID;
           ctx.fillText(
             isCryo
@@ -1220,7 +1220,8 @@ export class PerimeterHudRenderer {
                 ? 'TESLA ARC // STUNS & DECLOAKS'
                 : `M314 RADAR // ${sim.getTurretPowerKw(t)}kW ACTIVE`,
             cx + 6,
-            row3Y + 9
+            row3Y + 9,
+            cw - 12
           );
         }
       }
@@ -1487,31 +1488,31 @@ export class PerimeterHudRenderer {
 
       // Left Short Title strictly left of cost pill
       ctx.textAlign = 'left';
-      ctx.font = 'bold 13px "Share Tech Mono", monospace';
+      ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
       ctx.fillStyle = drillLocked
-        ? '#395E45'
+        ? '#4D7D5C'
         : isSelected
           ? '#FFE082'
           : hov
             ? '#FFFFFF'
             : canAfford
               ? item.cyan
-                ? '#70F8FF'
-                : '#52FF86'
-              : '#5D9E71';
+                ? '#7CF9FF'
+                : '#5EFF90'
+              : '#7FC494';
       ctx.fillText(`[${spec.shortKey}] ${item.shortTitle}`, cx + 6, cy + 17, pillX - cx - 10);
 
       // Line 2 & Line 3 compact technical telemetry
-      ctx.font = 'bold 10.5px "JetBrains Mono", monospace';
-      ctx.fillStyle = drillLocked ? '#2C4A36' : canAfford ? '#9EF5B8' : '#588C68';
-      ctx.fillText(item.line2, cx + 6, cy + 32, cellW - 12);
+      ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
+      ctx.fillStyle = drillLocked ? '#406B4F' : canAfford ? '#B8FCD0' : '#7FB590';
+      ctx.fillText(item.line2, cx + 6, cy + 33, cellW - 12);
       ctx.fillStyle = drillLocked
-        ? '#263E2E'
+        ? '#385E45'
         : canAfford
           ? item.cyan
-            ? '#9BF8FF'
-            : '#FFB000'
-          : '#506B58';
+            ? '#A8FAFF'
+            : '#FFBE2E'
+          : '#7A9E84';
       ctx.fillText(item.line3, cx + 6, cy + cellH - 6, cellW - 12);
     });
 
@@ -1645,9 +1646,9 @@ export class PerimeterHudRenderer {
         ctx.strokeRect(ax, ry, abW, abH);
 
         ctx.textAlign = 'center';
-        ctx.font = 'bold 13px "Share Tech Mono", monospace';
+        ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
         ctx.fillStyle = drillLocked
-          ? '#395E45'
+          ? '#4D7D5C'
           : ab.ready
             ? ab.accent
               ? '#D4FFFF'
@@ -1655,8 +1656,8 @@ export class PerimeterHudRenderer {
             : COLORS.GREEN_MID;
         ctx.fillText(ab.top, ax + abW * 0.5, ry + 17, abW - 6);
 
-        ctx.font = 'bold 11px "JetBrains Mono", monospace';
-        ctx.fillStyle = drillLocked ? '#2A4432' : ab.ready ? '#52FF86' : COLORS.RED_KLAXON;
+        ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
+        ctx.fillStyle = drillLocked ? '#467054' : ab.ready ? '#62FF92' : COLORS.RED_KLAXON;
         ctx.fillText(drillLocked ? 'LOCKED' : ab.sub, ax + abW * 0.5, ry + 33, abW - 6);
       });
     });
@@ -2224,11 +2225,11 @@ export class PerimeterHudRenderer {
 
     // Default Tactical Operator Reference inside Inspector + Quick Wiki & Training Buttons
     ctx.textAlign = 'left';
-    ctx.font = 'bold 14px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
+    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
+    ctx.fillStyle = '#FFBE2E';
     ctx.fillText('UNIT INSPECTOR // TACTICAL GUIDE', x + 12, y + 20, w - 24);
 
-    ctx.font = 'bold 11px "JetBrains Mono", monospace';
+    ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
     const tips = [
       '• [1-8] ARSENAL: RAIL PIERCES · COIL STUNS · M18 MINE',
       '• UPGRADE MK-I -> MK-II -> BRANCHING MK-III (A / B)',
@@ -2241,7 +2242,7 @@ export class PerimeterHudRenderer {
     const availTipsH = Math.max(76, h - 38 - footerBtnH - 12);
     const lineStep = Math.min(18, Math.floor(availTipsH / tips.length));
     tips.forEach((line, i) => {
-      ctx.fillStyle = i === 1 || i === 2 || i === 5 ? '#FFC43D' : '#9EF5B8';
+      ctx.fillStyle = i === 1 || i === 2 || i === 5 ? '#FFD15C' : '#B4FCCC';
       ctx.fillText(line, x + 12, y + 39 + i * lineStep, w - 24);
     });
 
@@ -3163,35 +3164,35 @@ export class PerimeterHudRenderer {
     const dir = params.tutorialDirective;
     const { hoveredButtonId } = params;
 
-    const cardW = Math.min(840, bpVp.width - 16);
+    const cardW = Math.min(860, bpVp.width - 14);
     const objCount = dir.objectives.length;
-    const cardH = Math.min(138, 86 + objCount * 17);
+    const cardH = Math.min(148, 92 + objCount * 18);
     const cx = Math.round(bpVp.x + (bpVp.width - cardW) * 0.5);
     const cy = Math.round(bpVp.y + bpVp.height - cardH - 8);
 
     ctx.save();
-    ctx.fillStyle = 'rgba(2, 11, 8, 0.94)';
+    ctx.fillStyle = 'rgba(2, 11, 8, 0.95)';
     ctx.fillRect(cx, cy, cardW, cardH);
     this.drawCornerBrackets(ctx, cx, cy, cardW, cardH, 14, '#00F0FF', 2.2);
-    ctx.strokeStyle = 'rgba(0, 240, 255, 0.48)';
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.52)';
     ctx.lineWidth = 1.2;
     ctx.strokeRect(cx + 1, cy + 1, cardW - 2, cardH - 2);
 
     // Header bar
-    ctx.fillStyle = 'rgba(6, 30, 34, 0.85)';
-    ctx.fillRect(cx + 2, cy + 2, cardW - 4, 24);
+    ctx.fillStyle = 'rgba(6, 30, 34, 0.88)';
+    ctx.fillRect(cx + 2, cy + 2, cardW - 4, 26);
 
     ctx.textAlign = 'left';
-    ctx.font = 'bold 13px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#00F0FF';
-    ctx.fillText(`◈ ${dir.code} // ${dir.title}`, cx + 12, cy + 18, cardW - 270);
+    ctx.font = 'bold 14px "Share Tech Mono", monospace';
+    ctx.fillStyle = '#5CF4FF';
+    ctx.fillText(`◈ ${dir.code} // ${dir.title}`, cx + 12, cy + 19, cardW - 270);
 
     // Top-right compact drill action pills ([WIKI] [SKIP] [EXIT])
     const btnY = cy + 4;
-    const btnH = 20;
-    const exitW = 54;
-    const skipW = 74;
-    const wikiW = 64;
+    const btnH = 21;
+    const exitW = 56;
+    const skipW = 78;
+    const wikiW = 68;
     const bxExit = cx + cardW - exitW - 6;
     const bxSkip = bxExit - skipW - 5;
     const bxWiki = bxSkip - wikiW - 5;
@@ -3204,7 +3205,7 @@ export class PerimeterHudRenderer {
       false,
       hoveredButtonId,
       '#44FF77',
-      11
+      11.5
     );
     this.addScaledButton(
       ctx,
@@ -3214,7 +3215,7 @@ export class PerimeterHudRenderer {
       false,
       hoveredButtonId,
       '#FFB000',
-      11
+      11.5
     );
     this.addScaledButton(
       ctx,
@@ -3224,24 +3225,24 @@ export class PerimeterHudRenderer {
       false,
       hoveredButtonId,
       '#FF5533',
-      11
+      11.5
     );
 
     // Plain-English Coaching Lines (2 concise wrapped lines)
     ctx.textAlign = 'left';
-    ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
+    ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
     const textMaxW = dir.showContinueBtn ? cardW - 220 : cardW - 24;
     dir.briefingLines.forEach((line, idx) => {
-      ctx.fillStyle = idx === 0 ? '#E8FFF0' : '#FFE082';
-      ctx.fillText(line, cx + 12, cy + 42 + idx * 16, textMaxW);
+      ctx.fillStyle = idx === 0 ? '#EEFFF4' : '#FFE48F';
+      ctx.fillText(line, cx + 12, cy + 45 + idx * 17, textMaxW);
     });
 
     // Live Auto-Checking Objectives Checklist
-    const objStartY = cy + 76;
+    const objStartY = cy + 81;
     dir.objectives.forEach((obj, idx) => {
-      const oy = objStartY + idx * 17;
-      ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
-      ctx.fillStyle = obj.done ? '#44FF77' : '#70F8FF';
+      const oy = objStartY + idx * 18;
+      ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
+      ctx.fillStyle = obj.done ? '#5EFF90' : '#8CF9FF';
       const mark = obj.done ? '[✓]' : '[ ]';
       ctx.fillText(`${mark} ${obj.text}`, cx + 14, oy, textMaxW - 6);
     });

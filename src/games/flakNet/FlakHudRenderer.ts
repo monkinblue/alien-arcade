@@ -65,9 +65,9 @@ export class FlakHudRenderer {
     const baseLeftW = 282;
     const baseRightW = 222;
     const basePanelH = 680;
-    const scaleW = (w * 0.31) / (baseLeftW + baseRightW);
+    const scaleW = (w * 0.345) / (baseLeftW + baseRightW);
     const scaleH = (h - topBarH - margin - 8) / basePanelH;
-    const hudScale = Math.max(0.62, Math.min(1.12, Math.min(scaleW, scaleH)));
+    const hudScale = Math.max(0.68, Math.min(1.14, Math.min(scaleW, scaleH)));
 
     const leftW = Math.round(baseLeftW * hudScale);
     const rightW = Math.round(baseRightW * hudScale);
@@ -567,10 +567,10 @@ export class FlakHudRenderer {
 
     // Active EMP Capacitor Recharge Gauge (3 Danger Close kills or 1 Deflection Kill -> +1 HV shell!)
     const gaugeY = y + h - 6;
-    ctx.font = 'bold 10px "JetBrains Mono", monospace';
+    ctx.font = 'bold 10.5px "JetBrains Mono", monospace';
     if (bat.ammo >= bat.maxAmmo) {
       ctx.textAlign = 'left';
-      ctx.fillStyle = '#8EF5AB';
+      ctx.fillStyle = '#A6FCC2';
       ctx.fillText('CAPACITOR FULL // MAX HV CHARGE', x + 7, gaugeY);
     } else {
       const filled = Math.max(0, Math.min(3, dcProgress));
@@ -579,7 +579,7 @@ export class FlakHudRenderer {
       ctx.fillStyle = filled > 0 ? '#FFB000' : COLORS.GREEN_MID;
       ctx.fillText(`3X CHARGE: ${pips}`, x + 7, gaugeY);
       ctx.textAlign = 'right';
-      ctx.fillStyle = 'rgba(142, 245, 171, 0.78)';
+      ctx.fillStyle = '#A6FCC2';
       ctx.fillText('OR 1 DEFLECT KILL', x + w - 7, gaugeY);
     }
 
@@ -623,7 +623,7 @@ export class FlakHudRenderer {
     ctx.textAlign = 'right';
     ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
     ctx.fillStyle =
-      sim.liveChain >= 4 ? '#FFF6CC' : predOn ? '#FFB000' : 'rgba(59, 224, 104, 0.45)';
+      sim.liveChain >= 4 ? '#FFF6CC' : predOn ? '#FFB000' : 'rgba(116, 238, 152, 0.80)';
     ctx.fillText(
       sim.liveChain >= 4
         ? `OVERCLK -20%`
@@ -723,10 +723,10 @@ export class FlakHudRenderer {
     // Column Header Legend
     const colY = y + 34;
     ctx.textAlign = 'left';
-    ctx.font = 'bold 9.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = 'rgba(59, 224, 104, 0.56)';
+    ctx.font = 'bold 10.5px "JetBrains Mono", monospace';
+    ctx.fillStyle = '#6CD98E';
     ctx.fillText('UNIT    GRID-X  ALT   KILL', x + 8, colY);
-    ctx.strokeStyle = 'rgba(35, 110, 60, 0.45)';
+    ctx.strokeStyle = 'rgba(48, 146, 82, 0.52)';
     ctx.lineWidth = 1.0;
     ctx.beginPath();
     ctx.moveTo(x + 6, colY + 4);
@@ -741,16 +741,16 @@ export class FlakHudRenderer {
     const maxLines = Math.max(1, Math.floor(availH / lineStep));
     const recentKills = sim.killLogs.slice(-maxLines);
 
-    ctx.font = 'bold 10.5px "JetBrains Mono", monospace';
+    ctx.font = 'bold 11px "JetBrains Mono", monospace';
     if (recentKills.length === 0) {
-      ctx.fillStyle = 'rgba(59, 224, 104, 0.42)';
+      ctx.fillStyle = 'rgba(118, 240, 156, 0.72)';
       ctx.fillText('> AWAITING INTERCEPTS...', x + 8, listTop);
       ctx.fillText('> GRID LOCK: 1920x1080', x + 8, listTop + lineStep);
     } else {
       recentKills.forEach((entry, idx) => {
         const ly = listTop + idx * lineStep;
         const isNewest = idx === recentKills.length - 1;
-        ctx.globalAlpha = isNewest ? 1.0 : Math.max(0.45, 0.55 + (idx / recentKills.length) * 0.45);
+        ctx.globalAlpha = isNewest ? 1.0 : Math.max(0.62, 0.68 + (idx / recentKills.length) * 0.32);
         ctx.fillStyle =
           entry.tone === 'amber'
             ? '#FFB000'
@@ -859,11 +859,11 @@ export class FlakHudRenderer {
       }
 
       ctx.textAlign = 'center';
-      ctx.font = 'bold 10.5px "JetBrains Mono", monospace';
-      ctx.fillStyle = d.intact ? '#44FF77' : '#FF5538';
+      ctx.font = 'bold 11px "JetBrains Mono", monospace';
+      ctx.fillStyle = d.intact ? '#52FF86' : '#FF5538';
       ctx.fillText(`H${idx + 1}`, dcx, bayY + 38);
-      ctx.font = 'bold 9.5px "JetBrains Mono", monospace';
-      ctx.fillStyle = d.intact ? '#8EF5AB' : COLORS.RED_KLAXON;
+      ctx.font = 'bold 10px "JetBrains Mono", monospace';
+      ctx.fillStyle = d.intact ? '#A6FCC2' : COLORS.RED_KLAXON;
       ctx.fillText(d.intact ? '101KPA' : 'LOST', dcx, bayY + 49);
     });
 
