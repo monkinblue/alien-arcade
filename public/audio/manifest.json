@@ -1,7 +1,7 @@
 {
   "version": 2,
-  "generatedAt": "2026-11-26T14:47:45.819Z",
-  "voiceId": "Xb7hH8MSUJpSbSDYk0k2",
+  "generatedAt": "2026-11-26T16:25:25.712Z",
+  "voiceId": null,
   "assets": {
     "ambient_crt_buzz": {
       "path": "/audio/ambient_crt_buzz.mp3",
@@ -246,7 +246,7 @@
     "perim_rail_lance": {
       "path": "/audio/perim_rail_lance.mp3",
       "category": "sfx",
-      "bytes": 20105
+      "bytes": 36405
     },
     "perim_queen_roar": {
       "path": "/audio/perim_queen_roar.mp3",

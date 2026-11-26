@@ -162,9 +162,9 @@ export class PerimeterCartridge implements Cartridge {
         if (import.meta.env.DEV) this.devAutoCommander?.recordAudio(`pulseT${tier}`);
         this.host.audio.playPulseSentryBurst(pan, oc, 1.0, distNorm, tier);
       },
-      onRailLance: (pan, tier) => {
+      onRailLance: (pan, tier, distNorm) => {
         if (import.meta.env.DEV) this.devAutoCommander?.recordAudio(`railT${tier}`);
-        this.host.audio.playRailLanceShot(pan, tier);
+        this.host.audio.playRailLanceShot(pan, tier, distNorm);
       },
       onShockCoil: (pan) => {
         if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('shockCoil');

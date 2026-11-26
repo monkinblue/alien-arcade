@@ -45,7 +45,7 @@ import {
 export interface SimulationAudioCallbacks {
   onMotionPing(distMeters: number, maxMeters: number, pan: number, closeSwarmCount: number): void;
   onPulseBurst(pan: number, overclocked: boolean, distanceNorm: number, tier: 1 | 2 | 3): void;
-  onRailLance(pan: number, tier: 1 | 2 | 3): void;
+  onRailLance(pan: number, tier: 1 | 2 | 3, distanceNorm?: number): void;
   onShockCoil(pan: number): void;
   onClaymoreBlast(pan: number): void;
   onQueenRoar(pan: number): void;
@@ -2837,7 +2837,7 @@ export class PerimeterSimulation {
           maxLife: 0.26,
           tier: t.level,
         });
-        this.audioCb.onRailLance(pan, t.level);
+        this.audioCb.onRailLance(pan, t.level, this.distNormFromCore(t.pos));
       } else if (t.kind === 'INCINERATOR') {
         const isThermite = t.level === 3 && t.mk3Branch === 'A';
         const isFirewall = t.level === 3 && t.mk3Branch === 'B';

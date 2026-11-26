@@ -441,10 +441,10 @@ const SOUND_ASSETS: SoundGenAsset[] = [
   {
     filename: 'perim_rail_lance.mp3',
     prompt:
-      'Massive military electromagnetic railgun sniper cannon firing down a steel industrial hallway, visceral sub-bass sonic crack thunderclap followed by brief crisp capacitor recharge whine, realistic sci-fi weapon foley, no music.',
+      'Single massive thunderous 120mm anti-materiel cannon detonation firing inside a cavernous steel industrial corridor, earth-shaking concussive shockwave crack and deep sub-bass blast boom with long echoing metallic hallway rumble, raw realistic heavy military ordnance, no sci-fi laser, no whine, no voice, no music.',
     loop: false,
-    durationSeconds: 1.2,
-    promptInfluence: 0.84,
+    durationSeconds: 2.2,
+    promptInfluence: 0.86,
   },
   {
     filename: 'perim_queen_roar.mp3',

@@ -4219,14 +4219,124 @@ export class AudioEngine {
     this.playButtonLatchLock(tripped ? 0.55 : 1.15, 0.95);
   }
 
-  /** M99 Electromagnetic Rail-Lance heavy corridor shot + sub-bass punch. */
-  public playRailLanceShot(pan = 0, tier: 1 | 2 | 3 = 1): void {
+  /**
+   * M99 Rail-Lance single thunderous anti-materiel detonation + long ~5.8s rolling corridor echo:
+   * Shares the UA 571-C machine-gun's exact bulkhead acoustic bus (`sentryDirectWallInput` +
+   * `sentryWarehouseWetInput` + `sentryRollingTailBus`), pitched much deeper and layered with
+   * a chest-shaking concussive shockwave so every shot booms like heavy artillery down the hall!
+   */
+  public playRailLanceShot(pan = 0, tier: 1 | 2 | 3 = 1, distanceNorm = 0.42): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
-    const rate = tier === 3 ? 0.88 : tier === 2 ? 0.94 : 1.0;
-    if (this.playCorridorBuffer('perim_rail_lance', pan, 0.82, rate, 0.58, 3800)) {
-      return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const clampedDist = Math.max(0, Math.min(1, distanceNorm));
+    const tierGain = tier === 3 ? 1.18 : tier === 2 ? 1.09 : 1.0;
+    const tierRate = tier === 3 ? 0.88 : tier === 2 ? 0.94 : 1.0;
+    const clampedPan = Math.max(-0.78, Math.min(0.78, pan));
+
+    // Shared bulkhead acoustic panner -> same room & walls as the UA 571-C machine gun!
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = clampedPan;
+
+    const directSend = ctx.createGain();
+    directSend.gain.value = (1.18 - clampedDist * 0.2) * tierGain;
+    const hallWetSend = ctx.createGain();
+    hallWetSend.gain.value = (0.92 + clampedDist * 0.34) * tierGain;
+
+    panner.connect(directSend);
+    panner.connect(hallWetSend);
+    if (this.sentryDirectWallInput && this.sentryWarehouseWetInput) {
+      directSend.connect(this.sentryDirectWallInput);
+      hallWetSend.connect(this.sentryWarehouseWetInput);
+    } else {
+      directSend.connect(this.masterGain);
     }
-    this.synthLandingThud(this.ctx.currentTime, 0.65, 0.85);
+
+    // 1. Primary HD Thunderous Detonation Sample (low-shelf sub boost + bulkhead wall coupling)
+    const railBuf = this.buffers.get('perim_rail_lance');
+    if (railBuf) {
+      const onset = this.bufferOnsets.get('perim_rail_lance') ?? 0;
+      const src = ctx.createBufferSource();
+      src.buffer = railBuf;
+      src.playbackRate.value = (0.86 + Math.random() * 0.06) * tierRate;
+
+      const subShelf = ctx.createBiquadFilter();
+      subShelf.type = 'lowshelf';
+      subShelf.frequency.value = 125;
+      subShelf.gain.value = 7.5;
+
+      const bodyLp = ctx.createBiquadFilter();
+      bodyLp.type = 'lowpass';
+      bodyLp.frequency.value = 2600 - clampedDist * 550;
+      bodyLp.Q.value = 0.72;
+
+      const bufGain = ctx.createGain();
+      bufGain.gain.value = 0.95 * tierGain;
+
+      src.connect(subShelf);
+      subShelf.connect(bodyLp);
+      bodyLp.connect(bufGain);
+      bufGain.connect(panner);
+      src.start(now, onset);
+    }
+
+    // 2. Deepened Ballistic Pressure-Wave Core (same physical DNA as the machine gun, ~1 octave deeper!)
+    if (this.sentryRoundBuffers.length > 0) {
+      this.sentryRoundCursor = (this.sentryRoundCursor + 1) % this.sentryRoundBuffers.length;
+      const roundSrc = ctx.createBufferSource();
+      roundSrc.buffer = this.sentryRoundBuffers[this.sentryRoundCursor];
+      roundSrc.playbackRate.value = (0.56 + Math.random() * 0.05) * tierRate;
+
+      const roundGain = ctx.createGain();
+      roundGain.gain.value = 1.15 * tierGain;
+      roundSrc.connect(roundGain);
+      roundGain.connect(panner);
+      roundSrc.start(now);
+    }
+
+    // 3. Chest-Thumping Concussive Sub-Bass Shockwave (122Hz -> 24Hz) rattling the control room
+    const subOsc = ctx.createOscillator();
+    const subGain = ctx.createGain();
+    subOsc.type = 'sine';
+    subOsc.frequency.setValueAtTime(122 * tierRate, now);
+    subOsc.frequency.exponentialRampToValueAtTime(24, now + 0.44);
+    subGain.gain.setValueAtTime(0.0001, now);
+    subGain.gain.linearRampToValueAtTime(0.54 * tierGain, now + 0.006);
+    subGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.52);
+    subOsc.connect(subGain);
+    subGain.connect(this.masterGain);
+    subOsc.start(now);
+    subOsc.stop(now + 0.56);
+
+    // 4. Long ~5.8s Deep Rolling Steel-Corridor Thunder Echo (pitched-down stereo tunnel tail!)
+    if (this.sentryRollingTailBus && this.sentryRollingTailBuffers.length > 0) {
+      this.sentryRollingTailCursor =
+        (this.sentryRollingTailCursor + 1) % this.sentryRollingTailBuffers.length;
+      const tailSrc = ctx.createBufferSource();
+      tailSrc.buffer = this.sentryRollingTailBuffers[this.sentryRollingTailCursor];
+      // Lower playback rate deepens & stretches the 4.5s tunnel echo to ~5.8s of booming cavern roll!
+      tailSrc.playbackRate.value = (0.74 + Math.random() * 0.05) * tierRate;
+
+      const tailSub = ctx.createBiquadFilter();
+      tailSub.type = 'lowshelf';
+      tailSub.frequency.value = 160;
+      tailSub.gain.value = 5.5;
+
+      const tailPan = ctx.createStereoPanner();
+      tailPan.pan.value = Math.max(-0.45, Math.min(0.45, -clampedPan * 0.35));
+
+      const tailGain = ctx.createGain();
+      const tailStart = now + 0.055;
+      const peakTail = (1.22 + clampedDist * 0.35) * tierGain;
+      tailGain.gain.setValueAtTime(0, tailStart);
+      tailGain.gain.linearRampToValueAtTime(peakTail, tailStart + 0.095);
+
+      tailSrc.connect(tailSub);
+      tailSub.connect(tailPan);
+      tailPan.connect(tailGain);
+      tailGain.connect(this.sentryRollingTailBus);
+      tailSrc.start(tailStart);
+    }
   }
 
   /** Arc-Shock Coil Tesla discharge snap. */
@@ -4336,13 +4446,79 @@ export class AudioEngine {
     );
   }
 
-  /** Satisfying Nostromo console hydraulic wave-clear confirmation chime. */
+  /**
+   * Satisfying Nostromo console / station wave-clear siren & lock chime with subtle
+   * metallic corridor reverb and soft dual-tap hallway echo!
+   */
   public playWaveClearedChime(): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
-    if (this.playCorridorBuffer('perim_wave_clear', 0, 0.72, 1.0, 0.2, 4800)) {
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const buf = this.buffers.get('perim_wave_clear');
+    if (!buf) {
+      this.playButtonLatchLock(1.12, 0.85);
       return;
     }
-    this.playButtonLatchLock(1.12, 0.85);
+
+    const onset = this.bufferOnsets.get('perim_wave_clear') ?? 0;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = 1.0;
+
+    // Warm station-speaker lowpass + main dry send
+    const mainLp = ctx.createBiquadFilter();
+    mainLp.type = 'lowpass';
+    mainLp.frequency.value = 4400;
+    mainLp.Q.value = 0.7;
+
+    const dryGain = ctx.createGain();
+    dryGain.gain.value = 0.74;
+
+    src.connect(mainLp);
+    mainLp.connect(dryGain);
+    dryGain.connect(this.masterGain);
+
+    // Metallic corridor hall convolution reverb send
+    if (this.sentryWarehouseWetInput) {
+      const hallSend = ctx.createGain();
+      hallSend.gain.value = 0.56;
+      mainLp.connect(hallSend);
+      hallSend.connect(this.sentryWarehouseWetInput);
+    }
+
+    // Subtle dual-tap corridor echo (+220ms left, +490ms right) filtered warm so it sits naturally in the station
+    const echoLp = ctx.createBiquadFilter();
+    echoLp.type = 'lowpass';
+    echoLp.frequency.value = 2150;
+    echoLp.Q.value = 0.7;
+    mainLp.connect(echoLp);
+
+    const taps = [
+      { delaySec: 0.22, gain: 0.24, pan: -0.24 },
+      { delaySec: 0.49, gain: 0.11, pan: 0.26 },
+    ];
+    for (const tap of taps) {
+      const delay = ctx.createDelay(1.0);
+      delay.delayTime.value = tap.delaySec;
+      const g = ctx.createGain();
+      g.gain.value = tap.gain;
+      const p = ctx.createStereoPanner();
+      p.pan.value = tap.pan;
+
+      echoLp.connect(delay);
+      delay.connect(g);
+      g.connect(p);
+      p.connect(this.masterGain);
+
+      if (this.sentryWarehouseWetInput) {
+        const tapWet = ctx.createGain();
+        tapWet.gain.value = 0.34;
+        p.connect(tapWet);
+        tapWet.connect(this.sentryWarehouseWetInput);
+      }
+    }
+
+    src.start(now, onset);
   }
 
   /** Tactile hardware upgrade confirmation (richer harmonic chord for MK-III specialization!). */
