@@ -26,21 +26,25 @@ uniform float uDtFrames;
 void main() {
   vec2 texel = 1.0 / max(uResolution, vec2(1.0));
 
-  // Subtle sub-pixel beam warmth (keeps static UI text clean without multi-pixel smear)
+  // Classic 1979 horizontal CRT beam warmth (75% classic / 25% crisp calibration)
   vec3 c0 = texture2D(uSourceTex, vUv).rgb;
-  vec3 cL = texture2D(uSourceTex, clamp(vUv - vec2(texel.x * 0.75, 0.0), 0.001, 0.999)).rgb;
-  vec3 cR = texture2D(uSourceTex, clamp(vUv + vec2(texel.x * 0.75, 0.0), 0.001, 0.999)).rgb;
-  vec3 beam = c0 * 0.86 + cL * 0.07 + cR * 0.07;
+  vec3 cL = texture2D(uSourceTex, clamp(vUv - vec2(texel.x * 0.90, 0.0), 0.001, 0.999)).rgb;
+  vec3 cR = texture2D(uSourceTex, clamp(vUv + vec2(texel.x * 0.95, 0.0), 0.001, 0.999)).rgb;
+  vec3 beam = c0 * 0.76 + cL * 0.12 + cR * 0.12;
 
-  // Aligned persistence buffer: moving vectors leave lush P39 trails; static text stays clean
-  vec3 prev = texture2D(uPrevTex, vUv).rgb;
+  vec3 prev0 = texture2D(uPrevTex, clamp(vUv - vec2(texel.x * 0.18, 0.0), 0.001, 0.999)).rgb;
+  vec3 prevSmear = (
+    prev0 * 0.88 +
+    texture2D(uPrevTex, clamp(vUv + vec2(texel.x * 0.85, 0.0), 0.001, 0.999)).rgb * 0.07 +
+    texture2D(uPrevTex, clamp(vUv - vec2(0.0, texel.y * 0.70), 0.001, 0.999)).rgb * 0.05
+  );
 
   vec3 channelDecay = pow(
     vec3(uDecayBase - 0.008, uDecayBase + 0.008, uDecayBase - 0.025),
     vec3(uDtFrames)
   );
-  vec3 decayed = prev * channelDecay;
-  decayed *= smoothstep(0.015, 0.056, max(decayed.r, max(decayed.g, decayed.b)));
+  vec3 decayed = prevSmear * channelDecay;
+  decayed *= smoothstep(0.015, 0.058, max(decayed.r, max(decayed.g, decayed.b)));
 
   gl_FragColor = vec4(max(beam, decayed), 1.0);
 }
@@ -166,25 +170,21 @@ void main() {
   vec2 uvMax = 1.0 - uvMin;
   vec2 rawSampleUv = clamp(uv + shockUvOffset + vec2(hvJitterX + tearShift, 0.0), uvMin, uvMax);
 
-  // Native 1:1 texel-locked sampling at flat precision mode (dial=0) so UI glyphs stay razor-sharp;
-  // vintage raster stepping only engages smoothly when CRT intensity dial is raised above 0.
-  vec2 sampleUv = rawSampleUv;
-  if (dial > 0.005) {
-    float rasterPitch = max(1.0, (1.0 + 0.45 * dial) * uDpr);
-    vec2 gridDims = max(vec2(300.0), floor(uResolution / rasterPitch));
-    vec2 quantUv = (floor(rawSampleUv * gridDims) + 0.5) / gridDims;
-    sampleUv = mix(rawSampleUv, quantUv, dial * 0.45);
-  }
+  // Light vintage raster stepping (75% classic feel while keeping small monospace text legible)
+  float rasterPitch = max(1.0, (1.02 + 0.45 * dial) * uDpr);
+  vec2 gridDims = max(vec2(300.0), floor(uResolution / rasterPitch));
+  vec2 quantUv = (floor(rawSampleUv * gridDims) + 0.5) / gridDims;
+  vec2 sampleUv = mix(rawSampleUv, quantUv, 0.25 + dial * 0.35);
 
   // =========================================================================
-  // BALANCED 1979 ANALOG RGB BEAM CONVERGENCE (Warm-Amber / Cool-Violet Edge)
-  // Retains signature Nostromo CRT sheen without double-vision on small HUD text!
+  // 1979 ANALOG RGB BEAM MISCONVERGENCE (75% Classic Nostromo Sheen)
+  // Signature warm-amber / cool-violet edge fringe, tightened ~25% for legibility
   // =========================================================================
   vec3 sampMid = texture2D(uSourceTex, sampleUv).rgb;
 
   float chroma = clamp(uChromaScale, 0.0, 1.0);
   float eventDisturb = clamp(totalDisturb * 0.90 + shockChromaBoost * 0.95 + turnOn, 0.0, 1.0);
-  float misconvPx = (0.55 + cornerR2 * 1.15) * (0.40 + 0.60 * dial) * uDpr * chroma
+  float misconvPx = (0.75 + cornerR2 * 1.75) * (0.43 + 0.62 * dial) * uDpr * chroma
                   + totalDisturb * 2.8 * uDpr
                   + shockChromaBoost * 5.2 * uDpr
                   + turnOn * turnOn * 20.0 * uDpr;
@@ -197,12 +197,12 @@ void main() {
   float lumMid   = max(sampMid.r, max(sampMid.g, sampMid.b));
   float lumRight = max(sampRight.r, max(sampRight.g, sampRight.b));
 
-  float warmFringeMask = max(0.0, lumLeft - lumMid * 0.70);
-  float coolFringeMask = max(0.0, lumRight - lumMid * 0.70);
-  float idleFringe = mix(0.20, 0.78, chroma);
+  float warmFringeMask = max(0.0, lumLeft - lumMid * 0.69);
+  float coolFringeMask = max(0.0, lumRight - lumMid * 0.69);
+  float idleFringe = mix(0.24, 0.90, chroma);
   float fringeAmt = clamp(max(idleFringe, eventDisturb), 0.0, 1.0);
-  float warmStrength = mix(0.26 + 0.22 * cornerR2, 0.42 + 0.34 * cornerR2, max(dial, eventDisturb));
-  float coolStrength = mix(0.28 + 0.24 * cornerR2, 0.44 + 0.38 * cornerR2, max(dial, eventDisturb));
+  float warmStrength = mix(0.32 + 0.27 * cornerR2, 0.42 + 0.34 * cornerR2, max(dial, eventDisturb));
+  float coolStrength = mix(0.35 + 0.31 * cornerR2, 0.44 + 0.38 * cornerR2, max(dial, eventDisturb));
 
   vec3 liveC = sampMid
              + vec3(1.00, 0.64, 0.14) * warmFringeMask * warmStrength * fringeAmt
@@ -211,19 +211,20 @@ void main() {
   // =========================================================================
   // PHOSPHOR PERSISTENCE TRAILS (Golden-Amber & P39 Green Glow)
   // =========================================================================
-  vec3 accumC = texture2D(uAccumTex, sampleUv).rgb * 0.88 +
-                texture2D(uAccumTex, clamp(sampleUv - vec2(texel.x * 0.45, 0.0), uvMin, uvMax)).rgb * 0.12;
+  vec2 accumUv = mix(sampleUv, quantUv, 0.45);
+  vec3 accumC = texture2D(uAccumTex, accumUv).rgb * 0.80 +
+                texture2D(uAccumTex, clamp(accumUv - vec2(texel.x * 0.95, 0.0), uvMin, uvMax)).rgb * 0.20;
   vec3 ghostTail = max(accumC - sampMid, vec3(0.0));
   float tailWarmth = smoothstep(0.04, 0.30, ghostTail.r - ghostTail.g * 0.65);
   vec3 trailTint = mix(vec3(0.86, 1.02, 0.78), vec3(1.08, 0.78, 0.28), tailWarmth);
-  vec3 beamWithPersistence = liveC + ghostTail * trailTint * (0.68 + 0.30 * dial);
+  vec3 beamWithPersistence = liveC + ghostTail * trailTint * (0.68 + 0.32 * dial);
 
   // =========================================================================
-  // TIGHT AUTHENTIC P39 PHOSPHOR HALATION / GLOW (Lush CRT Aura, Crisp Text)
+  // TIGHT AUTHENTIC P39 PHOSPHOR HALATION / GLOW
   // =========================================================================
   vec3 localHalo = vec3(0.0);
-  float rTight = (0.95 + dial * 0.80) * uDpr;
-  float rMid = (1.95 + dial * 1.40) * uDpr;
+  float rTight = (0.90 + dial * 0.82) * uDpr;
+  float rMid = (1.90 + dial * 1.42) * uDpr;
 
   localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2( rTight, 0.0) * texel, uvMin, uvMax)).rgb * 0.16;
   localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(-rTight, 0.0) * texel, uvMin, uvMax)).rgb * 0.16;
@@ -235,13 +236,13 @@ void main() {
   localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2( rMid, -rMid) * 0.71 * texel, uvMin, uvMax)).rgb * 0.09;
   localHalo += texture2D(uAccumTex, clamp(sampleUv + vec2(-rMid, -rMid) * 0.71 * texel, uvMin, uvMax)).rgb * 0.09;
 
-  vec3 bloomCol = max(localHalo - vec3(0.11), vec3(0.0)) * (0.13 + 0.14 * dial);
+  vec3 bloomCol = max(localHalo - vec3(0.09), vec3(0.0)) * (0.09 + 0.14 * dial);
   float bloomWarmth = smoothstep(0.03, 0.25, bloomCol.r - bloomCol.g * 0.65);
-  vec3 bloomTint = mix(vec3(0.84, 1.02, 0.88), vec3(1.10, 0.80, 0.34), bloomWarmth);
+  vec3 bloomTint = mix(vec3(0.84, 1.01, 0.88), vec3(1.10, 0.80, 0.34), bloomWarmth);
 
   // Deep Nostromo CRT Contrast Floor + Subtle Shockwave Phosphor Surge
-  vec3 cathodeFloor = vec3(0.012, 0.025, 0.016) * (1.0 - cornerR2 * 0.36);
-  vec3 col = cathodeFloor + beamWithPersistence * 1.02 + bloomCol * bloomTint;
+  vec3 cathodeFloor = vec3(0.012, 0.025, 0.016) * (1.0 - cornerR2 * 0.37);
+  vec3 col = cathodeFloor + beamWithPersistence * 0.99 + bloomCol * bloomTint;
   if (shockRingGlow > 0.001) {
     col += vec3(0.36, 0.95, 0.56) * shockRingGlow * 0.14;
   }
@@ -257,54 +258,53 @@ void main() {
   }
 
   // =========================================================================
-  // AUTHENTIC 1970s TRINITRON VERTICAL APERTURE GRILLE + INTERLOCKED SCANLINES
-  // Exact integer physical pixel pitch (zero moire at DPR 1.0, 1.5, 2.0!).
-  // Single-wire column geometry + balanced spot bloom keeps crisp 1979 phosphor
-  // bar texture visibly woven across text without chopping thin letter stems!
+  // PROMINENT 1970s TRINITRON VERTICAL APERTURE GRILLE + INTERLOCKED SCANLINES
+  // 75% classic Nostromo texture: bold vertical phosphor bars + RGB triad +
+  // crisp alternating scanlines with gentle stem preservation on bright text!
   // =========================================================================
-  float colPeriod = max(3.0, floor(3.0 * uDpr + 0.5));
+  float colPeriod = max(3.0, floor(2.9 * uDpr + 0.5));
   float rowPeriod = max(2.0, floor(2.0 * uDpr + 0.5));
 
   vec2 grilleCoord = gl_FragCoord.xy + shockUvOffset * uResolution * 0.9;
   float colNorm = mod(floor(grilleCoord.x), colPeriod) / colPeriod;
   float rowNorm = mod(floor(grilleCoord.y), rowPeriod) / rowPeriod;
 
-  // Distinct vertical phosphor segment with tungsten wire gap on 1-of-N columns
+  // Bold vertical phosphor segment with classic dark vertical tungsten wire gap
   float distColCenter = abs(colNorm - 0.5) * 2.0;
-  float verticalGrille = 1.0 - (0.27 + 0.26 * dial) * smoothstep(0.50, 0.98, distColCenter);
+  float verticalGrille = 1.0 - (0.35 + 0.26 * dial) * smoothstep(0.45, 0.96, distColCenter);
 
-  // Authentic Trinitron RGB phosphor triad micro-tint
+  // Authentic Trinitron RGB phosphor triad tint across each vertical column
   float subTriad = colNorm - 0.5;
   vec3 apertureTint = vec3(
-    1.0 + subTriad * (0.09 + 0.06 * dial),
-    1.0 - abs(subTriad) * (0.04 + 0.025 * dial),
-    1.0 - subTriad * (0.10 + 0.07 * dial)
+    1.0 + subTriad * (0.12 + 0.05 * dial),
+    1.0 - abs(subTriad) * (0.05 + 0.02 * dial),
+    1.0 - subTriad * (0.13 + 0.06 * dial)
   );
 
-  // True alternating horizontal scanlines across all DPR scales
+  // Interlocking horizontal scanline gap across all DPR scales
   float distRowCenter = abs(rowNorm - 0.5) * 2.0;
-  float horizScan = 1.0 - (0.18 + 0.20 * dial) * smoothstep(0.48, 0.98, distRowCenter);
+  float horizScan = 1.0 - (0.20 + 0.20 * dial) * smoothstep(0.46, 0.98, distRowCenter);
 
   float peakLum = clamp(max(col.r, max(col.g, col.b)), 0.0, 1.0);
-  float brightSpot = smoothstep(0.20, 0.88, peakLum);
+  float brightSpot = smoothstep(0.22, 0.90, peakLum);
   float rawMask = verticalGrille * horizScan;
-  float combinedMask = mix(rawMask, mix(rawMask, 1.0, 0.36), brightSpot);
+  float combinedMask = mix(rawMask, mix(rawMask, 1.0, 0.27), brightSpot);
   col *= combinedMask * apertureTint;
 
   // Soft analog highlight roll-off + subtle 60Hz cathode hum
-  col = col / (1.0 + col * 0.10);
-  col *= 1.0 - (0.007 + 0.011 * dial) * sin(uTime * 376.991);
+  col = col / (1.0 + col * 0.11);
+  col *= 1.0 - (0.0075 + 0.0115 * dial) * sin(uTime * 376.991);
 
-  float snowAmt = uInterference * 0.13 + uGlitch * 0.26 + uOverdrive * 0.03 + 0.012;
+  float snowAmt = uInterference * 0.13 + uGlitch * 0.26 + uOverdrive * 0.03 + 0.013;
   float snow = hash12(floor(gl_FragCoord.xy / max(1.0, uDpr)) + vec2(floor(uTime * 30.0) * 17.3, 9.1)) - 0.5;
   col += vec3(0.28, 0.72, 0.42) * snow * snowAmt;
 
-  // Subtle Curved Glass Corner Glare & Moody Nostromo Edge Vignette
+  // Subtle Curved Glass Corner Glare & Deep Nostromo Edge Vignette
   vec2 glarePos1 = tubeCentered - vec2(-0.34, 0.42);
   float warmLampGlare = exp(-dot(glarePos1, glarePos1) * 5.8) * (0.048 * dial);
   col += vec3(0.90, 0.78, 0.60) * warmLampGlare;
 
-  float vignette = clamp(1.0 - cornerR2 * (0.055 + 0.24 * dial), 0.42, 1.0);
+  float vignette = clamp(1.0 - cornerR2 * (0.058 + 0.24 * dial), 0.41, 1.0);
   float edgeShadow = smoothstep(0.0, 0.055, 1.0 - max(abs(tubeCentered.x), abs(tubeCentered.y)));
   col *= vignette * mix(1.0, mix(0.26, 1.0, edgeShadow), dial);
 
