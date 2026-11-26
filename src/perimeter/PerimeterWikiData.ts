@@ -1,6 +1,19 @@
+import type { HostileKind } from './types';
+
 export interface WikiStatRow {
   cols: string[];
   accent?: string;
+}
+
+export interface BestiaryCardEntry {
+  kind: HostileKind;
+  name: string;
+  code: string;
+  roleTag: string;
+  accent: string;
+  statsLine: string;
+  threat: string;
+  counter: string;
 }
 
 export type WikiBlock =
@@ -9,7 +22,8 @@ export type WikiBlock =
   | { kind: 'bullets'; items: Array<{ lead: string; body: string; accent?: string }> }
   | { kind: 'callout'; tone: 'tip' | 'warn' | 'combo'; title: string; lines: string[] }
   | { kind: 'formula'; title: string; expr: string; notes: string[] }
-  | { kind: 'table'; headers: string[]; colFracs: number[]; rows: WikiStatRow[] };
+  | { kind: 'table'; headers: string[]; colFracs: number[]; rows: WikiStatRow[] }
+  | { kind: 'bestiary'; entries: BestiaryCardEntry[] };
 
 export interface WikiChapter {
   id: string;
@@ -482,48 +496,104 @@ export const PERIMETER_WIKI_CHAPTERS: WikiChapter[] = [
       },
       {
         kind: 'heading',
-        text: 'COMPLETE HOSTILE CLASSIFICATION TABLE',
+        text: 'LIVE XENOMORPH SPECIMEN RECOGNITION & TACTICAL DOSSIERS',
       },
       {
-        kind: 'table',
-        headers: ['CASTE', 'BASE HP / SPD', 'DOOR DPS / SCRAP', 'ABILITY & THREAT', 'BEST COUNTER'],
-        colFracs: [0.16, 0.15, 0.15, 0.29, 0.25],
-        rows: [
+        kind: 'paragraph',
+        text: 'Each bio-scanner frame below shows the exact live vector silhouette and color coding you will see on the Sector 01 blueprint once a contact is verified or illuminated.',
+      },
+      {
+        kind: 'bestiary',
+        entries: [
           {
-            cols: ['SKITTERER (SKT)', '26 HP · 120 px/s', '12 DPS · 3S', 'Weaves erratically; erupts from Floor Grates (5s rattle warning)', 'Arc Coil · Incinerator · Twin-Link'],
-            accent: '#8EF5AB',
-          },
-          {
-            cols: ['XENO DRONE', '90 HP · 88 px/s', '24 DPS · 8S', 'Standard corridor pack hunter; drains Sentry ammo fast', 'UA 571-C Sentry · M99 Rail line'],
+            kind: 'SKITTERER',
+            name: 'SKITTERER SWARMER',
+            code: 'SKT',
+            roleTag: 'FAST SWARM',
             accent: '#44FF77',
+            statsLine: 'HP: 26  |  SPD: 120 px/s  |  DOOR: 12 DPS  |  REWARD: 3S / 45 PTS',
+            threat: 'Small 6-legged dart with whip tail. Weaves erratically down hallways and erupts in packs from rattling Sub-Floor Grates (5s amber telegraph warning).',
+            counter: 'Arc-Shock Coil [5], M240 Incinerator [2], Twin-Link MK-III, or M18 Claymore [8] on rattling grates.',
           },
           {
-            cols: ['ACID BURSTER', '118 HP · 68 px/s', '28 DPS · 13S', 'Explodes on death -> 88px Acid Pool (9s) melts doors/wires!', 'Incinerator (Sterilize!) · Claymore'],
+            kind: 'DRONE',
+            name: 'XENO DRONE',
+            code: 'DRN',
+            roleTag: 'PACK HUNTER',
+            accent: '#44FF77',
+            statsLine: 'HP: 90  |  SPD: 88 px/s  |  DOOR: 24 DPS  |  REWARD: 8S / 110 PTS',
+            threat: 'Elongated biomechanical skull with twin strike claws and swaying whip tail. Advances in sustained packs that quickly drain Sentry ammo drums.',
+            counter: 'UA 571-C Sentry [1] crossfire, or line them up down a straight hallway for M99 Rail-Lance [3] multi-pierce.',
+          },
+          {
+            kind: 'BURSTER',
+            name: 'ACID BURSTER',
+            code: 'BRS',
+            roleTag: 'ACID HAZARD',
+            accent: '#C8FF44',
+            statsLine: 'HP: 118  |  SPD: 68 px/s  |  DOOR: 28 DPS  |  REWARD: 13S / 175 PTS',
+            threat: 'Hexagonal pulsing lime-green volatile sac. Detonates on death into an 88px Acid Pool (9s; 104px/12s during Acidic Surge) that melts welded Blast Doors and M314 Laser Tripwires!',
+            counter: 'M240 Incinerator [2] STERILIZES Acid Pools for +15 BONUS SCRAP (2X during Acidic Surge!). M18 Mines also vaporize pools.',
+          },
+          {
+            kind: 'STALKER',
+            name: 'SIGNAL STALKER',
+            code: 'STK',
+            roleTag: 'STEALTH CLOAK',
+            accent: '#B6FFE0',
+            statsLine: 'HP: 98  |  SPD: 96 px/s  |  DOOR: 26 DPS  |  REWARD: 15S / 210 PTS',
+            threat: 'Pale cyan-mint stealth mantis framed in target brackets when exposed. 100% INVISIBLE to passive turret IR cones in dark corridors — walks straight past unlit guns!',
+            counter: 'M314 Laser Tripwire & Sweep [6], M40 Flare [F], Floodlight [L], or Arc-Shock Coil [5] (decloaks 4s!).',
+          },
+          {
+            kind: 'SPITTER',
+            name: 'ACID SPITTER',
+            code: 'SPT',
+            roleTag: 'RANGED ACID',
             accent: '#B8FF3B',
+            statsLine: 'HP: 128  |  SPD: 64 px/s  |  DOOR: 36 DPS  |  REWARD: 18S / 240 PTS',
+            threat: 'Pulsing lime-green rear venom sac with wide twin mandibles. Spits corrosive globs from 265px LOS — deals 55 DMG to welded doors or splashes turrets (-35% ROF for 3.4s & +24 Heat!).',
+            counter: 'Press [C] COOLANT FLUSH to immediately wash off turret acid & heat; snipe at long range with M99 Rail-Lance [3].',
           },
           {
-            cols: ['SIGNAL STALKER', '98 HP · 96 px/s', '26 DPS · 15S', '100% INVISIBLE to turret IR cones in darkness! Walks past guns!', 'M314 Tripwire/Sweep · Flare · Arc'],
-            accent: '#00F0FF',
+            kind: 'SCREAMER',
+            name: 'BIO-SCREAMER JAMMER',
+            code: 'SCR',
+            roleTag: 'RADAR JAMMER',
+            accent: '#E066FF',
+            statsLine: 'HP: 142  |  SPD: 74 px/s  |  DOOR: 24 DPS  |  REWARD: 22S / 280 PTS',
+            threat: 'Angular violet crest emitting expanding sonic rings. Jams M314 radial radar sweeps within 300px for 3.4s and spawns 3 fake purple ERR? phantom blips! (Note: M314 Laser Tripwire stays active!)',
+            counter: 'Arc-Shock Coil [5] delays its jam cooldown by +3.5s! Use [F] Flare, M314 Tripwire, or Rail-Lance to delete it fast.',
           },
           {
-            cols: ['ACID SPITTER', '128 HP · 64 px/s', '36 DPS · 18S', 'Spits acid (265px LOS): -35% turret ROF & +24 Heat; 55 door DMG', '[C] Coolant Flush · Rail Sniper'],
-            accent: '#B8FF3B',
+            kind: 'PRAETORIAN',
+            name: 'PRAETORIAN CRUSHER',
+            code: 'PRT',
+            roleTag: '70% FRONT ARMOR',
+            accent: '#FF8C24',
+            statsLine: 'HP: 460  |  SPD: 48 px/s  |  DOOR: 68 DPS  |  REWARD: 32S / 420 PTS',
+            threat: 'Massive amber-orange beetle silhouette with a thick GOLD FRONTAL SHIELD ARC. Deflects 70% of frontal Sentry rounds (RICOCHET sparks!) and smashes welded doors rapidly.',
+            counter: 'M99 Rail-Lance [3] & Incinerator [2] ignore 100% armor! Pair Cryo Valve [4] (+35% Shatter) & Flank Sentries (+40% Flank Crit).',
           },
           {
-            cols: ['BIO-SCREAMER', '142 HP · 74 px/s', '24 DPS · 22S', 'Jams M314 radar sweeps (300px / 3.4s) + spawns 3 phantom blips', 'Arc Coil (+3.5s CD!) · Flare · Rail'],
-            accent: '#CC66FF',
+            kind: 'CRUSHER',
+            name: '★ JUGGERNAUT CRUSHER',
+            code: 'CRSH',
+            roleTag: 'MINI-BOSS (W5+)',
+            accent: '#FF7722',
+            statsLine: 'HP: 1120  |  SPD: 44 px/s  |  DOOR: 135 DPS  |  REWARD: 95S / 1150 PTS',
+            threat: 'Giant horned orange battering ram with thick gold shield & blazing charge ring. 70% frontal armor; telegraphs 1.05s then CHARGES at 2.55x speed & 2.4x door DPS!',
+            counter: 'Cryo Valve [4], Arc Coil [5], and Capacitor Rail-Lance MK-III INSTANTLY CANCEL its charge! Melt with Rail + Shatter.',
           },
           {
-            cols: ['PRAETORIAN', '460 HP · 48 px/s', '68 DPS · 32S', '70% Frontal Armor deflection! Crushes welded doors rapidly', 'Rail-Lance · Cryo+Flank · Napalm'],
-            accent: '#FFB000',
-          },
-          {
-            cols: ['★ CRUSHER (W5)', '1120 HP · 44 px/s', '135 DPS · 95S', 'BOSS: 70% armor; telegraphs 1s -> 2.55x Charge (2.4x door DMG!)', 'Cryo/Arc/Cap-Rail cancels charge!'],
-            accent: '#FF5522',
-          },
-          {
-            cols: ['★ QUEEN (W10)', '2650 HP · 34 px/s', '210 DPS · 240S', 'BOSS: 70% armor; lays double Egg Clutches at 75% & 40% HP (hatch 3 SKT!)', 'Napalm/Claymore eggs + Rail/Sabot'],
-            accent: '#FF3318',
+            kind: 'QUEEN',
+            name: '★ XENO MATRIARCH QUEEN',
+            code: 'QUEEN',
+            roleTag: 'BOSS (W10 / W20+)',
+            accent: '#FF3355',
+            statsLine: 'HP: 2650  |  SPD: 34 px/s  |  DOOR: 210 DPS  |  REWARD: 240S / 2800 PTS',
+            threat: 'Colossal crimson-outlined royal crown crest with gold mantis scythes & long whipping tail. 70% frontal armor; lays DOUBLE EGG CLUTCHES at 75% & 40% HP (each egg hatches 3 Skitterers in 5s!).',
+            counter: 'Thermite Incinerator [2] or M18 Claymores [8] burn Egg Clutches fast; focus Capacitor/Overpen Rail [3] + AP Sabot + Overclock [O]!',
           },
         ],
       },

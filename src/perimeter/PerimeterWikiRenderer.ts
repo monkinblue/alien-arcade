@@ -1,7 +1,12 @@
 import { COLORS } from '../constants';
 import type { CrtInteractiveButton } from '../render/HudRenderer';
 import type { ViewportRect } from '../types';
-import { PERIMETER_WIKI_CHAPTERS, type WikiBlock } from './PerimeterWikiData';
+import {
+  PERIMETER_WIKI_CHAPTERS,
+  type BestiaryCardEntry,
+  type WikiBlock,
+} from './PerimeterWikiData';
+import type { HostileKind } from './types';
 
 export interface WikiRenderParams {
   width: number;
@@ -299,7 +304,7 @@ export class PerimeterWikiRenderer {
     curY += 78;
 
     for (const block of chapter.blocks) {
-      curY = this.renderBlock(ctx, block, originX, curY, innerW, chapter.accent);
+      curY = this.renderBlock(ctx, block, originX, curY, innerW, chapter.accent, params.timeSec);
     }
 
     ctx.restore();
@@ -500,6 +505,20 @@ export class PerimeterWikiRenderer {
       }
       return total + 20;
     }
+    if (block.kind === 'bestiary') {
+      const scanW = 124;
+      const textW = Math.max(180, innerW - scanW - 34);
+      let total = 4;
+      for (const entry of block.entries) {
+        ctx.font = '14px "JetBrains Mono", monospace';
+        const threatLines = this.wrapLines(ctx, `THREAT: ${entry.threat}`, textW).length;
+        const counterLines = this.wrapLines(ctx, `COUNTER: ${entry.counter}`, textW).length;
+        const textH = 60 + threatLines * 20 + 8 + counterLines * 20 + 14;
+        const cardH = Math.max(132, textH);
+        total += cardH + 12;
+      }
+      return total + 8;
+    }
     return 0;
   }
 
@@ -509,7 +528,8 @@ export class PerimeterWikiRenderer {
     x: number,
     y: number,
     innerW: number,
-    chapterAccent: string
+    chapterAccent: string,
+    timeSec: number
   ): number {
     if (block.kind === 'heading') {
       const accent = block.accent ?? '#FFB000';
@@ -699,7 +719,412 @@ export class PerimeterWikiRenderer {
       return ry + 20;
     }
 
+    if (block.kind === 'bestiary') {
+      const scanW = 124;
+      const textW = Math.max(180, innerW - scanW - 34);
+      let cy = y + 4;
+
+      for (const entry of block.entries) {
+        cy = this.renderBestiaryCard(ctx, entry, x, cy, innerW, scanW, textW, timeSec);
+      }
+      return cy + 8;
+    }
+
     return y;
+  }
+
+  private renderBestiaryCard(
+    ctx: CanvasRenderingContext2D,
+    entry: BestiaryCardEntry,
+    x: number,
+    y: number,
+    innerW: number,
+    scanW: number,
+    textW: number,
+    timeSec: number
+  ): number {
+    ctx.font = '14px "JetBrains Mono", monospace';
+    const threatLines = this.wrapLines(ctx, `THREAT: ${entry.threat}`, textW);
+    const counterLines = this.wrapLines(ctx, `COUNTER: ${entry.counter}`, textW);
+    const textH = 60 + threatLines.length * 20 + 8 + counterLines.length * 20 + 14;
+    const cardH = Math.max(132, textH);
+
+    // Outer Specimen Card Chassis
+    ctx.fillStyle = 'rgba(5, 16, 10, 0.90)';
+    ctx.fillRect(x, y, innerW, cardH);
+    ctx.strokeStyle = entry.accent;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x, y, innerW, cardH);
+    ctx.fillStyle = entry.accent;
+    ctx.fillRect(x, y, 4, cardH);
+
+    // Left Live Bio-Scanner Viewport Box
+    const pad = 10;
+    const vx = x + pad + 2;
+    const vy = y + pad;
+    const vw = scanW - 4;
+    const vh = cardH - pad * 2;
+
+    ctx.fillStyle = '#020704';
+    ctx.fillRect(vx, vy, vw, vh);
+    ctx.strokeStyle = 'rgba(68, 255, 119, 0.35)';
+    ctx.lineWidth = 1.1;
+    ctx.strokeRect(vx, vy, vw, vh);
+
+    // Subtle scanner crosshair & range ring inside viewport
+    const scx = vx + vw * 0.5;
+    const scy = vy + (vh - 18) * 0.5;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(59, 224, 104, 0.16)';
+    ctx.lineWidth = 1.0;
+    ctx.beginPath();
+    ctx.moveTo(vx + 6, scy);
+    ctx.lineTo(vx + vw - 6, scy);
+    ctx.moveTo(scx, vy + 6);
+    ctx.lineTo(scx, vy + vh - 20);
+    ctx.arc(scx, scy, Math.min(vw, vh - 20) * 0.38, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Render authentic live-animated in-game vector bio-silhouette!
+    this.drawBestiarySpecimen(ctx, entry.kind, scx, scy, timeSec);
+    ctx.restore();
+
+    // Bottom scanner code strip inside viewport
+    ctx.fillStyle = 'rgba(12, 32, 20, 0.85)';
+    ctx.fillRect(vx + 1, vy + vh - 19, vw - 2, 18);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
+    ctx.fillStyle = entry.accent;
+    ctx.fillText(`ID: ${entry.code}`, scx, vy + vh - 6);
+
+    // Right Dossier Details
+    const tx = vx + vw + 16;
+
+    // Row 1: Name + Right Role Tag Pill
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 18px "Share Tech Mono", monospace';
+    ctx.fillStyle = entry.accent;
+    ctx.fillText(entry.name, tx, y + 25, textW - 154);
+
+    ctx.font = 'bold 12px "Share Tech Mono", monospace';
+    const tagW = Math.min(148, Math.ceil(ctx.measureText(entry.roleTag).width) + 16);
+    const tagX = x + innerW - tagW - 12;
+    ctx.fillStyle = 'rgba(14, 30, 20, 0.94)';
+    ctx.fillRect(tagX, y + 9, tagW, 22);
+    ctx.strokeStyle = entry.accent;
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(tagX, y + 9, tagW, 22);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillText(entry.roleTag, tagX + tagW * 0.5, y + 24, tagW - 8);
+
+    // Row 2: Tabular Telemetry Strip
+    ctx.fillStyle = 'rgba(12, 30, 19, 0.72)';
+    ctx.fillRect(tx, y + 34, textW, 22);
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
+    ctx.fillStyle = '#FFE082';
+    ctx.fillText(entry.statsLine, tx + 8, y + 49, textW - 14);
+
+    // Row 3: Threat description
+    let ty = y + 73;
+    ctx.font = '14px "JetBrains Mono", monospace';
+    threatLines.forEach((ln, idx) => {
+      if (idx === 0 && ln.startsWith('THREAT:')) {
+        ctx.font = 'bold 14px "JetBrains Mono", monospace';
+        ctx.fillStyle = '#FFB000';
+        ctx.fillText('THREAT:', tx, ty);
+        const lw = ctx.measureText('THREAT:').width;
+        ctx.font = '14px "JetBrains Mono", monospace';
+        ctx.fillStyle = '#D6FFE4';
+        ctx.fillText(ln.slice(7), tx + lw, ty);
+      } else {
+        ctx.font = '14px "JetBrains Mono", monospace';
+        ctx.fillStyle = '#D6FFE4';
+        ctx.fillText(ln, tx, ty);
+      }
+      ty += 20;
+    });
+
+    // Row 4: Best counter
+    ty += 6;
+    counterLines.forEach((ln, idx) => {
+      if (idx === 0 && ln.startsWith('COUNTER:')) {
+        ctx.font = 'bold 14px "JetBrains Mono", monospace';
+        ctx.fillStyle = '#00F0FF';
+        ctx.fillText('COUNTER:', tx, ty);
+        const lw = ctx.measureText('COUNTER:').width;
+        ctx.font = '14px "JetBrains Mono", monospace';
+        ctx.fillStyle = '#A8FAFF';
+        ctx.fillText(ln.slice(8), tx + lw, ty);
+      } else {
+        ctx.font = '14px "JetBrains Mono", monospace';
+        ctx.fillStyle = '#A8FAFF';
+        ctx.fillText(ln, tx, ty);
+      }
+      ty += 20;
+    });
+
+    return y + cardH + 12;
+  }
+
+  /**
+   * Renders the exact in-game vector bio-silhouette of each Xenomorph caste
+   * (matching PerimeterBlueprintRenderer.drawVerifiedBioSilhouette verbatim!)
+   * scaled cleanly to fill the CRT Bestiary bio-scanner frame.
+   */
+  private drawBestiarySpecimen(
+    ctx: CanvasRenderingContext2D,
+    kind: HostileKind,
+    cx: number,
+    cy: number,
+    timeSec: number
+  ): void {
+    const scaleByKind: Record<HostileKind, number> = {
+      SKITTERER: 2.35,
+      DRONE: 1.85,
+      BURSTER: 2.15,
+      STALKER: 1.85,
+      SPITTER: 1.85,
+      SCREAMER: 1.6,
+      PRAETORIAN: 1.55,
+      CRUSHER: 1.22,
+      QUEEN: 1.02,
+    };
+    const strokeByKind: Record<HostileKind, string> = {
+      SKITTERER: '#44FF77',
+      DRONE: '#44FF77',
+      BURSTER: '#C8FF44',
+      STALKER: '#B6FFE0',
+      SPITTER: '#B8FF3B',
+      SCREAMER: '#E066FF',
+      PRAETORIAN: '#FF8C24',
+      CRUSHER: '#FF7722',
+      QUEEN: '#FF3355',
+    };
+
+    const s = scaleByKind[kind];
+    const strokeCol = strokeByKind[kind];
+
+    ctx.save();
+    // Slight offset right on Queen so her long sweeping whip tail centers cleanly inside the scanner box!
+    ctx.translate(kind === 'QUEEN' ? cx + 8 : kind === 'DRONE' || kind === 'SKITTERER' ? cx + 4 : cx, cy);
+    ctx.scale(s, s);
+
+    // Stalker exposure lock brackets (just like in-game when revealed!)
+    if (kind === 'STALKER') {
+      const br = 18;
+      ctx.strokeStyle = '#8EF5AB';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(-br, -br, br * 2, br * 2);
+    }
+
+    // Gentle living orientation sway so specimens feel alive in the scanner
+    ctx.rotate(Math.sin(timeSec * 1.4) * 0.08);
+
+    ctx.strokeStyle = strokeCol;
+    ctx.fillStyle = 'rgba(6, 22, 12, 0.90)';
+    ctx.lineWidth =
+      kind === 'QUEEN' ? 3.2 : kind === 'CRUSHER' || kind === 'PRAETORIAN' ? 2.6 : 2.0;
+
+    if (kind === 'SKITTERER') {
+      ctx.beginPath();
+      ctx.moveTo(10, 0);
+      ctx.lineTo(-4, -6);
+      ctx.lineTo(-8, 0);
+      ctx.lineTo(-4, 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      const legWig = Math.sin(timeSec * 22) * 2.8;
+      ctx.beginPath();
+      ctx.moveTo(-8, 0);
+      ctx.lineTo(-17, legWig);
+      for (const lx of [-3, 1, 5]) {
+        ctx.moveTo(lx, -4);
+        ctx.lineTo(lx - 2, -10 + legWig * 0.4);
+        ctx.moveTo(lx, 4);
+        ctx.lineTo(lx - 2, 10 - legWig * 0.4);
+      }
+      ctx.stroke();
+    } else if (kind === 'DRONE') {
+      const tailSway = Math.sin(timeSec * 10) * 4.5;
+      ctx.beginPath();
+      ctx.moveTo(15, 0);
+      ctx.lineTo(5, -7);
+      ctx.lineTo(-11, -5);
+      ctx.lineTo(-14, 0);
+      ctx.lineTo(-11, 5);
+      ctx.lineTo(5, 7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(6, -7);
+      ctx.lineTo(14, -12);
+      ctx.moveTo(6, 7);
+      ctx.lineTo(14, 12);
+      ctx.moveTo(-14, 0);
+      ctx.lineTo(-24, tailSway);
+      ctx.stroke();
+    } else if (kind === 'PRAETORIAN') {
+      ctx.beginPath();
+      ctx.moveTo(18, 0);
+      ctx.lineTo(8, -17);
+      ctx.lineTo(-14, -13);
+      ctx.lineTo(-20, 0);
+      ctx.lineTo(-14, 13);
+      ctx.lineTo(8, 17);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = '#FFD266';
+      ctx.lineWidth = 4.0;
+      ctx.beginPath();
+      ctx.arc(3, 0, 18, -1.05, 1.05);
+      ctx.stroke();
+    } else if (kind === 'BURSTER') {
+      const pulseR = 12 + Math.sin(timeSec * 12) * 2.0;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        const px = Math.cos(a) * pulseR;
+        const py = Math.sin(a) * pulseR;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#D4FF44';
+      ctx.beginPath();
+      ctx.arc(-2, 0, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (kind === 'SPITTER') {
+      ctx.beginPath();
+      ctx.moveTo(15, 0);
+      ctx.lineTo(5, -7);
+      ctx.lineTo(-13, -11);
+      ctx.lineTo(-17, 0);
+      ctx.lineTo(-13, 11);
+      ctx.lineTo(5, 7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#B8FF3B';
+      ctx.beginPath();
+      ctx.arc(-6, 0, 5.5 + Math.sin(timeSec * 10) * 1.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(8, -5);
+      ctx.lineTo(18, -10);
+      ctx.moveTo(8, 5);
+      ctx.lineTo(18, 10);
+      ctx.stroke();
+    } else if (kind === 'SCREAMER') {
+      const ringR = 14 + ((timeSec * 22) % 16);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(224, 102, 255, 0.55)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.beginPath();
+      ctx.moveTo(16, 0);
+      ctx.lineTo(4, -12);
+      ctx.lineTo(-14, -7);
+      ctx.lineTo(-10, 0);
+      ctx.lineTo(-14, 7);
+      ctx.lineTo(4, 12);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (kind === 'CRUSHER') {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 176, 0, 0.65)';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(0, 0, 30 + Math.sin(timeSec * 10) * 2.5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.beginPath();
+      ctx.moveTo(25, 0);
+      ctx.lineTo(14, -22);
+      ctx.lineTo(-16, -18);
+      ctx.lineTo(-24, 0);
+      ctx.lineTo(-16, 18);
+      ctx.lineTo(14, 22);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = '#FFD266';
+      ctx.lineWidth = 4.6;
+      ctx.beginPath();
+      ctx.arc(4, 0, 23, -1.15, 1.15);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(14, -14);
+      ctx.lineTo(30, -9);
+      ctx.moveTo(14, 14);
+      ctx.lineTo(30, 9);
+      ctx.stroke();
+    } else if (kind === 'QUEEN') {
+      const tailW = Math.sin(timeSec * 6.5) * 9;
+      ctx.fillStyle = 'rgba(38, 6, 12, 0.92)';
+      ctx.beginPath();
+      ctx.moveTo(30, 0);
+      ctx.lineTo(10, -14);
+      ctx.lineTo(-4, -29);
+      ctx.lineTo(-22, -20);
+      ctx.lineTo(-16, -8);
+      ctx.lineTo(-26, 0);
+      ctx.lineTo(-16, 8);
+      ctx.lineTo(-22, 20);
+      ctx.lineTo(-4, 29);
+      ctx.lineTo(10, 14);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = '#FFD266';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(12, -11);
+      ctx.lineTo(28, -22);
+      ctx.moveTo(12, 11);
+      ctx.lineTo(28, 22);
+      ctx.moveTo(-26, 0);
+      ctx.quadraticCurveTo(-38, tailW, -46, -tailW * 0.6);
+      ctx.stroke();
+    } else {
+      // STALKER
+      ctx.beginPath();
+      ctx.moveTo(16, 0);
+      ctx.lineTo(0, -10);
+      ctx.lineTo(-13, 0);
+      ctx.lineTo(0, 10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(4, -7);
+      ctx.lineTo(18, -13);
+      ctx.moveTo(4, 7);
+      ctx.lineTo(18, 13);
+      ctx.stroke();
+    }
+
+    ctx.restore();
   }
 
   private drawSolidCtaButton(
