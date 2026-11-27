@@ -404,8 +404,13 @@ export class FlakNetCartridge implements Cartridge {
     this.submitResultBanner = null;
     this.submitResultTone = 'green';
     this.lastSubmittedRun = null;
+    const ranked1979Bonus = this.host.getCrtPreset() === 'CLASSIC_1979';
     this.callsignDraft = this.leaderboard.getSavedCallsign();
-    this.sim.startNewGame();
+    this.sim.startNewGame({ ranked1979Bonus });
+    this.host.setCrtModeLocked(ranked1979Bonus);
+    if (ranked1979Bonus) {
+      this.showToast('★ 1979 CRT RANKED LOCKED — 1.5X BASELINE SCORE ACTIVE ★', 'amber', 2.4);
+    }
   }
 
   private startDemo(): void {
@@ -1038,11 +1043,18 @@ export class FlakNetCartridge implements Cartridge {
     // 3. Top Chrome Bar & Pause / Controls / PostRun shared actions
     if (id === TOP_CHROME_IDS.CRT) {
       this.confirmExitPending = false;
+      if (this.host.isCrtModeLocked()) {
+        this.host.audio.playMutedAvionicsIndicatorBeep(false);
+        this.showToast('1979 MODE LOCKED FOR ACTIVE 1.5X RANKED RUN', 'amber', 1.8);
+        return;
+      }
       const next = this.host.toggle1979Crt();
       this.showToast(
-        next === 'CLASSIC_1979' ? '1979 CRT MODE: ON' : '1979 CRT MODE: OFF (CLEAN)',
+        next === 'CLASSIC_1979'
+          ? '1979 CRT: ON — 1.5X RANKED SCORE ARMED!'
+          : '1979 CRT: OFF (CLEAN · 1.0X)',
         next === 'CLASSIC_1979' ? 'amber' : 'green',
-        1.4
+        1.6
       );
       return;
     }
@@ -1252,6 +1264,13 @@ export class FlakNetCartridge implements Cartridge {
       ? Math.min(1, this.statusToast.timer / Math.min(0.28, this.statusToast.duration))
       : 0;
 
+    const crtModeLocked =
+      this.sim.ranked1979Bonus &&
+      !this.sim.isDemoMode &&
+      this.sim.phase !== 'TITLE' &&
+      this.sim.phase !== 'GAME_OVER';
+    this.host.setCrtModeLocked(crtModeLocked);
+
     this.hudRenderer.render(
       ctx,
       {
@@ -1264,6 +1283,7 @@ export class FlakNetCartridge implements Cartridge {
         audioMuted: this.host.isMuted(),
         masterVolume: this.host.getMasterVolume(),
         crtPreset: this.host.getCrtPreset(),
+        crtModeLocked,
         phosphorTheme: this.host.getPhosphorTheme(),
         isFullscreen: this.host.getViewport().isFullscreen,
         isTouchDevice: this.host.isTouchDevice(),

@@ -178,6 +178,7 @@ export interface SectorScoreBreakdown {
   noDamageBonus: number;
   subtotal: number;
   streakMultiplier: number;
+  crt1979Multiplier?: number;
   sectorTotal: number;
   accuracyRating: string;
   accuracyPercent: number;

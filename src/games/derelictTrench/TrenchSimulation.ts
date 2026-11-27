@@ -49,6 +49,12 @@ export interface BallisticPipperSolution {
   distM: number;
   hitTerrain: boolean;
   isResupplyCue?: boolean;
+  /** True when a closer ridge/terrain blocks bullets before reaching the locked target */
+  terrainMaskedTarget?: boolean;
+  /** Time of flight (sec) to the pipper / impact point */
+  tofSec: number;
+  /** First terrain/arch impact time along current bullet path (or maxAge if open sky) */
+  terrainHitT: number;
 }
 
 export interface IncomingSamTelemetry {
@@ -169,6 +175,8 @@ export class TrenchSimulation {
   public hull: number = TRENCH_CONSTANTS.HULL_MAX;
   public lastDeathCause = 'TERRAIN IMPACT';
   public score = 0;
+  /** True when this Ranked sortie was launched in 1979 CRT Mode (grants baseline 1.5x score!) */
+  public ranked1979Bonus = false;
   public noeActive = false;
   public noeStreakSec = 0;
   public noeMultiplier = 1.0;
@@ -302,6 +310,7 @@ export class TrenchSimulation {
     this.lastDeathCause = 'TERRAIN IMPACT';
     this.score = 0;
     this.scoreCarry = 0;
+    this.ranked1979Bonus = false;
     this.noeActive = false;
     this.noeStreakSec = 0;
     this.noeMultiplier = 1.0;
@@ -329,10 +338,15 @@ export class TrenchSimulation {
     this.refreshSectorObjectiveCounts();
   }
 
-  public startNewFlight(options?: { freeFlightDrill?: boolean }): void {
+  public startNewFlight(options?: { freeFlightDrill?: boolean; ranked1979Bonus?: boolean }): void {
     this.resetToTitle();
     this.freeFlightDrill = Boolean(options?.freeFlightDrill);
+    this.ranked1979Bonus = !this.freeFlightDrill && Boolean(options?.ranked1979Bonus);
     this.phase = 'FLYING';
+  }
+
+  public getBaseScoreMultiplier(): number {
+    return this.ranked1979Bonus && !this.freeFlightDrill ? 1.5 : 1.0;
   }
 
   /**
@@ -496,7 +510,7 @@ export class TrenchSimulation {
     const prevId = this.sectorId;
     if (clearedAllObjectives) {
       this.sectorsCleared++;
-      const bonus = 2000 + this.sectorNumber * 500;
+      const bonus = Math.round((2000 + this.sectorNumber * 500) * this.getBaseScoreMultiplier());
       this.score += bonus;
       this.popups.push({
         text: `★ ${prevId} CLEAR // +${bonus.toLocaleString()} PTS ★`,
@@ -752,14 +766,97 @@ export class TrenchSimulation {
     return true;
   }
 
+  /** Exact world-space Vulcan M61A1 gun muzzle origin (shared identically by firing, LCOS, CCIP & EEGS). */
+  public getGunMuzzleWorldPos(): Vec3 {
+    return {
+      x:
+        this.x -
+        this.basis.right.x * 1.15 -
+        this.basis.up.x * 0.85 +
+        this.basis.forward.x * 5.2,
+      y:
+        this.y -
+        this.basis.right.y * 1.15 -
+        this.basis.up.y * 0.85 +
+        this.basis.forward.y * 5.2,
+      z:
+        this.z -
+        this.basis.right.z * 1.15 -
+        this.basis.up.z * 0.85 +
+        this.basis.forward.z * 5.2,
+    };
+  }
+
+  /** Checks whether a 3D world point intersects valley heightmap terrain or a canyon rock arch. */
+  private isPointBlockedByTerrainOrArch(px: number, py: number, pz: number): boolean {
+    if (py <= this.terrain.sampleHeight(px, pz) + 0.5) {
+      return true;
+    }
+    return this.terrain.checkArchCollision(px, py, pz, 0.5);
+  }
+
+  /** Raymarches the exact parabolic bullet trajectory M0 + v0*t - 0.5*g*t^2 against terrain & arches. */
+  private raymarchGunImpact(
+    m0: Vec3,
+    v0x: number,
+    v0y: number,
+    v0z: number,
+    maxT: number
+  ): { hit: boolean; t: number; point: Vec3 } {
+    const g = TRENCH_CONSTANTS.GUN_GRAVITY_MPS2;
+    const stepT = 0.025;
+    let prevT = 0;
+    for (let t = stepT; t <= maxT; t += stepT) {
+      const px = m0.x + v0x * t;
+      const py = m0.y + v0y * t - 0.5 * g * t * t;
+      const pz = m0.z + v0z * t;
+      if (this.isPointBlockedByTerrainOrArch(px, py, pz)) {
+        let lo = prevT;
+        let hi = t;
+        for (let k = 0; k < 6; k++) {
+          const mid = (lo + hi) * 0.5;
+          const mx = m0.x + v0x * mid;
+          const my = m0.y + v0y * mid - 0.5 * g * mid * mid;
+          const mz = m0.z + v0z * mid;
+          if (this.isPointBlockedByTerrainOrArch(mx, my, mz)) hi = mid;
+          else lo = mid;
+        }
+        return {
+          hit: true,
+          t: hi,
+          point: {
+            x: m0.x + v0x * hi,
+            y: m0.y + v0y * hi - 0.5 * g * hi * hi,
+            z: m0.z + v0z * hi,
+          },
+        };
+      }
+      prevT = t;
+    }
+    return {
+      hit: false,
+      t: maxT,
+      point: {
+        x: m0.x + v0x * maxT,
+        y: m0.y + v0y * maxT - 0.5 * g * maxT * maxT,
+        z: m0.z + v0z * maxT,
+      },
+    };
+  }
+
   public computeBallisticPipper(): BallisticPipperSolution {
     const g = TRENCH_CONSTANTS.GUN_GRAVITY_MPS2;
     const muzzle = TRENCH_CONSTANTS.GUN_MUZZLE_SPEED_MPS;
+    const maxBulletAge = 2.15;
+    const m0 = this.getGunMuzzleWorldPos();
     const v0x = this.vx + this.basis.forward.x * muzzle;
     const v0y = this.vy + this.basis.forward.y * muzzle;
     const v0z = this.vz + this.basis.forward.z * muzzle;
 
-    // Prefer locked target; if a Cyan Resupply Pod is right on the gun bore (<=14°, <=1,250m), provide an LCOS cue for it!
+    // 1. Always raymarch exact real bullet impact against valley terrain & arches first!
+    const terrainHit = this.raymarchGunImpact(m0, v0x, v0y, v0z, maxBulletAge);
+
+    // 2. Prefer locked target; if a Cyan Resupply Pod is right on the gun bore (<=14°, <=1,250m), cue it!
     let pipperTarget: CanyonTarget | null = this.getLockedTarget();
     let isResupplyCue = pipperTarget?.kind === 'RESUPPLY_CACHE';
 
@@ -776,92 +873,92 @@ export class TrenchSimulation {
     }
 
     if (pipperTarget) {
-      const dx0 = pipperTarget.x - this.x;
-      const dy0 = pipperTarget.y - this.y;
-      const dz0 = pipperTarget.z - this.z;
+      const dx0 = pipperTarget.x - m0.x;
+      const dy0 = pipperTarget.y - m0.y;
+      const dz0 = pipperTarget.z - m0.z;
       const d0 = Math.hypot(dx0, dy0, dz0);
-      if (d0 >= 30 && d0 <= TRENCH_CONSTANTS.MISSILE_MAX_LOCK_RANGE_M) {
+      if (d0 >= 25 && d0 <= 2400) {
         const tvx = pipperTarget.vx ?? 0;
         const tvy = pipperTarget.vy ?? 0;
         const tvz = pipperTarget.vz ?? 0;
 
-        // True relative closing speed along line-of-sight (fixes high-speed Mach 1.0+ over-drop/over-lead!)
-        const relVx = v0x - tvx;
-        const relVy = v0y - tvy;
-        const relVz = v0z - tvz;
-        const closing0 = Math.max(
-          muzzle * 0.65,
-          (relVx * dx0 + relVy * dy0 + relVz * dz0) / d0
-        );
-        let tof = Math.min(2.1, d0 / closing0);
-        for (let iter = 0; iter < 2; iter++) {
-          const fx = pipperTarget.x + tvx * tof - this.x;
-          const fy = pipperTarget.y + tvy * tof - this.y + 0.5 * g * tof * tof;
-          const fz = pipperTarget.z + tvz * tof - this.z;
-          const fd = Math.max(30, Math.hypot(fx, fy, fz));
-          const closingI = Math.max(
-            muzzle * 0.65,
-            (relVx * fx + relVy * fy + relVz * fz) / fd
-          );
-          tof = Math.min(2.1, fd / closingI);
+        // Exact off-boresight-invariant flight-time solver:
+        // Solves || (P_target - M0) - (v_jet - v_target) * t + 0.5 * g * t^2 || = muzzle * t
+        // Independent of current nose pointing error so LCOS never over-drops or swings while pulling lead!
+        const ux = this.vx - tvx;
+        const uy = this.vy - tvy;
+        const uz = this.vz - tvz;
+        const closingApprox = (ux * dx0 + uy * dy0 + uz * dz0) / d0;
+        let tof = d0 / Math.max(250, muzzle + closingApprox);
+        for (let iter = 0; iter < 4; iter++) {
+          const rx = dx0 - ux * tof;
+          const ry = dy0 - uy * tof + 0.5 * g * tof * tof;
+          const rz = dz0 - uz * tof;
+          tof = Math.hypot(rx, ry, rz) / muzzle;
         }
 
-        const pipX = this.x + relVx * tof;
-        const pipY = this.y + relVy * tof - 0.5 * g * tof * tof;
-        const pipZ = this.z + relVz * tof;
+        if (tof > 0.02 && tof <= maxBulletAge) {
+          // If a closer ridge or canyon wall physically blocks the bullet well before target range, show true CCIP terrain impact!
+          if (terrainHit.hit && terrainHit.t < tof * 0.86) {
+            return {
+              mode: 'CCIP',
+              worldPoint: terrainHit.point,
+              distM: Math.hypot(
+                terrainHit.point.x - this.x,
+                terrainHit.point.y - this.y,
+                terrainHit.point.z - this.z
+              ),
+              hitTerrain: true,
+              terrainMaskedTarget: true,
+              tofSec: terrainHit.t,
+              terrainHitT: terrainHit.t,
+            };
+          }
 
-        return {
-          mode: 'LCOS',
-          worldPoint: { x: pipX, y: pipY, z: pipZ },
-          distM: d0,
-          hitTerrain: false,
-          isResupplyCue,
-        };
+          // Exact LCOS: when pilot places this pipper directly on P_target, bullet hits P_target + v_target * tof!
+          const pipX = m0.x + (v0x - tvx) * tof;
+          const pipY = m0.y + (v0y - tvy) * tof - 0.5 * g * tof * tof;
+          const pipZ = m0.z + (v0z - tvz) * tof;
+
+          return {
+            mode: 'LCOS',
+            worldPoint: { x: pipX, y: pipY, z: pipZ },
+            distM: d0,
+            hitTerrain: false,
+            isResupplyCue,
+            tofSec: tof,
+            terrainHitT: terrainHit.t,
+          };
+        }
       }
     }
 
-    // CCIP terrain impact raymarch out to 2.0s (~2,200m!)
-    const stepT = 0.04;
-    const maxT = 2.0;
-    let prevT = 0;
-    for (let t = stepT; t <= maxT; t += stepT) {
-      const px = this.x + v0x * t;
-      const py = this.y + v0y * t - 0.5 * g * t * t;
-      const pz = this.z + v0z * t;
-      const groundH = this.terrain.sampleHeight(px, pz);
-      if (py <= groundH + 0.5) {
-        let lo = prevT;
-        let hi = t;
-        for (let k = 0; k < 5; k++) {
-          const mid = (lo + hi) * 0.5;
-          const mx = this.x + v0x * mid;
-          const my = this.y + v0y * mid - 0.5 * g * mid * mid;
-          const mz = this.z + v0z * mid;
-          if (my <= this.terrain.sampleHeight(mx, mz) + 0.5) hi = mid;
-          else lo = mid;
-        }
-        const hitX = this.x + v0x * hi;
-        const hitY = this.y + v0y * hi - 0.5 * g * hi * hi;
-        const hitZ = this.z + v0z * hi;
-        return {
-          mode: 'CCIP',
-          worldPoint: { x: hitX, y: hitY, z: hitZ },
-          distM: Math.hypot(hitX - this.x, hitY - this.y, hitZ - this.z),
-          hitTerrain: true,
-        };
-      }
-      prevT = t;
+    if (terrainHit.hit) {
+      return {
+        mode: 'CCIP',
+        worldPoint: terrainHit.point,
+        distM: Math.hypot(
+          terrainHit.point.x - this.x,
+          terrainHit.point.y - this.y,
+          terrainHit.point.z - this.z
+        ),
+        hitTerrain: true,
+        tofSec: terrainHit.t,
+        terrainHitT: terrainHit.t,
+      };
     }
 
-    const defaultT = 0.72;
-    const px = this.x + v0x * defaultT;
-    const py = this.y + v0y * defaultT - 0.5 * g * defaultT * defaultT;
-    const pz = this.z + v0z * defaultT;
+    const defaultT = 0.80;
+    const px = m0.x + v0x * defaultT;
+    const py = m0.y + v0y * defaultT - 0.5 * g * defaultT * defaultT;
+    const pz = m0.z + v0z * defaultT;
     return {
       mode: 'CCIP',
       worldPoint: { x: px, y: py, z: pz },
       distM: Math.hypot(px - this.x, py - this.y, pz - this.z),
       hitTerrain: false,
+      tofSec: defaultT,
+      terrainHitT: maxBulletAge,
     };
   }
 
@@ -1107,7 +1204,11 @@ export class TrenchSimulation {
 
     const stepDist = Math.hypot(dx, dy, dz);
     this.distanceFlownM += stepDist;
-    this.scoreCarry += stepDist * (this.afterburning ? 0.34 : 0.2) * this.noeMultiplier;
+    this.scoreCarry +=
+      stepDist *
+      (this.afterburning ? 0.34 : 0.2) *
+      this.noeMultiplier *
+      this.getBaseScoreMultiplier();
     if (this.scoreCarry >= 1) {
       const add = Math.floor(this.scoreCarry);
       this.score += add;
@@ -1464,7 +1565,7 @@ export class TrenchSimulation {
     }
 
     if (newlyDecoyed > 0) {
-      this.score += newlyDecoyed * 250;
+      this.score += Math.round(newlyDecoyed * 250 * this.getBaseScoreMultiplier());
       const total = Math.max(newlyDecoyed, this.cmdsBurstDecoyedTotal);
       this.weaponCueText = `CMDS DECOYED ${total} SAM${total > 1 ? 'S' : ''} // SAFE ${this.cmdsActiveTimer.toFixed(1)}S`;
       this.weaponCueTimer = Math.max(this.weaponCueTimer, 1.55);
@@ -1491,28 +1592,13 @@ export class TrenchSimulation {
     const uy = dy / len;
     const uz = dz / len;
 
-    const sx =
-      this.x -
-      this.basis.right.x * 1.15 -
-      this.basis.up.x * 0.85 +
-      this.basis.forward.x * 5.2;
-    const sy =
-      this.y -
-      this.basis.right.y * 1.15 -
-      this.basis.up.y * 0.85 +
-      this.basis.forward.y * 5.2;
-    const sz =
-      this.z -
-      this.basis.right.z * 1.15 -
-      this.basis.up.z * 0.85 +
-      this.basis.forward.z * 5.2;
-
+    const m0 = this.getGunMuzzleWorldPos();
     const muzzle = TRENCH_CONSTANTS.GUN_MUZZLE_SPEED_MPS;
     this.rounds.push({
       id: this.nextIdRef.value++,
-      x: sx,
-      y: sy,
-      z: sz,
+      x: m0.x,
+      y: m0.y,
+      z: m0.z,
       vx: this.vx + ux * muzzle,
       vy: this.vy + uy * muzzle,
       vz: this.vz + uz * muzzle,
@@ -1792,7 +1878,7 @@ export class TrenchSimulation {
               t.samWasLocking = false;
               if (this.terrainMaskBonusCooldown <= 0) {
                 this.terrainMaskBonusCooldown = 3.5;
-                const bonus = Math.round(300 * this.noeMultiplier);
+                const bonus = Math.round(300 * this.noeMultiplier * this.getBaseScoreMultiplier());
                 this.score += bonus;
                 this.audioCb.onBonusChime(false);
                 this.weaponCueText = `TERRAIN MASKED! SAM LOCK BROKEN // +${bonus} PTS`;
@@ -1858,7 +1944,7 @@ export class TrenchSimulation {
     const basePts =
       t.kind === 'BANDIT_DRONE' ? 850 : t.kind === 'SAM_SITE' ? 750 : 450;
     const rawPts = viaMissile ? basePts + 200 : viaFlyThrough ? basePts + 150 : basePts;
-    const pts = Math.round(rawPts * this.noeMultiplier);
+    const pts = Math.round(rawPts * this.noeMultiplier * this.getBaseScoreMultiplier());
     this.score += pts;
 
     if (this.lockedTargetId === t.id) {
@@ -1977,10 +2063,12 @@ export class TrenchSimulation {
       const prevY = r.y;
       const prevZ = r.z;
 
-      r.vy -= g * dt;
+      const halfG = 0.5 * g * dt;
+      r.vy -= halfG;
       r.x += r.vx * dt;
       r.y += r.vy * dt;
       r.z += r.vz * dt;
+      r.vy -= halfG;
 
       if (r.age >= r.maxAge) {
         this.rounds.splice(i, 1);
@@ -2036,8 +2124,8 @@ export class TrenchSimulation {
       }
 
       const h = this.terrain.sampleHeight(r.x, r.z);
-      if (r.y <= h + 0.5) {
-        this.spawnSparks(r.x, h + 1.5, r.z, '#FFB000', 6);
+      if (this.isPointBlockedByTerrainOrArch(r.x, r.y, r.z)) {
+        this.spawnSparks(r.x, Math.max(h + 1.5, r.y), r.z, '#FFB000', 6);
         const relX = r.x - this.x;
         const relY = r.y - this.y;
         const relZ = r.z - this.z;
@@ -2186,7 +2274,9 @@ export class TrenchSimulation {
       if (s.age >= s.maxAge) {
         // Motor burn-out / self-destruct flash at end of 4.5s flight time!
         if (s.decoyedByFlareId === null && (s.evadedByHighG || s.evadedByMask)) {
-          const bonus = Math.round((s.evadedByHighG ? 400 : 350) * this.noeMultiplier);
+          const bonus = Math.round(
+            (s.evadedByHighG ? 400 : 350) * this.noeMultiplier * this.getBaseScoreMultiplier()
+          );
           this.score += bonus;
           this.audioCb.onBonusChime(false);
           this.popups.push({
@@ -2343,7 +2433,9 @@ export class TrenchSimulation {
       const h = this.terrain.sampleHeight(s.x, s.z);
       if (s.y <= h + 1.5) {
         if (s.decoyedByFlareId === null && (s.evadedByMask || s.evadedByHighG)) {
-          const bonus = Math.round((s.evadedByHighG ? 400 : 350) * this.noeMultiplier);
+          const bonus = Math.round(
+            (s.evadedByHighG ? 400 : 350) * this.noeMultiplier * this.getBaseScoreMultiplier()
+          );
           this.score += bonus;
           this.audioCb.onBonusChime(false);
           this.popups.push({

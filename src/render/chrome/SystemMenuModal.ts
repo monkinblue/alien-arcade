@@ -47,6 +47,8 @@ export interface SystemMenuOptions {
   programTitle: string;
   activeProgramId: CartridgeProgramId;
   crtPreset: CrtPreset;
+  /** True when player started a Ranked run in 1979 Mode (+1.5x bonus) — locks 1979 CRT ON until run ends */
+  crtModeLocked?: boolean;
   phosphorTheme: PhosphorTheme;
   /** 0.0 .. 1.0 */
   masterVolume: number;
@@ -214,35 +216,57 @@ export function drawSystemMenuModal(
   };
 
   // 2. Global Hardware Settings
-  // Row A: 1979 CRT MODE (ON (1979 CRT) | OFF (CLEAN))
+  // Row A: 1979 CRT MODE (ON · 1.5X RANKED | OFF · CLEAN, or LOCKED during active 1979 Ranked run!)
   {
-    const { controlX, controlW } = drawSettingRowBg(curY, '1979 CRT MODE', SYSTEM_MENU_IDS.CRT_CYCLE);
+    const isLocked = Boolean(opts.crtModeLocked && opts.crtPreset === 'CLASSIC_1979');
+    const { controlX, controlW } = drawSettingRowBg(
+      curY,
+      '1979 CRT MODE',
+      isLocked ? undefined : SYSTEM_MENU_IDS.CRT_CYCLE
+    );
     const segGap = 6;
     const segW = Math.floor((controlW - segGap) / 2);
     const segH = rowH - 6;
     const segY = curY + 3;
-    const defs: Array<{ id: string; preset: CrtPreset; label: string }> = [
-      { id: SYSTEM_MENU_IDS.CRT_CLASSIC, preset: 'CLASSIC_1979', label: 'ON (1979 CRT)' },
-      { id: SYSTEM_MENU_IDS.CRT_CRISP, preset: 'CRISP', label: 'OFF (CLEAN)' },
-    ];
-    defs.forEach((d, idx) => {
-      const sx = controlX + idx * (segW + segGap);
-      const sw = idx === 1 ? controlW - segW - segGap : segW;
-      const isAct = opts.crtPreset === d.preset;
+    if (isLocked) {
       drawChromeButton(
         ctx,
-        { x: sx, y: segY, width: sw, height: segH },
-        d.label,
+        { x: controlX, y: segY, width: controlW, height: segH },
+        '■ LOCKED ON — 1.5X RANKED RUN ACTIVE',
         {
-          id: d.id,
-          accent: isAct ? 'amber' : 'muted',
-          active: isAct,
-          hovered: opts.hoveredButtonId === d.id,
+          id: SYSTEM_MENU_IDS.CRT_CLASSIC,
+          accent: 'amber',
+          active: true,
+          disabled: true,
+          hovered: false,
           fontPx: 12,
         },
         buttons
       );
-    });
+    } else {
+      const defs: Array<{ id: string; preset: CrtPreset; label: string }> = [
+        { id: SYSTEM_MENU_IDS.CRT_CLASSIC, preset: 'CLASSIC_1979', label: 'ON (1.5X RANKED)' },
+        { id: SYSTEM_MENU_IDS.CRT_CRISP, preset: 'CRISP', label: 'OFF (CLEAN · 1X)' },
+      ];
+      defs.forEach((d, idx) => {
+        const sx = controlX + idx * (segW + segGap);
+        const sw = idx === 1 ? controlW - segW - segGap : segW;
+        const isAct = opts.crtPreset === d.preset;
+        drawChromeButton(
+          ctx,
+          { x: sx, y: segY, width: sw, height: segH },
+          d.label,
+          {
+            id: d.id,
+            accent: isAct ? 'amber' : 'muted',
+            active: isAct,
+            hovered: opts.hoveredButtonId === d.id,
+            fontPx: 12,
+          },
+          buttons
+        );
+      });
+    }
     curY += rowH + rowGap;
   }
 

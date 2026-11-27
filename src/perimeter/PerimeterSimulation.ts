@@ -140,6 +140,8 @@ export class PerimeterSimulation {
   public currentWaveDef: WaveDefinition;
   public totalKills = 0;
   public score = 0;
+  /** True when this Ranked Endless Siege launched in 1979 CRT Mode (grants baseline 1.5x score!) */
+  public ranked1979Bonus = false;
   public prepCountdownSec = 0;
 
   // Entities & Tactical Objects
@@ -245,10 +247,15 @@ export class PerimeterSimulation {
     this.resetRun('ENDLESS_SIEGE', true);
   }
 
-  public resetRun(mode: PerimeterMode = 'ENDLESS_SIEGE', showBriefing = false): void {
+  public resetRun(
+    mode: PerimeterMode = 'ENDLESS_SIEGE',
+    showBriefing = false,
+    ranked1979Bonus = false
+  ): void {
     this.mode = mode;
     this.phase = showBriefing ? 'BRIEFING' : 'TACTICAL_PREP';
     this.trainingMode = false;
+    this.ranked1979Bonus = Boolean(ranked1979Bonus);
     this.tacticalPaused = false;
     this.fastForward2x = false;
 
@@ -436,7 +443,8 @@ export class PerimeterSimulation {
   public getActiveScoreMultiplier(): number {
     const mut = WAVE_MUTATORS[this.activeMutator]?.scoreMult ?? 1.0;
     const telemetryMult = 1 + this.getEndgameStacks('COMBAT_TELEMETRY') * 0.15;
-    return this.getStreakMultiplier() * mut * telemetryMult;
+    const crt1979Mult = this.ranked1979Bonus && !this.trainingMode ? 1.5 : 1.0;
+    return this.getStreakMultiplier() * mut * telemetryMult * crt1979Mult;
   }
 
   public getEffectiveMaxReactorCap(): number {
@@ -2217,7 +2225,7 @@ export class PerimeterSimulation {
         h.hp -= purgeDmg;
         if (h.hp <= 0) {
           purgeKills++;
-          this.score += HOSTILE_SPECS[h.kind].scoreValue;
+          this.score += Math.round(HOSTILE_SPECS[h.kind].scoreValue * this.getActiveScoreMultiplier());
         }
       }
     }
@@ -5126,7 +5134,8 @@ export class PerimeterSimulation {
     }
 
     if (this.waveNumber % 10 === 0) {
-      const milestoneBonus = this.bulkheadSeals * 1500;
+      const crt1979Mult = this.ranked1979Bonus && !this.trainingMode ? 1.5 : 1.0;
+      const milestoneBonus = Math.round(this.bulkheadSeals * 1500 * crt1979Mult);
       this.score += milestoneBonus;
       this.pushLog(
         `★ MILESTONE // WAVE ${String(this.waveNumber).padStart(2, '0')} MATRIARCH SURVIVED (+${milestoneBonus.toLocaleString()} PTS) ★`

@@ -70,6 +70,7 @@ export class CartridgeHost implements HostEnvironment {
 
   // Global CRT Mode (defaults OFF / Modern Clean; user toggle persists in localStorage), Phosphor Theme & Audio
   private crtPreset: CrtPreset = 'CRISP';
+  private crtModeLocked = false;
   private phosphorTheme: PhosphorTheme = 'GREEN';
   private audioMuted = false;
   private modalOpen = false;
@@ -250,7 +251,20 @@ export class CartridgeHost implements HostEnvironment {
     return this.crtPreset;
   }
 
+  public isCrtModeLocked(): boolean {
+    return this.crtModeLocked;
+  }
+
+  public setCrtModeLocked(locked: boolean): void {
+    this.crtModeLocked = locked;
+  }
+
   public setCrtPreset(preset: CrtPreset): void {
+    if (this.crtModeLocked && preset !== 'CLASSIC_1979') {
+      this.audio.playMutedAvionicsIndicatorBeep(false);
+      this.announceLive('1979 CRT Mode is locked until your active 1.5x Ranked run ends.');
+      return;
+    }
     this.crtPreset = preset;
     setCrt1979Typography(preset === 'CLASSIC_1979');
     try {
@@ -264,6 +278,11 @@ export class CartridgeHost implements HostEnvironment {
   }
 
   public toggle1979Crt(): CrtPreset {
+    if (this.crtModeLocked) {
+      this.audio.playMutedAvionicsIndicatorBeep(false);
+      this.announceLive('1979 CRT Mode is locked until your active 1.5x Ranked run ends.');
+      return this.crtPreset;
+    }
     const next: CrtPreset = this.crtPreset === 'CLASSIC_1979' ? 'CRISP' : 'CLASSIC_1979';
     this.setCrtPreset(next);
     return next;
@@ -415,6 +434,7 @@ export class CartridgeHost implements HostEnvironment {
 
   private unmountActiveCartridge(): void {
     this.modalOpen = false;
+    this.crtModeLocked = false;
     if (this.activeCartridge) {
       this.activeCartridge.unmount();
       this.activeCartridge = null;

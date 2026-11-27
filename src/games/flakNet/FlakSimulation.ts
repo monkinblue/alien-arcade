@@ -76,6 +76,8 @@ export class FlakSimulation {
   public phase: FlakPhase = 'TITLE';
   public waveNumber = 1;
   public score = 0;
+  /** True when this Ranked run was launched in 1979 CRT Mode (grants baseline 1.5x score!) */
+  public ranked1979Bonus = false;
   public highChain = 1;
   public liveChain = 1;
   public liveChainDecayTimer = 0;
@@ -253,6 +255,7 @@ export class FlakSimulation {
     this.phase = 'TITLE';
     this.waveNumber = 1;
     this.score = 0;
+    this.ranked1979Bonus = false;
     this.highChain = 1;
     this.liveChain = 1;
     this.liveChainDecayTimer = 0;
@@ -287,12 +290,17 @@ export class FlakSimulation {
     this.pushLog('LMB: NEAREST M90 FLAK | RMB/SPACE: MK-IV EMP MORTAR | A/S/D: MANUAL.', 'amber');
   }
 
-  public startNewGame(): void {
+  public startNewGame(options?: { ranked1979Bonus?: boolean }): void {
     this.resetToTitle();
     this.isDemoMode = false;
+    this.ranked1979Bonus = Boolean(options?.ranked1979Bonus);
     this.phase = 'ACTIVE_WAVE';
     this.waveNumber = 1;
     this.beginWave(1);
+  }
+
+  public getBaseScoreMultiplier(): number {
+    return this.ranked1979Bonus && !this.isDemoMode ? 1.5 : 1.0;
   }
 
   /**
@@ -1343,7 +1351,7 @@ export class FlakSimulation {
       }
 
       if (boss.dyingTimer <= 0) {
-        const reward = 5000 * boss.tier;
+        const reward = Math.round(5000 * boss.tier * this.getBaseScoreMultiplier());
         this.score += reward;
         this.totalKills++;
         const mins = Math.floor(this.missionElapsedSec / 60);
@@ -1627,7 +1635,7 @@ export class FlakSimulation {
 
         if (hp.hp <= 0) {
           hp.destroyed = true;
-          const hpBonus = hp.id === 'CORE' ? 2200 : 1400;
+          const hpBonus = Math.round((hp.id === 'CORE' ? 2200 : 1400) * this.getBaseScoreMultiplier());
           this.score += hpBonus;
           this.spawnSparks(hpx, hpy, '#FFF6CC', 30);
           this.pushCrtShockwave(hpx, hpy, 0.24, 0.62, 0.55);
@@ -1717,7 +1725,7 @@ export class FlakSimulation {
           if (prevLockedDome && !t.lockedDomeId && !t.deflectionSaveAwarded) {
             t.deflectionSaveAwarded = true;
             const chain = this.advanceChainLadder(1);
-            const savePts = 450 * chain;
+            const savePts = Math.round(450 * chain * this.getBaseScoreMultiplier());
             this.score += savePts;
             const dome = this.domes.find((d) => d.id === prevLockedDome);
             if (dome) dome.savedFlashTimer = 1.4;
@@ -1782,7 +1790,7 @@ export class FlakSimulation {
 
           const isDangerClose = midY >= FLAK_CONSTANTS.DANGER_CLOSE_Y;
           const dcMult = isDangerClose ? 3 : 1;
-          const pts = 600 * chain * dcMult;
+          const pts = Math.round(600 * chain * dcMult * this.getBaseScoreMultiplier());
           this.score += pts;
           this.totalKills++;
           this.pushKillLog(other, `DFL-x${chain}`, 'bright');
@@ -1877,7 +1885,7 @@ export class FlakSimulation {
               : 180;
 
     const dcMult = isDangerClose ? 3 : 1;
-    const awarded = basePts * effectiveChain * dcMult;
+    const awarded = Math.round(basePts * effectiveChain * dcMult * this.getBaseScoreMultiplier());
     this.score += awarded;
 
     const killMethod = isDangerClose
@@ -1952,7 +1960,7 @@ export class FlakSimulation {
   }
 
   private awardDeflectionEscapeBonus(t: OrbitalThreat): void {
-    const pts = t.kind === 'HEAVY_METEOR' ? 350 : 250;
+    const pts = Math.round((t.kind === 'HEAVY_METEOR' ? 350 : 250) * this.getBaseScoreMultiplier());
     this.score += pts;
     this.totalKills++;
     this.pushKillLog(t, 'FLUNG', 'bright');
@@ -2072,8 +2080,9 @@ export class FlakSimulation {
     const survivingDomes = this.getIntactDomeCount();
     const empBat = this.batteries[1];
     const unusedEmpRounds = empBat ? empBat.ammo : 0;
-    const domeBonusPerUnit = 400 + this.waveNumber * 100;
-    const empBonusPerUnit = 350;
+    const baseMult = this.getBaseScoreMultiplier();
+    const domeBonusPerUnit = Math.round((400 + this.waveNumber * 100) * baseMult);
+    const empBonusPerUnit = Math.round(350 * baseMult);
 
     // Every 3 waves OR after defeating an Every-5-Rounds Boss, dispatch an Orbital Drop-Pod to restore 1 dome!
     let restoringLabel: string | null = null;

@@ -50,6 +50,8 @@ export interface HostEnvironment {
   getCrtPreset(): CrtPreset;
   setCrtPreset(preset: CrtPreset): void;
   toggle1979Crt(): CrtPreset;
+  isCrtModeLocked(): boolean;
+  setCrtModeLocked(locked: boolean): void;
   getPhosphorTheme(): PhosphorTheme;
   setPhosphorTheme(theme: PhosphorTheme): void;
   getMasterVolume(): number;

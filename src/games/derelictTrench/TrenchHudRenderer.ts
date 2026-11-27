@@ -12,6 +12,7 @@ import {
   drawPersistentControlsStrip,
   drawStatusToast,
   drawSystemMenuModal,
+  draw1979RankedBonusBanner,
   drawTopChromeBar,
   font,
   hitTestChromeButtons,
@@ -74,6 +75,7 @@ export interface TrenchHudRenderParams {
   audioMuted: boolean;
   isFullscreen: boolean;
   crtPreset: CrtPreset;
+  crtModeLocked: boolean;
   phosphorTheme: PhosphorTheme;
   masterVolume: number;
   isTouchDevice: boolean;
@@ -151,8 +153,9 @@ export class TrenchHudRenderer {
         showRankedBadge: true,
         telemetryText: params.sim.freeFlightDrill
           ? `DRILL · ${params.sim.sectorId} · ${Math.round(params.sim.score).toLocaleString()} PTS`
-          : `${params.sim.sectorId} · ${Math.round(params.sim.score).toLocaleString()} PTS`,
+          : `${params.sim.sectorId} · ${Math.round(params.sim.score).toLocaleString()} PTS${params.sim.ranked1979Bonus ? ' · 1.5X' : ''}`,
         crt1979Enabled: params.crtPreset === 'CLASSIC_1979',
+        crtModeLocked: params.crtModeLocked,
         controlsLabel: '[H] CONTROLS',
         audioMuted: params.audioMuted,
         hoveredButtonId: params.hoveredButtonId,
@@ -887,14 +890,11 @@ export class TrenchHudRenderer {
     ctx.restore();
 
     // -------------------------------------------------------------------------
-    // 6. DYNAMIC F-16 EEGS GUN FUNNEL (2.5px Dark Halo Underpass!)
+    // 6. TRUE 3D BALLISTIC EEGS GUN FUNNEL + LIVE LCOS / CCIP PIPPER
     // -------------------------------------------------------------------------
-    this.drawEegsGunFunnel(ctx, sim, cx, cy, focalLen, hudScale);
-
-    // -------------------------------------------------------------------------
-    // 7. LIVE BALLISTIC IMPACT / LCOS PIPPER (2.5px Dark Halo Underpass!)
-    // -------------------------------------------------------------------------
-    this.drawBallisticPipper(ctx, params, vp, hudScale);
+    const ballisticSol = sim.computeBallisticPipper();
+    this.drawEegsGunFunnel(ctx, params, ballisticSol, hudScale);
+    this.drawBallisticPipper(ctx, params, ballisticSol, vp, hudScale);
 
     // -------------------------------------------------------------------------
     // 7B. ZERO-CLUTTER 3-CLASS TARGET HUD BRACKETS (Ron Cobb ◈ / ✚ Resupply Pods!)
@@ -1146,49 +1146,66 @@ export class TrenchHudRenderer {
   }
 
   /**
-   * Authentic F-16 EEGS Gun Funnel with 2.5px dark halo underpass for crisp NOE contrast.
+   * True 3D Ballistic F-16 EEGS Gun Funnel projected directly along M0 + v0*t - 0.5*g*t^2.
+   * Accounts for real jet speed, AoA, lateral momentum, roll orientation, gravity drop, and terrain cutoff!
    */
   private drawEegsGunFunnel(
     ctx: CanvasRenderingContext2D,
-    sim: TrenchSimulation,
-    cx: number,
-    cy: number,
-    focalLen: number,
+    params: TrenchHudRenderParams,
+    sol: ReturnType<TrenchSimulation['computeBallisticPipper']>,
     hudScale: number
   ): void {
+    const { sim } = params;
     const muzzle = TRENCH_CONSTANTS.GUN_MUZZLE_SPEED_MPS;
     const g = TRENCH_CONSTANTS.GUN_GRAVITY_MPS2;
+    const m0 = sim.getGunMuzzleWorldPos();
+    const v0x = sim.vx + sim.basis.forward.x * muzzle;
+    const v0y = sim.vy + sim.basis.forward.y * muzzle;
+    const v0z = sim.vz + sim.basis.forward.z * muzzle;
+
     const wingspanHalfM = 6.2;
     const steps = 12;
-    const tMin = 0.14;
-    const tMax = 0.74;
+    const tMin = 0.08;
+    const tMax = Math.max(tMin + 0.05, Math.min(0.85, sol.terrainHitT));
 
     const leftPts: Array<{ x: number; y: number }> = [];
     const rightPts: Array<{ x: number; y: number }> = [];
 
-    const rollCurve = sim.rollRateRadS;
-    const gAccel = Math.max(-1.0, sim.gLoad - 1.0) * 9.81;
-
     for (let i = 0; i <= steps; i++) {
       const f = i / steps;
       const t = tMin + f * (tMax - tMin);
-      const dist = Math.max(40, muzzle * t);
+      const bx = m0.x + v0x * t;
+      const by = m0.y + v0y * t - 0.5 * g * t * t;
+      const bz = m0.z + v0z * t;
 
-      const dropM = 0.5 * (g + gAccel * 0.85) * t * t;
-      const driftX = -rollCurve * dropM * 0.72 - sim.yawRateRadS * dist * t * 0.14;
+      const centerP = params.projectWorld(bx, by, bz);
+      if (!centerP) continue;
 
-      const scale = focalLen / dist;
-      const px = cx + driftX * scale;
-      const py = cy + dropM * scale + 16 * hudScale;
-      const halfW = Math.max(7 * hudScale, Math.min(82 * hudScale, wingspanHalfM * scale));
+      // Project true aircraft-aligned left & right wingspan edges at bullet position B(t)
+      const lp = params.projectWorld(
+        bx - sim.basis.right.x * wingspanHalfM,
+        by - sim.basis.right.y * wingspanHalfM,
+        bz - sim.basis.right.z * wingspanHalfM
+      );
+      const rp = params.projectWorld(
+        bx + sim.basis.right.x * wingspanHalfM,
+        by + sim.basis.right.y * wingspanHalfM,
+        bz + sim.basis.right.z * wingspanHalfM
+      );
 
-      const twist = Math.max(-0.55, Math.min(0.55, -rollCurve * t * 0.55));
-      const cosT = Math.cos(twist);
-      const sinT = Math.sin(twist);
-
-      leftPts.push({ x: px - halfW * cosT, y: py - halfW * sinT });
-      rightPts.push({ x: px + halfW * cosT, y: py + halfW * sinT });
+      if (lp && rp) {
+        const dx = rp.sx - lp.sx;
+        const dy = rp.sy - lp.sy;
+        const span = Math.hypot(dx, dy);
+        const clampedHalf = Math.max(6 * hudScale, Math.min(78 * hudScale, span * 0.5));
+        const nx = span > 0.01 ? dx / span : 1;
+        const ny = span > 0.01 ? dy / span : 0;
+        leftPts.push({ x: centerP.sx - nx * clampedHalf, y: centerP.sy - ny * clampedHalf });
+        rightPts.push({ x: centerP.sx + nx * clampedHalf, y: centerP.sy + ny * clampedHalf });
+      }
     }
+
+    if (leftPts.length < 2) return;
 
     const railCol = sim.gunFiringNow
       ? 'rgba(255, 228, 143, 0.88)'
@@ -1216,7 +1233,13 @@ export class TrenchHudRenderer {
     this.strokeWithDarkHalo(
       ctx,
       () => {
-        for (const idx of [3, 7, 11]) {
+        const ticks = [
+          Math.floor(leftPts.length * 0.25),
+          Math.floor(leftPts.length * 0.58),
+          leftPts.length - 1,
+        ];
+        for (const idx of ticks) {
+          if (idx < 0 || idx >= leftPts.length) continue;
           const lp = leftPts[idx];
           const rp = rightPts[idx];
           const mx = (lp.x + rp.x) * 0.5;
@@ -1238,11 +1261,11 @@ export class TrenchHudRenderer {
   private drawBallisticPipper(
     ctx: CanvasRenderingContext2D,
     params: TrenchHudRenderParams,
+    sol: ReturnType<TrenchSimulation['computeBallisticPipper']>,
     vp: ViewportRect,
     hudScale: number
   ): void {
     const { sim } = params;
-    const sol = sim.computeBallisticPipper();
     const p = params.projectWorld(sol.worldPoint.x, sol.worldPoint.y, sol.worldPoint.z);
     if (!p) return;
 
@@ -1252,22 +1275,27 @@ export class TrenchHudRenderer {
 
     const isLcos = sol.mode === 'LCOS';
     const isPodCue = Boolean(sol.isResupplyCue);
+    const isMasked = Boolean(sol.terrainMaskedTarget);
     const r = Math.round((isLcos ? 19 : 16) * hudScale);
     const col = sim.gunFiringNow
       ? THEME.ACCENT_AMBER_HI
       : isPodCue
         ? THEME.ACCENT_CYAN
-        : isLcos
-          ? THEME.ACCENT_AMBER
-          : sol.hitTerrain
-            ? THEME.TEXT_BRIGHT
-            : 'rgba(68, 255, 119, 0.85)';
+        : isMasked
+          ? THEME.ALERT_RED_TEXT
+          : isLcos
+            ? THEME.ACCENT_AMBER
+            : sol.hitTerrain
+              ? THEME.TEXT_BRIGHT
+              : 'rgba(68, 255, 119, 0.85)';
 
     const outerCol = isPodCue
       ? 'rgba(76, 238, 255, 0.55)'
-      : isLcos
-        ? 'rgba(255, 176, 0, 0.52)'
-        : 'rgba(68, 255, 119, 0.48)';
+      : isMasked
+        ? 'rgba(255, 98, 71, 0.55)'
+        : isLcos
+          ? 'rgba(255, 176, 0, 0.52)'
+          : 'rgba(68, 255, 119, 0.48)';
 
     this.strokeWithDarkHalo(
       ctx,
@@ -1336,7 +1364,11 @@ export class TrenchHudRenderer {
     ctx.textAlign = 'left';
     const distStr =
       sol.distM >= 1000 ? `${(sol.distM / 1000).toFixed(1)}KM` : `${Math.round(sol.distM)}M`;
-    const modeTag = isPodCue ? `${SEMIOTIC_ICONS.DIAMOND} POD` : sol.mode;
+    const modeTag = isPodCue
+      ? `${SEMIOTIC_ICONS.DIAMOND} POD`
+      : isMasked
+        ? 'MASKED'
+        : sol.mode;
     this.fillTextWithDarkHalo(ctx, `${modeTag} ${distStr}`, px + r + 8, py + 4, col);
     ctx.restore();
   }
@@ -2581,10 +2613,10 @@ export class TrenchHudRenderer {
     const cx = vp.x + vp.width * 0.5;
     const cy = vp.y + vp.height * 0.5;
     const boxW = Math.min(780, vp.width - 28);
-    const boxH = Math.min(444, vp.height - 14);
+    const boxH = Math.min(486, vp.height - 10);
     const bx = Math.round(cx - boxW * 0.5);
     const by = Math.round(cy - boxH * 0.5);
-    const compact = boxH < 410;
+    const compact = boxH < 448;
     const padX = 20;
     const contentW = boxW - padX * 2;
 
@@ -2788,8 +2820,22 @@ export class TrenchHudRenderer {
       this.buttons
     );
 
-    // 6. Pointer-Lock Handshake Caption
-    const handY = pitchY + pitchH + (compact ? 11 : 14);
+    // 6. Super-Obvious 1979 CRT 1.5X Ranked Score Challenge Toggle Banner
+    const bonusY = pitchY + pitchH + (compact ? 6 : 8);
+    const bonusH = compact ? 30 : 34;
+    const crt1979On = params.crtPreset === 'CLASSIC_1979';
+    draw1979RankedBonusBanner(
+      ctx,
+      { x: bx + padX, y: bonusY, width: contentW, height: bonusH },
+      crt1979On,
+      params.hoveredButtonId,
+      params.timeSec,
+      this.buttons,
+      { compact }
+    );
+
+    // 7. Pointer-Lock Handshake Caption
+    const handY = bonusY + bonusH + (compact ? 9 : 11);
     ctx.font = font('micro', 12);
     ctx.fillStyle = THEME.TEXT_SECONDARY;
     ctx.textAlign = 'center';
@@ -2804,8 +2850,8 @@ export class TrenchHudRenderer {
       contentW
     );
 
-    // 7. Primary Launch Row: RANKED SORTIE + FREE-FLIGHT DRILL (UNRANKED)
-    const launchY = handY + (compact ? 12 : 14);
+    // 8. Primary Launch Row: RANKED SORTIE + FREE-FLIGHT DRILL (UNRANKED)
+    const launchY = handY + (compact ? 11 : 13);
     const launchH = compact ? 38 : 42;
     const launchGap = 10;
     const rankedW = Math.floor((contentW - launchGap) * 0.54);
@@ -2814,7 +2860,9 @@ export class TrenchHudRenderer {
     drawChromeButton(
       ctx,
       { x: bx + padX, y: launchY, width: rankedW, height: launchH },
-      `${SEMIOTIC_ICONS.PLAY} LAUNCH RANKED SORTIE [ENTER]`,
+      crt1979On
+        ? `${SEMIOTIC_ICONS.PLAY} LAUNCH RANKED [1.5X 1979]`
+        : `${SEMIOTIC_ICONS.PLAY} LAUNCH RANKED SORTIE [ENTER]`,
       {
         id: TRENCH_UI_IDS.START_RANKED,
         accent: 'amber',
@@ -2927,6 +2975,7 @@ export class TrenchHudRenderer {
         programTitle: 'DERELICT TRENCH',
         activeProgramId: 'trench',
         crtPreset: params.crtPreset,
+        crtModeLocked: params.crtModeLocked,
         phosphorTheme: params.phosphorTheme,
         masterVolume: params.masterVolume,
         audioMuted: params.audioMuted,

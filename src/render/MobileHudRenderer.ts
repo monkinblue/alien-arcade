@@ -527,11 +527,13 @@ export class MobileHudRenderer {
     curY += btnH + btnGap + 2;
 
     // Prominent Solid-Amber Launch Button at Bottom!
+    const crt1979On = state.crtPreset === 'CLASSIC_1979';
+    const bonusTag = crt1979On && !isPractice ? ' [1.5X]' : '';
     const commitLabel = isRanked
-      ? `${SEMIOTIC_ICONS.PLAY} LAUNCH RANKED CAMPAIGN`
+      ? `${SEMIOTIC_ICONS.PLAY} LAUNCH RANKED CAMPAIGN${bonusTag}`
       : isPractice
         ? `${SEMIOTIC_ICONS.PLAY} LAUNCH PRACTICE SEC-0${state.selectedStartSector}`
-        : `${SEMIOTIC_ICONS.PLAY} LAUNCH ENDLESS SURVEY`;
+        : `${SEMIOTIC_ICONS.PLAY} LAUNCH ENDLESS SURVEY${bonusTag}`;
     this.addTouchButton(
       ctx,
       buttonsOut,
@@ -547,7 +549,27 @@ export class MobileHudRenderer {
       true,
       15
     );
-    curY += 52;
+    curY += 50;
+
+    // 1-Tap 1979 CRT 1.5X Ranked Challenge Pill right under Launch
+    this.addTouchButton(
+      ctx,
+      buttonsOut,
+      TOP_CHROME_IDS.CRT,
+      leftX,
+      curY,
+      contentW,
+      30,
+      crt1979On
+        ? `${SEMIOTIC_ICONS.STAR} 1979 CRT ARMED: 1.5X RANKED SCORE (LOCKED FOR RUN)`
+        : `${SEMIOTIC_ICONS.STAR} TAP FOR 1979 CRT MODE (+1.5X RANKED SCORE)`,
+      crt1979On,
+      state.hoveredButtonId,
+      THEME.ACCENT_AMBER_HI,
+      false,
+      12
+    );
+    curY += 34;
 
     // Fixed Distinct SAS ON vs OFF Explanation Note (>=12px, zero identical copy bug!)
     const sasMobileNote = state.bezel.sasEnabled
@@ -556,7 +578,7 @@ export class MobileHudRenderer {
     ctx.font = font('micro', 12);
     ctx.textAlign = 'center';
     ctx.fillStyle = state.bezel.sasEnabled ? THEME.TEXT_BRIGHT : THEME.ACCENT_AMBER_HI;
-    drawEllipsizedText(ctx, sasMobileNote, cx, curY + 11, contentW - 8);
+    drawEllipsizedText(ctx, sasMobileNote, cx, curY + 8, contentW - 8);
 
     ctx.restore();
   }
@@ -1654,8 +1676,9 @@ export class MobileHudRenderer {
     );
     cy += bh + gap;
 
-    // Global 1979 CRT Mode + Phosphor Cycle Row
+    // Global 1979 CRT Mode + Phosphor Cycle Row (locks during active 1.5x Ranked 1979 runs!)
     const crt1979On = state.crtPreset === 'CLASSIC_1979';
+    const crtLocked = state.crtModeLocked && crt1979On;
     this.addTouchButton(
       ctx,
       buttonsOut,
@@ -1664,12 +1687,13 @@ export class MobileHudRenderer {
       cy,
       halfW,
       bh,
-      `1979 CRT: ${crt1979On ? 'ON' : 'OFF'}`,
+      crtLocked ? '■ 1979 LOCK · 1.5X' : crt1979On ? '1979 CRT: ON (1.5X)' : '1979 CRT: OFF',
       crt1979On,
       state.hoveredButtonId,
       crt1979On ? THEME.ACCENT_AMBER_HI : THEME.TEXT_SECONDARY,
       false,
-      12
+      12,
+      crtLocked
     );
     this.addTouchButton(
       ctx,

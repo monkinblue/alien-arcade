@@ -99,6 +99,7 @@ export class GameController implements Cartridge {
   private lifeLostFlashTimer = 0;
   private isPracticeRun = false;
   private endlessMode = false;
+  private ranked1979BonusActive = false;
   private endlessDepth = 1;
   private endlessSeed = 203779;
   private selectedMenuMode: MenuModeSelection = 'RANKED_CAMPAIGN';
@@ -826,7 +827,19 @@ export class GameController implements Cartridge {
 
     switch (id) {
       case TOP_CHROME_IDS.CRT:
-        this.host.toggle1979Crt();
+        if (this.host.isCrtModeLocked()) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showStatusToast('1979 MODE LOCKED FOR ACTIVE 1.5X RANKED RUN', 1.8, 'amber');
+        } else {
+          const next = this.host.toggle1979Crt();
+          this.showStatusToast(
+            next === 'CLASSIC_1979'
+              ? '1979 CRT: ON — 1.5X RANKED SCORE ARMED!'
+              : '1979 CRT: OFF (CLEAN · 1.0X)',
+            1.6,
+            next === 'CLASSIC_1979' ? 'amber' : 'green'
+          );
+        }
         break;
       case TOP_CHROME_IDS.CONTROLS:
       case PAUSE_BANNER_IDS.CONTROLS:
@@ -1295,6 +1308,8 @@ export class GameController implements Cartridge {
   ): void {
     this.endlessMode = false;
     this.isPracticeRun = practiceMode;
+    this.ranked1979BonusActive = !practiceMode && this.host.getCrtPreset() === 'CLASSIC_1979';
+    this.host.setCrtModeLocked(this.ranked1979BonusActive);
     this.manifestTab = 'CAMPAIGN';
     this.lives = this.maxLives;
     this.lifeLostFlashTimer = 0;
@@ -1317,6 +1332,8 @@ export class GameController implements Cartridge {
   private startEndlessDeepSurvey(isReplay = false): void {
     this.endlessMode = true;
     this.isPracticeRun = false;
+    this.ranked1979BonusActive = this.host.getCrtPreset() === 'CLASSIC_1979';
+    this.host.setCrtModeLocked(this.ranked1979BonusActive);
     this.manifestTab = 'ENDLESS';
     this.lives = this.maxLives;
     this.lifeLostFlashTimer = 0;
@@ -1502,7 +1519,8 @@ export class GameController implements Cartridge {
 
     const subtotal = padScore + fuelBonus + precisionKissBonus + noDamageBonus;
     const streakMultiplier = this.dropStreak;
-    const sectorTotal = subtotal * streakMultiplier;
+    const crt1979Multiplier = this.ranked1979BonusActive && !this.isPracticeRun ? 1.5 : 1.0;
+    const sectorTotal = Math.round(subtotal * streakMultiplier * crt1979Multiplier);
 
     const vsScore = Math.max(0, 1 - evalResult.impactVs / PHYSICS.SURVIVAL_VS_MAX) * 40;
     const hsScore = Math.max(0, 1 - evalResult.impactHs / PHYSICS.SURVIVAL_HS_MAX) * 25;
@@ -1542,6 +1560,7 @@ export class GameController implements Cartridge {
       noDamageBonus,
       subtotal,
       streakMultiplier,
+      crt1979Multiplier,
       sectorTotal,
       accuracyRating,
       accuracyPercent,
@@ -2103,6 +2122,13 @@ export class GameController implements Cartridge {
 
     const avgAcc = this.getAverageAccuracy();
     const manifestView = this.leaderboard.getManifestEntries(this.manifestTab);
+    const crtModeLocked =
+      !this.isPracticeRun &&
+      this.ranked1979BonusActive &&
+      this.phase !== 'TITLE_MENU' &&
+      this.phase !== 'BOOT' &&
+      !this.isInUnifiedDebrief();
+    this.host.setCrtModeLocked(crtModeLocked);
 
     this.hudRenderer.render(oCtx, {
       phase: this.phase,
@@ -2113,6 +2139,8 @@ export class GameController implements Cartridge {
       lander: this.lander,
       bezel: this.bezelState,
       crtPreset: this.host.getCrtPreset(),
+      crtModeLocked,
+      ranked1979BonusActive: this.ranked1979BonusActive && !this.isPracticeRun,
       phosphorTheme: this.host.getPhosphorTheme(),
       masterVolume: this.host.getMasterVolume(),
       controlsCardOpen: this.controlsCardOpen,

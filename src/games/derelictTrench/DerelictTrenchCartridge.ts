@@ -1117,12 +1117,20 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.keysDown.clear();
     this.haltActiveFlightInputs();
 
+    const ranked1979Bonus = !freeFlightDrill && this.host.getCrtPreset() === 'CLASSIC_1979';
     this.host.audio.playButtonLatchLock(1.0, 0.9);
-    this.sim.startNewFlight({ freeFlightDrill });
+    this.sim.startNewFlight({ freeFlightDrill, ranked1979Bonus });
+    this.host.setCrtModeLocked(ranked1979Bonus);
     if (freeFlightDrill) {
       this.showStatusToast(
         'FREE-FLIGHT DRILL ACTIVE — FORGIVING TERRAIN BOUNCE & REDUCED SAM THREAT',
         'cyan',
+        2.6
+      );
+    } else if (ranked1979Bonus) {
+      this.showStatusToast(
+        '★ 1979 CRT RANKED LOCKED — 1.5X BASELINE SCORE ACTIVE ★',
+        'amber',
         2.6
       );
     }
@@ -1202,11 +1210,18 @@ export class DerelictTrenchCartridge implements Cartridge {
     switch (id) {
       // Top Chrome Bar (unified pills)
       case TOP_CHROME_IDS.CRT: {
+        if (this.host.isCrtModeLocked()) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showStatusToast('1979 MODE LOCKED FOR ACTIVE 1.5X RANKED RUN', 'amber', 1.8);
+          return;
+        }
         const next = this.host.toggle1979Crt();
         this.showStatusToast(
-          next === 'CLASSIC_1979' ? '1979 CRT MODE: ON' : '1979 CRT MODE: OFF (CLEAN)',
+          next === 'CLASSIC_1979'
+            ? '1979 CRT: ON — 1.5X RANKED SCORE ARMED!'
+            : '1979 CRT: OFF (CLEAN · 1.0X)',
           next === 'CLASSIC_1979' ? 'amber' : 'green',
-          1.4
+          1.6
         );
         return;
       }
@@ -1491,6 +1506,9 @@ export class DerelictTrenchCartridge implements Cartridge {
       anyOverlayOpen ||
       this.sim.phase === 'GAME_OVER' ||
       (this.sim.phase === 'FLYING' && this.sim.paused);
+    const crtLocked =
+      this.sim.ranked1979Bonus && !this.sim.freeFlightDrill && this.sim.phase === 'FLYING';
+    this.host.setCrtModeLocked(crtLocked);
     this.host.setModalOpen(modalActive);
 
     // 1. Render 1st-Person 3D Wireframe Heightmap Canyon, Threats, Semiotic Pods, Tracers & Flares
@@ -1515,6 +1533,7 @@ export class DerelictTrenchCartridge implements Cartridge {
       audioMuted: this.host.isMuted(),
       isFullscreen: this.host.getViewport().isFullscreen,
       crtPreset: this.host.getCrtPreset(),
+      crtModeLocked: crtLocked,
       phosphorTheme: this.host.getPhosphorTheme(),
       masterVolume: this.host.getMasterVolume(),
       isTouchDevice: this.host.isTouchDevice(),

@@ -3,6 +3,7 @@ import {
   type ChromeButtonAccent,
   type ChromeButtonHitbox,
 } from '../render/chrome/ModalFrame';
+import { draw1979RankedBonusBanner } from '../render/chrome/TopChromeBar';
 import {
   drawCornerBrackets,
   drawEllipsizedText,
@@ -1493,10 +1494,10 @@ export class MuthurTerminalCartridge implements Cartridge {
             : '1979:OFF'
           : isNarrow
             ? crtOn
-              ? '1979: ON'
+              ? '1979 1.5X'
               : '1979: OFF'
             : crtOn
-              ? '1979 CRT: ON'
+              ? '1979 CRT: ON [1.5X]'
               : '1979 CRT: OFF',
         accent: crtOn ? 'amber' : 'muted',
         active: crtOn,
@@ -2052,14 +2053,36 @@ export class MuthurTerminalCartridge implements Cartridge {
       });
     } else {
       // Authentic 1979 CRT Program Directory: fixed crisp rows (NEVER stretched into hollow boxes!)
-      // + Live Selected Program Dossier & Top Leaderboard telemetry filling lower viewport cleanly
+      // + Super-Obvious 1979 1.5X Ranked Score Challenge Toggle + Live Selected Program Dossier
       const is1979Dir = isCrt1979Typography();
-      const availH = Math.max(180, y + h - listTop - 12);
+      const crtOn = this.host.getCrtPreset() === 'CLASSIC_1979';
+      const bannerH = 34;
+      const bannerRect: ViewportRect = { x: x + padInner, y: listTop, width: availW, height: bannerH };
+      const tmpHit: ChromeButtonHitbox[] = [];
+      draw1979RankedBonusBanner(
+        ctx,
+        bannerRect,
+        crtOn,
+        this.hoveredHitId,
+        _timeSec,
+        tmpHit,
+        { id: 'hub-1979-banner', compact: true }
+      );
+      this.hitBoxes.push({
+        id: 'hub-1979-banner',
+        rect: bannerRect,
+        action: () => {
+          this.host.toggle1979Crt();
+        },
+      });
+
+      const dirTop = listTop + bannerH + 8;
+      const availH = Math.max(160, y + h - dirTop - 12);
       const rowGap = 6;
-      const minRowH = is1979Dir ? 64 : 58;
-      const maxRowH = is1979Dir ? 78 : 72;
-      const rowH = Math.max(minRowH, Math.min(maxRowH, Math.floor((availH - 170 - rowGap * 3) / 4)));
-      const effectiveRowH = availH < 400 ? Math.max(54, Math.floor((availH - rowGap * 3) / 4)) : rowH;
+      const minRowH = is1979Dir ? 62 : 56;
+      const maxRowH = is1979Dir ? 74 : 68;
+      const rowH = Math.max(minRowH, Math.min(maxRowH, Math.floor((availH - 160 - rowGap * 3) / 4)));
+      const effectiveRowH = availH < 380 ? Math.max(52, Math.floor((availH - rowGap * 3) / 4)) : rowH;
 
       let focusedBay: CartridgeBaySpec = CARTRIDGE_BAYS[0];
       for (const b of CARTRIDGE_BAYS) {
@@ -2070,7 +2093,7 @@ export class MuthurTerminalCartridge implements Cartridge {
       }
 
       // Column micro-header rule
-      const colHdrY = listTop + 6;
+      const colHdrY = dirTop + 6;
       ctx.font = font('micro', 12);
       ctx.fillStyle = THEME.TEXT_SECONDARY;
       ctx.textAlign = 'left';
@@ -2082,11 +2105,11 @@ export class MuthurTerminalCartridge implements Cartridge {
       ctx.strokeStyle = THEME.BORDER_SUBTLE;
       ctx.lineWidth = 1.0;
       ctx.beginPath();
-      ctx.moveTo(x + padInner, listTop + 18);
-      ctx.lineTo(x + padInner + availW, listTop + 18);
+      ctx.moveTo(x + padInner, dirTop + 18);
+      ctx.lineTo(x + padInner + availW, dirTop + 18);
       ctx.stroke();
 
-      const rowsStartY = listTop + 26;
+      const rowsStartY = dirTop + 26;
 
       CARTRIDGE_BAYS.forEach((bay, idx) => {
         const bx = x + padInner;

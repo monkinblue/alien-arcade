@@ -29,6 +29,7 @@ import {
   drawPersistentControlsStrip,
   drawStatusToast,
   drawSystemMenuModal,
+  draw1979RankedBonusBanner,
   drawTopChromeBar,
   TOP_CHROME_BAR_HEIGHT,
   type ChromeButtonHitbox,
@@ -89,6 +90,8 @@ export interface HudRenderContext {
   lander: LanderState;
   bezel: BezelState;
   crtPreset: CrtPreset;
+  crtModeLocked: boolean;
+  ranked1979BonusActive: boolean;
   phosphorTheme: PhosphorTheme;
   masterVolume: number;
   controlsCardOpen: boolean;
@@ -446,7 +449,7 @@ export class HudRenderer {
   ): void {
     const inRun = state.phase !== 'TITLE_MENU' && state.phase !== 'BOOT';
     const telemetryText = inRun
-      ? `${state.sector.code} · ${Math.round(state.displayedScore).toLocaleString()} PTS`
+      ? `${state.sector.code} · ${Math.round(state.displayedScore).toLocaleString()} PTS${state.ranked1979BonusActive ? ' · 1.5X' : ''}`
       : '6 SECTORS · 3 SHUTTLES';
 
     drawTopChromeBar(
@@ -459,6 +462,7 @@ export class HudRenderer {
         showRankedBadge: inRun,
         telemetryText,
         crt1979Enabled: state.crtPreset === 'CLASSIC_1979',
+        crtModeLocked: state.crtModeLocked,
         controlsLabel: '[H] CONTROLS',
         audioMuted: state.bezel.audioMuted,
         hoveredButtonId: state.hoveredButtonId,
@@ -2198,13 +2202,27 @@ export class HudRenderer {
 
     const btnW = boxW - 40;
     const btnX = bx + 20;
-    let curY = stripY + stripH + 12;
+    let curY = stripY + stripH + 8;
+
+    // Super-Obvious Optional 1979 CRT 1.5X Ranked Challenge Banner (1-click toggle)
+    const crt1979On = state.crtPreset === 'CLASSIC_1979';
+    draw1979RankedBonusBanner(
+      ctx,
+      { x: btnX, y: curY, width: btnW, height: 32 },
+      crt1979On,
+      state.hoveredButtonId,
+      state.timeSec,
+      this.buttons as ChromeButtonHitbox[]
+    );
+    curY += 38;
 
     // 1. 1-Click RANKED CAMPAIGN Launch Button
     drawChromeButton(
       ctx,
-      { x: btnX, y: curY, width: btnW, height: 42 },
-      `${SEMIOTIC_ICONS.PLAY} RANKED CAMPAIGN — ALL 6 SECTORS (CLICK OR [ENTER])`,
+      { x: btnX, y: curY, width: btnW, height: 40 },
+      crt1979On
+        ? `${SEMIOTIC_ICONS.PLAY} RANKED CAMPAIGN — 6 SECTORS [1.5X 1979 BONUS]`
+        : `${SEMIOTIC_ICONS.PLAY} RANKED CAMPAIGN — ALL 6 SECTORS (CLICK OR [ENTER])`,
       {
         id: 'menu-select-ranked',
         accent: 'amber',
@@ -2214,7 +2232,7 @@ export class HudRenderer {
       },
       this.buttons as ChromeButtonHitbox[]
     );
-    curY += 48;
+    curY += 46;
 
     // 2. PRACTICE MODE (Single Clean Row — NO duplicated 6 inner SEC-01..06 buttons! Flanking topo cards select/launch!)
     drawChromeButton(
@@ -2241,7 +2259,9 @@ export class HudRenderer {
     drawChromeButton(
       ctx,
       { x: btnX, y: curY, width: endW, height: 38 },
-      `${SEMIOTIC_ICONS.STAR} ENDLESS SURVEY (RANKED)`,
+      crt1979On
+        ? `${SEMIOTIC_ICONS.STAR} ENDLESS SURVEY [1.5X]`
+        : `${SEMIOTIC_ICONS.STAR} ENDLESS SURVEY (RANKED)`,
       {
         id: 'menu-select-endless',
         accent: 'amber',
@@ -2833,6 +2853,7 @@ export class HudRenderer {
         programTitle: 'LUNAR LANDER',
         activeProgramId: 'lander',
         crtPreset: state.crtPreset,
+        crtModeLocked: state.crtModeLocked,
         phosphorTheme: state.phosphorTheme,
         masterVolume: state.masterVolume,
         audioMuted: state.bezel.audioMuted,

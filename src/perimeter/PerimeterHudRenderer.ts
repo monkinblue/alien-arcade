@@ -12,6 +12,7 @@ import {
   drawPersistentControlsStrip,
   drawStatusToast,
   drawSystemMenuModal,
+  draw1979RankedBonusBanner,
   drawTopChromeBar,
   font,
   SEMIOTIC_ICONS,
@@ -73,6 +74,7 @@ export interface PerimeterHudRenderParams {
   audioMuted: boolean;
   isFullscreen: boolean;
   crtPreset: CrtPreset;
+  crtModeLocked: boolean;
   phosphorTheme: PhosphorTheme;
   masterVolume: number;
   confirmExitPending: boolean;
@@ -339,8 +341,10 @@ export class PerimeterHudRenderer {
         title: "HADLEY'S PERIMETER",
         timeSec: params.timeSec,
         isRanked: !sim.trainingMode,
-        telemetryText: parts.join(' · '),
+        telemetryText:
+          parts.join(' · ') + (sim.ranked1979Bonus && !sim.trainingMode ? ' · 1.5X' : ''),
         crt1979Enabled: params.crtPreset === 'CLASSIC_1979',
+        crtModeLocked: params.crtModeLocked,
         controlsLabel: '[H] MANUAL',
         audioMuted: params.audioMuted,
         hoveredButtonId: params.hoveredButtonId,
@@ -2587,6 +2591,7 @@ export class PerimeterHudRenderer {
         programTitle: "HADLEY'S PERIMETER",
         activeProgramId: 'perimeter',
         crtPreset: params.crtPreset,
+        crtModeLocked: params.crtModeLocked,
         phosphorTheme: params.phosphorTheme,
         masterVolume: params.masterVolume,
         audioMuted: params.audioMuted,
@@ -2770,7 +2775,7 @@ export class PerimeterHudRenderer {
         title: "HADLEY'S PERIMETER // ENDLESS HIVE SIEGE",
         subtitle: 'USCM COLONY PERIMETER DEFENSE — SEC-01 MED-LAB',
         maxWidth: 740,
-        maxHeight: 468,
+        maxHeight: 508,
         accentColor: THEME.ACCENT_AMBER,
         rightBadge: { text: `${SEMIOTIC_ICONS.STAR} RANKED`, tone: 'amber' },
       },
@@ -2808,10 +2813,13 @@ export class PerimeterHudRenderer {
     ctx.restore();
     curY += 24;
 
-    // Primary + Secondary CTA anchors (computed early so cards never collide vertically)
+    // Primary + 1979 Bonus Banner + Secondary CTA anchors (computed early so cards never collide vertically)
     const secH = 36;
     const priH = 40;
+    const bonusH = 32;
     const priY = footerY - priH - 6;
+    const bonusY = priY - bonusH - 6;
+    const crt1979On = params.crtPreset === 'CLASSIC_1979';
 
     // 3 Punchy Sentence-Case Briefing Cards (100% wrapped via wrapTextLines in matching font!)
     const pillars: Array<{ tag: string; accent: string; body: string }> = [
@@ -2840,7 +2848,7 @@ export class PerimeterHudRenderer {
       lines: wrapTextLines(ctx, p.body, contentW - 24, 4),
     }));
 
-    const availCardsH = Math.max(150, priY - 10 - curY);
+    const availCardsH = Math.max(140, bonusY - 8 - curY);
     const totalLines = wrappedPillars.reduce((sum, p) => sum + p.lines.length, 0);
     const cardGap = 7;
     const headerRowH = 18;
@@ -2875,10 +2883,21 @@ export class PerimeterHudRenderer {
     }
     ctx.restore();
 
+    draw1979RankedBonusBanner(
+      ctx,
+      { x: contentX, y: bonusY, width: contentW, height: bonusH },
+      crt1979On,
+      hoveredButtonId,
+      params.timeSec,
+      this.buttons
+    );
+
     drawChromeButton(
       ctx,
       { x: contentX, y: priY, width: contentW, height: priH },
-      `${SEMIOTIC_ICONS.PLAY} DEPLOY WAVE 01 [ENTER]`,
+      crt1979On
+        ? `${SEMIOTIC_ICONS.PLAY} DEPLOY WAVE 01 [ENTER] · 1.5X 1979 BONUS`
+        : `${SEMIOTIC_ICONS.PLAY} DEPLOY WAVE 01 [ENTER]`,
       {
         id: 'briefing-engage',
         accent: 'amber',

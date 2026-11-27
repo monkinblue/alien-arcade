@@ -907,7 +907,9 @@ export class PerimeterCartridge implements Cartridge {
     this.selectedDoorId = null;
     this.tutorialDirector.stop(this.sim);
     this.resetSubmissionState(true);
-    this.sim.resetRun('ENDLESS_SIEGE', false);
+    const ranked1979Bonus = this.host.getCrtPreset() === 'CLASSIC_1979';
+    this.sim.resetRun('ENDLESS_SIEGE', false, ranked1979Bonus);
+    this.host.setCrtModeLocked(ranked1979Bonus);
     this.prevPhase = this.sim.phase;
     this.fitCameraToBlueprint();
   }
@@ -1766,8 +1768,18 @@ export class PerimeterCartridge implements Cartridge {
     // 2. Shared TopChromeBar / ControlsOverlay / PostRunFlow IDs
     switch (id) {
       case TOP_CHROME_IDS.CRT: {
+        if (this.host.isCrtModeLocked()) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('1979 MODE LOCKED FOR ACTIVE 1.5X RANKED RUN', 1.8);
+          return;
+        }
         const next = this.host.toggle1979Crt();
-        this.showToast(next === 'CLASSIC_1979' ? '1979 CRT MODE: ON' : '1979 CRT MODE: OFF (CLEAN)', 1.4);
+        this.showToast(
+          next === 'CLASSIC_1979'
+            ? '1979 CRT: ON — 1.5X RANKED SCORE ARMED!'
+            : '1979 CRT: OFF (CLEAN · 1.0X)',
+          1.6
+        );
         return;
       }
       case TOP_CHROME_IDS.CONTROLS:
@@ -1955,9 +1967,16 @@ export class PerimeterCartridge implements Cartridge {
         this.showToast(r.msg);
         break;
       }
-      case 'briefing-engage':
+      case 'briefing-engage': {
+        const ranked1979Bonus = this.host.getCrtPreset() === 'CLASSIC_1979';
+        this.sim.ranked1979Bonus = ranked1979Bonus;
+        this.host.setCrtModeLocked(ranked1979Bonus);
         this.sim.phase = 'TACTICAL_PREP';
+        if (ranked1979Bonus) {
+          this.showToast('★ 1979 CRT RANKED LOCKED — 1.5X BASELINE SCORE ACTIVE ★', 2.4);
+        }
         break;
+      }
       case 'wave-launch':
         if (this.sim.trainingMode) {
           if (this.tutorialDirector.getSnapshot(this.sim).showContinueBtn) {
@@ -2921,6 +2940,14 @@ export class PerimeterCartridge implements Cartridge {
         : undefined,
     });
 
+    const crtModeLocked =
+      this.sim.ranked1979Bonus &&
+      !this.sim.trainingMode &&
+      this.sim.phase !== 'BRIEFING' &&
+      this.sim.phase !== 'CORE_BREACHED' &&
+      this.sim.phase !== 'CALLSIGN_ENTRY';
+    this.host.setCrtModeLocked(crtModeLocked);
+
     // 2. Render Nostromo Left/Right/Top/Bottom Instrumentation & Shared Chrome Modals
     this.hudRenderer.render(
       ctx,
@@ -2937,6 +2964,7 @@ export class PerimeterCartridge implements Cartridge {
         audioMuted: this.host.isMuted(),
         isFullscreen: this.host.getViewport().isFullscreen,
         crtPreset: this.host.getCrtPreset(),
+        crtModeLocked,
         phosphorTheme: this.host.getPhosphorTheme(),
         masterVolume: this.host.getMasterVolume(),
         confirmExitPending: this.confirmExitPending,

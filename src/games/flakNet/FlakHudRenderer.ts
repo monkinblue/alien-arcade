@@ -11,6 +11,7 @@ import {
   drawPersistentControlsStrip,
   drawStatusToast,
   drawSystemMenuModal,
+  draw1979RankedBonusBanner,
   drawTopChromeBar,
   font,
   hitTestChromeButtons,
@@ -55,6 +56,7 @@ export interface FlakHudRenderParams {
   audioMuted: boolean;
   masterVolume: number;
   crtPreset: CrtPreset;
+  crtModeLocked: boolean;
   phosphorTheme: PhosphorTheme;
   isFullscreen: boolean;
   isTouchDevice: boolean;
@@ -163,7 +165,7 @@ export class FlakHudRenderer {
     const telemetryText =
       sim.isDemoMode && params.demoState?.active
         ? `STAGE 0${params.demoState.stageIndex}/0${params.demoState.totalStages} · ${sim.score.toLocaleString()} PTS`
-        : `WAVE ${String(sim.waveNumber).padStart(2, '0')} · ${sim.score.toLocaleString()} PTS`;
+        : `WAVE ${String(sim.waveNumber).padStart(2, '0')} · ${sim.score.toLocaleString()} PTS${sim.ranked1979Bonus && !sim.isDemoMode ? ' · 1.5X' : ''}`;
 
     drawTopChromeBar(
       ctx,
@@ -174,6 +176,7 @@ export class FlakHudRenderer {
         isRanked: !sim.isDemoMode,
         telemetryText,
         crt1979Enabled: params.crtPreset === 'CLASSIC_1979',
+        crtModeLocked: params.crtModeLocked,
         controlsLabel: '[H] CONTROLS',
         audioMuted: params.audioMuted,
         hoveredButtonId: params.hoveredButtonId,
@@ -214,6 +217,7 @@ export class FlakHudRenderer {
           programTitle: 'FLAK NET',
           activeProgramId: 'flak',
           crtPreset: params.crtPreset,
+          crtModeLocked: params.crtModeLocked,
           phosphorTheme: params.phosphorTheme,
           masterVolume: params.masterVolume,
           audioMuted: params.audioMuted,
@@ -1062,7 +1066,7 @@ export class FlakHudRenderer {
     const uplinkStatus = params.leaderboard.getStatus();
 
     const boxW = Math.min(720, vp.width - 28);
-    const boxH = Math.min(460, vp.height - 16);
+    const boxH = Math.min(498, vp.height - 12);
     const bx = Math.round(vp.x + (vp.width - boxW) * 0.5);
     const by = Math.round(vp.y + (vp.height - boxH) * 0.5);
 
@@ -1138,11 +1142,14 @@ export class FlakHudRenderer {
       },
     ];
 
-    const footerBtnY2 = by + boxH - 52;
-    const footerBtnY1 = footerBtnY2 - 50;
-    const rowsStartY = leadY + 52;
-    const rowsAvailH = Math.max(96, footerBtnY1 - 10 - rowsStartY);
-    const rowStep = Math.min(34, Math.floor(rowsAvailH / briefRows.length));
+    const footerBtnY2 = by + boxH - 48;
+    const footerBtnY1 = footerBtnY2 - 48;
+    const bonusH = 32;
+    const bonusY = footerBtnY1 - bonusH - 8;
+    const crt1979On = params.crtPreset === 'CLASSIC_1979';
+    const rowsStartY = leadY + 48;
+    const rowsAvailH = Math.max(90, bonusY - 8 - rowsStartY);
+    const rowStep = Math.min(32, Math.floor(rowsAvailH / briefRows.length));
 
     briefRows.forEach((row, idx) => {
       const ry = rowsStartY + idx * rowStep + 12;
@@ -1163,16 +1170,27 @@ export class FlakHudRenderer {
       drawEllipsizedText(ctx, row.text, textX, ry + 0.5, textW);
     });
 
-    // Primary & Secondary Launch Actions
+    // Primary & Secondary Launch Actions + Super-Obvious 1979 1.5X Challenge Banner
     const innerW = boxW - 44;
     const gap = 12;
     const demoW = Math.round((innerW - gap) * 0.54);
     const manW = innerW - gap - demoW;
 
+    draw1979RankedBonusBanner(
+      ctx,
+      { x: bx + 22, y: bonusY, width: innerW, height: bonusH },
+      crt1979On,
+      params.hoveredButtonId,
+      params.timeSec,
+      this.buttons
+    );
+
     drawChromeButton(
       ctx,
       { x: bx + 22, y: footerBtnY1, width: innerW, height: 42 },
-      `${SEMIOTIC_ICONS.PLAY} ENGAGE RANKED FLAK NET [ENTER]`,
+      crt1979On
+        ? `${SEMIOTIC_ICONS.PLAY} ENGAGE RANKED FLAK NET [1.5X 1979 BONUS]`
+        : `${SEMIOTIC_ICONS.PLAY} ENGAGE RANKED FLAK NET [ENTER]`,
       {
         id: 'flak-start',
         accent: 'amber',
