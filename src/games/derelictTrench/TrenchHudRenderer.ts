@@ -81,6 +81,7 @@ export interface TrenchHudRenderParams {
   isTouchDevice: boolean;
   stickSensitivityLabel: 'LOW' | 'MED' | 'HIGH';
   confirmExitPending: boolean;
+  confirmGameMenuPending: boolean;
   osdMenuOpen: boolean;
   manifestOpen: boolean;
   controlsCardOpen: boolean;
@@ -893,7 +894,7 @@ export class TrenchHudRenderer {
     // 6. TRUE 3D BALLISTIC EEGS GUN FUNNEL + LIVE LCOS / CCIP PIPPER
     // -------------------------------------------------------------------------
     const ballisticSol = sim.computeBallisticPipper();
-    this.drawEegsGunFunnel(ctx, params, ballisticSol, hudScale);
+    this.drawEegsGunFunnel(ctx, params, ballisticSol, vp, hudScale);
     this.drawBallisticPipper(ctx, params, ballisticSol, vp, hudScale);
 
     // -------------------------------------------------------------------------
@@ -1146,51 +1147,46 @@ export class TrenchHudRenderer {
   }
 
   /**
-   * True 3D Ballistic F-16 EEGS Gun Funnel projected directly along M0 + v0*t - 0.5*g*t^2.
-   * Accounts for real jet speed, AoA, lateral momentum, roll orientation, gravity drop, and terrain cutoff!
+   * True Real-Time Sweeping F-16 EEGS Gun Funnel projected from the aircraft's live motion ring buffer!
+   * Every point at age `t` is the exact current 3D world position RIGHT NOW of a 20mm bullet fired `t` seconds ago,
+   * so banking and high-G turns whip the funnel across the canopy identically to live 20mm tracers in flight.
    */
   private drawEegsGunFunnel(
     ctx: CanvasRenderingContext2D,
     params: TrenchHudRenderParams,
     sol: ReturnType<TrenchSimulation['computeBallisticPipper']>,
+    vp: ViewportRect,
     hudScale: number
   ): void {
     const { sim } = params;
-    const muzzle = TRENCH_CONSTANTS.GUN_MUZZLE_SPEED_MPS;
-    const g = TRENCH_CONSTANTS.GUN_GRAVITY_MPS2;
-    const m0 = sim.getGunMuzzleWorldPos();
-    const v0x = sim.vx + sim.basis.forward.x * muzzle;
-    const v0y = sim.vy + sim.basis.forward.y * muzzle;
-    const v0z = sim.vz + sim.basis.forward.z * muzzle;
-
     const wingspanHalfM = 6.2;
-    const steps = 12;
-    const tMin = 0.08;
-    const tMax = Math.max(tMin + 0.05, Math.min(0.85, sol.terrainHitT));
+    const steps = 13;
+    const tMin = 0.06;
+    const tMax = Math.max(tMin + 0.1, Math.min(1.45, Math.max(1.05, sol.tofSec)));
 
+    const ages: number[] = [];
+    for (let i = 0; i <= steps; i++) {
+      ages.push(tMin + (i / steps) * (tMax - tMin));
+    }
+
+    const ribbon = sim.sampleHistoricalGunRibbon(ages);
     const leftPts: Array<{ x: number; y: number }> = [];
     const rightPts: Array<{ x: number; y: number }> = [];
 
-    for (let i = 0; i <= steps; i++) {
-      const f = i / steps;
-      const t = tMin + f * (tMax - tMin);
-      const bx = m0.x + v0x * t;
-      const by = m0.y + v0y * t - 0.5 * g * t * t;
-      const bz = m0.z + v0z * t;
-
-      const centerP = params.projectWorld(bx, by, bz);
+    for (const sample of ribbon) {
+      const { pos, right } = sample;
+      const centerP = params.projectWorld(pos.x, pos.y, pos.z);
       if (!centerP) continue;
 
-      // Project true aircraft-aligned left & right wingspan edges at bullet position B(t)
       const lp = params.projectWorld(
-        bx - sim.basis.right.x * wingspanHalfM,
-        by - sim.basis.right.y * wingspanHalfM,
-        bz - sim.basis.right.z * wingspanHalfM
+        pos.x - right.x * wingspanHalfM,
+        pos.y - right.y * wingspanHalfM,
+        pos.z - right.z * wingspanHalfM
       );
       const rp = params.projectWorld(
-        bx + sim.basis.right.x * wingspanHalfM,
-        by + sim.basis.right.y * wingspanHalfM,
-        bz + sim.basis.right.z * wingspanHalfM
+        pos.x + right.x * wingspanHalfM,
+        pos.y + right.y * wingspanHalfM,
+        pos.z + right.z * wingspanHalfM
       );
 
       if (lp && rp) {
@@ -1211,6 +1207,13 @@ export class TrenchHudRenderer {
       ? 'rgba(255, 228, 143, 0.88)'
       : 'rgba(68, 255, 119, 0.68)';
     const railW = sim.gunFiringNow ? 1.9 : 1.5;
+
+    // Clip funnel cleanly inside the canopy glass below the top heading tape!
+    const topClip = vp.y + 58;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(vp.x + 6, topClip, vp.width - 12, Math.max(40, vp.y + vp.height - topClip - 4));
+    ctx.clip();
 
     this.strokeWithDarkHalo(
       ctx,
@@ -1253,10 +1256,16 @@ export class TrenchHudRenderer {
       'rgba(158, 247, 184, 0.65)',
       1.2
     );
+    ctx.restore();
   }
 
   /**
-   * Classic F-16 Circular CCIP / LCOS Gun Reticle with 2.5px Dark Halo Underpass!
+   * Physics-Exact F-16 LCOS / CCIP Gun Pipper + Moving-Target Predicted Intercept Cue (`LEAD`):
+   * - The main circular pipper (`LCOS` / `CCIP`) ALWAYS marks the literal 3D world spot where bullets
+   *   fired RIGHT NOW will arrive at target time-of-flight (or terrain impact), accounting for airspeed,
+   *   jet momentum/AoA, aerodynamic drag, gravity, and terrain/arch obstruction.
+   * - For moving targets (Bandit Jets), a dashed lead vector extends ahead of the Bandit to its `LEAD`
+   *   intercept ring (where the Bandit will be at `tof`). Put the LCOS pipper on the `LEAD` ring -> HIT!
    */
   private drawBallisticPipper(
     ctx: CanvasRenderingContext2D,
@@ -1266,36 +1275,128 @@ export class TrenchHudRenderer {
     hudScale: number
   ): void {
     const { sim } = params;
+    const pad = 28;
+
+    // 1. Draw Moving Target Lead Vector & Predicted Intercept Ring (`LEAD`) when tracking a moving Bandit!
+    if (sol.hasMovingLead && sol.targetPos && sol.targetInterceptPoint) {
+      const tp = params.projectWorld(sol.targetPos.x, sol.targetPos.y, sol.targetPos.z);
+      const lp = params.projectWorld(
+        sol.targetInterceptPoint.x,
+        sol.targetInterceptPoint.y,
+        sol.targetInterceptPoint.z
+      );
+      if (lp) {
+        const lx = Math.max(vp.x + pad, Math.min(vp.x + vp.width - pad, lp.sx));
+        const ly = Math.max(vp.y + pad, Math.min(vp.y + vp.height - pad, lp.sy));
+        const leadCol = sol.onSolution ? '#FFF6CC' : THEME.ACCENT_AMBER_HI;
+
+        // Dashed vector tether from current Bandit position -> future intercept point
+        if (tp) {
+          const tx = Math.max(vp.x + pad, Math.min(vp.x + vp.width - pad, tp.sx));
+          const ty = Math.max(vp.y + pad, Math.min(vp.y + vp.height - pad, tp.sy));
+          if (Math.hypot(lx - tx, ly - ty) >= 10) {
+            ctx.save();
+            ctx.setLineDash([5, 4]);
+            this.strokeWithDarkHalo(
+              ctx,
+              () => {
+                ctx.moveTo(tx, ty);
+                ctx.lineTo(lx, ly);
+              },
+              sol.onSolution ? 'rgba(255, 246, 204, 0.85)' : 'rgba(255, 176, 0, 0.65)',
+              1.4
+            );
+            ctx.setLineDash([]);
+            ctx.restore();
+          }
+        }
+
+        // Crisp Aim-Here `LEAD` Intercept Diamond/Circle
+        const lr = Math.round((sol.onSolution ? 13 : 11) * hudScale);
+        this.strokeWithDarkHalo(
+          ctx,
+          () => {
+            ctx.arc(lx, ly, lr, 0, Math.PI * 2);
+          },
+          leadCol,
+          sol.onSolution ? 2.4 : 1.7
+        );
+        this.strokeWithDarkHalo(
+          ctx,
+          () => {
+            ctx.moveTo(lx - lr - 4, ly);
+            ctx.lineTo(lx - lr + 2, ly);
+            ctx.moveTo(lx + lr - 2, ly);
+            ctx.lineTo(lx + lr + 4, ly);
+            ctx.moveTo(lx, ly - lr - 4);
+            ctx.lineTo(lx, ly - lr + 2);
+            ctx.moveTo(lx, ly + lr - 2);
+            ctx.lineTo(lx, ly + lr + 4);
+          },
+          leadCol,
+          1.4
+        );
+
+        const leadSepPx = tp ? Math.hypot(lx - tp.sx, ly - tp.sy) : 999;
+        if (sol.onSolution || leadSepPx >= 18) {
+          ctx.save();
+          ctx.font = font('micro', 12);
+          const leadText = sol.onSolution ? 'FIRE!' : 'LEAD';
+          if (tp && leadSepPx < 62) {
+            // Place LEAD label on the outer side away from TRK/LOCK BANDIT box to prevent overlap
+            const pushRight = lx >= tp.sx;
+            ctx.textAlign = pushRight ? 'left' : 'right';
+            this.fillTextWithDarkHalo(
+              ctx,
+              leadText,
+              lx + (pushRight ? lr + 6 : -(lr + 6)),
+              ly + 4,
+              leadCol
+            );
+          } else {
+            ctx.textAlign = 'center';
+            this.fillTextWithDarkHalo(ctx, leadText, lx, ly - lr - 7, leadCol);
+          }
+          ctx.restore();
+        }
+      }
+    }
+
+    // 2. Draw Literal Bullet-End-Up Pipper (`LCOS` / `CCIP` / `MASKED`)
     const p = params.projectWorld(sol.worldPoint.x, sol.worldPoint.y, sol.worldPoint.z);
     if (!p) return;
 
-    const pad = 28;
     const px = Math.max(vp.x + pad, Math.min(vp.x + vp.width - pad, p.sx));
     const py = Math.max(vp.y + pad, Math.min(vp.y + vp.height - pad, p.sy));
 
     const isLcos = sol.mode === 'LCOS';
     const isPodCue = Boolean(sol.isResupplyCue);
     const isMasked = Boolean(sol.terrainMaskedTarget);
+    const isSolution = Boolean(sol.onSolution);
     const r = Math.round((isLcos ? 19 : 16) * hudScale);
-    const col = sim.gunFiringNow
-      ? THEME.ACCENT_AMBER_HI
-      : isPodCue
-        ? THEME.ACCENT_CYAN
-        : isMasked
-          ? THEME.ALERT_RED_TEXT
-          : isLcos
-            ? THEME.ACCENT_AMBER
-            : sol.hitTerrain
-              ? THEME.TEXT_BRIGHT
-              : 'rgba(68, 255, 119, 0.85)';
+    const col = isSolution
+      ? '#FFF6CC'
+      : sim.gunFiringNow
+        ? THEME.ACCENT_AMBER_HI
+        : isPodCue
+          ? THEME.ACCENT_CYAN
+          : isMasked
+            ? THEME.ALERT_RED_TEXT
+            : isLcos
+              ? THEME.ACCENT_AMBER
+              : sol.hitTerrain
+                ? THEME.TEXT_BRIGHT
+                : 'rgba(68, 255, 119, 0.85)';
 
-    const outerCol = isPodCue
-      ? 'rgba(76, 238, 255, 0.55)'
-      : isMasked
-        ? 'rgba(255, 98, 71, 0.55)'
-        : isLcos
-          ? 'rgba(255, 176, 0, 0.52)'
-          : 'rgba(68, 255, 119, 0.48)';
+    const outerCol = isSolution
+      ? 'rgba(255, 246, 204, 0.80)'
+      : isPodCue
+        ? 'rgba(76, 238, 255, 0.55)'
+        : isMasked
+          ? 'rgba(255, 98, 71, 0.55)'
+          : isLcos
+            ? 'rgba(255, 176, 0, 0.52)'
+            : 'rgba(68, 255, 119, 0.48)';
 
     this.strokeWithDarkHalo(
       ctx,
@@ -1368,7 +1469,13 @@ export class TrenchHudRenderer {
       ? `${SEMIOTIC_ICONS.DIAMOND} POD`
       : isMasked
         ? 'MASKED'
-        : sol.mode;
+        : isSolution
+          ? 'IN RNG'
+          : isLcos
+            ? 'LCOS'
+            : sol.hitTerrain
+              ? 'CCIP'
+              : 'GUN';
     this.fillTextWithDarkHalo(ctx, `${modeTag} ${distStr}`, px + r + 8, py + 4, col);
     ctx.restore();
   }
@@ -2982,7 +3089,9 @@ export class TrenchHudRenderer {
         isFullscreen: params.isFullscreen,
         hoveredButtonId: params.hoveredButtonId,
         extraRows,
-        canRestart: true,
+        canRestart: sim.phase !== 'TITLE',
+        canReturnToGameMenu: sim.phase !== 'TITLE',
+        confirmGameMenuPending: params.confirmGameMenuPending,
         restartLabel: `${SEMIOTIC_ICONS.REPLAY} RESTART SORTIE`,
         leaderboardLabel: `${SEMIOTIC_ICONS.STAR} LEADERBOARD`,
         confirmExitPending: params.confirmExitPending,

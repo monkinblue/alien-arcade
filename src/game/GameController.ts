@@ -81,6 +81,8 @@ export class GameController implements Cartridge {
   private controlsCardOpen = false;
   private confirmExitPending = false;
   private confirmExitTimer = 0;
+  private confirmGameMenuPending = false;
+  private confirmGameMenuTimer = 0;
   private hasSeenInitialBriefing = false;
   private inlineTeletypeHold = false;
   private pulseSafetyLockSec = 0;
@@ -447,7 +449,17 @@ export class GameController implements Cartridge {
     this.showStatusToast(next ? 'AUDIO BUS: MUTED' : 'AUDIO BUS: ACTIVE', 1.2, next ? 'red' : 'green');
   }
 
+  private isInActiveGameplay(): boolean {
+    return (
+      this.phase !== 'TITLE_MENU' &&
+      this.phase !== 'BOOT' &&
+      !this.isInUnifiedDebrief()
+    );
+  }
+
   private requestExitToHub(): void {
+    this.confirmGameMenuPending = false;
+    this.confirmGameMenuTimer = 0;
     if (this.isInActiveRankedFlight() && !this.confirmExitPending) {
       this.confirmExitPending = true;
       this.confirmExitTimer = 4.0;
@@ -468,6 +480,9 @@ export class GameController implements Cartridge {
       onResume: () => {
         this.bezelState.osdMenuOpen = false;
         this.confirmExitPending = false;
+        this.confirmExitTimer = 0;
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
         if (this.phase === 'PAUSED') {
           this.phase = 'FLIGHT';
         }
@@ -475,12 +490,39 @@ export class GameController implements Cartridge {
       onRestart: () => {
         this.bezelState.osdMenuOpen = false;
         this.confirmExitPending = false;
+        this.confirmExitTimer = 0;
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
         this.playAgainImmediate();
+      },
+      onReturnToGameMenu: () => {
+        this.confirmExitPending = false;
+        this.confirmExitTimer = 0;
+        if (this.isInActiveGameplay() && !this.confirmGameMenuPending) {
+          this.confirmGameMenuPending = true;
+          this.confirmGameMenuTimer = 4.0;
+          this.showStatusToast('CLICK [CONFIRM MENU?] AGAIN TO RETURN TO GAME MENU', 2.4, 'red');
+          return;
+        }
+        this.bezelState.osdMenuOpen = false;
+        this.bezelState.flightLogsOpen = false;
+        this.controlsCardOpen = false;
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
+        this.ranked1979BonusActive = false;
+        this.host.setCrtModeLocked(false);
+        this.audio.stopCartridgeLoops();
+        this.activeTouchPointers.clear();
+        this.phase = 'TITLE_MENU';
+        this.showStatusToast('RETURNED TO LUNAR LANDER MENU', 1.4, 'green');
       },
       onOpenLeaderboard: () => {
         this.bezelState.osdMenuOpen = false;
         this.controlsCardOpen = false;
         this.confirmExitPending = false;
+        this.confirmExitTimer = 0;
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
         this.manifestOpenedPostRun = this.isInUnifiedDebrief();
         this.bezelState.flightLogsOpen = true;
       },
@@ -829,7 +871,12 @@ export class GameController implements Cartridge {
       case TOP_CHROME_IDS.CRT:
         if (this.host.isCrtModeLocked()) {
           this.host.audio.playMutedAvionicsIndicatorBeep(false);
-          this.showStatusToast('1979 MODE LOCKED FOR ACTIVE 1.5X RANKED RUN', 1.8, 'amber');
+          const lockedState = this.host.getCrtPreset() === 'CLASSIC_1979' ? 'ON' : 'OFF';
+          this.showStatusToast(
+            `1979 CRT LOCKED ${lockedState} DURING GAMEPLAY — FINISH OR EXIT RUN`,
+            1.8,
+            'amber'
+          );
         } else {
           const next = this.host.toggle1979Crt();
           this.showStatusToast(
@@ -891,6 +938,23 @@ export class GameController implements Cartridge {
       case POST_RUN_IDS.PLAY_AGAIN:
         if (this.debriefKeylockSec <= 0) {
           this.playAgainImmediate();
+        }
+        break;
+      case POST_RUN_IDS.GAME_MENU:
+        if (this.debriefKeylockSec <= 0 || this.bezelState.flightLogsOpen) {
+          this.bezelState.osdMenuOpen = false;
+          this.bezelState.flightLogsOpen = false;
+          this.controlsCardOpen = false;
+          this.confirmExitPending = false;
+          this.confirmExitTimer = 0;
+          this.confirmGameMenuPending = false;
+          this.confirmGameMenuTimer = 0;
+          this.ranked1979BonusActive = false;
+          this.host.setCrtModeLocked(false);
+          this.audio.stopCartridgeLoops();
+          this.activeTouchPointers.clear();
+          this.phase = 'TITLE_MENU';
+          this.showStatusToast('RETURNED TO LUNAR LANDER MENU', 1.4, 'green');
         }
         break;
       case POST_RUN_IDS.EXIT_HUB:
@@ -1309,7 +1373,7 @@ export class GameController implements Cartridge {
     this.endlessMode = false;
     this.isPracticeRun = practiceMode;
     this.ranked1979BonusActive = !practiceMode && this.host.getCrtPreset() === 'CLASSIC_1979';
-    this.host.setCrtModeLocked(this.ranked1979BonusActive);
+    this.host.setCrtModeLocked(true);
     this.manifestTab = 'CAMPAIGN';
     this.lives = this.maxLives;
     this.lifeLostFlashTimer = 0;
@@ -1333,7 +1397,7 @@ export class GameController implements Cartridge {
     this.endlessMode = true;
     this.isPracticeRun = false;
     this.ranked1979BonusActive = this.host.getCrtPreset() === 'CLASSIC_1979';
-    this.host.setCrtModeLocked(this.ranked1979BonusActive);
+    this.host.setCrtModeLocked(true);
     this.manifestTab = 'ENDLESS';
     this.lives = this.maxLives;
     this.lifeLostFlashTimer = 0;
@@ -1817,6 +1881,12 @@ export class GameController implements Cartridge {
         this.confirmExitPending = false;
       }
     }
+    if (this.confirmGameMenuTimer > 0) {
+      this.confirmGameMenuTimer = Math.max(0, this.confirmGameMenuTimer - dt);
+      if (this.confirmGameMenuTimer === 0) {
+        this.confirmGameMenuPending = false;
+      }
+    }
 
     const modalPaused =
       this.bezelState.flightLogsOpen || this.bezelState.osdMenuOpen || this.controlsCardOpen;
@@ -2122,12 +2192,7 @@ export class GameController implements Cartridge {
 
     const avgAcc = this.getAverageAccuracy();
     const manifestView = this.leaderboard.getManifestEntries(this.manifestTab);
-    const crtModeLocked =
-      !this.isPracticeRun &&
-      this.ranked1979BonusActive &&
-      this.phase !== 'TITLE_MENU' &&
-      this.phase !== 'BOOT' &&
-      !this.isInUnifiedDebrief();
+    const crtModeLocked = this.isInActiveGameplay();
     this.host.setCrtModeLocked(crtModeLocked);
 
     this.hudRenderer.render(oCtx, {
@@ -2145,6 +2210,7 @@ export class GameController implements Cartridge {
       masterVolume: this.host.getMasterVolume(),
       controlsCardOpen: this.controlsCardOpen,
       confirmExitPending: this.confirmExitPending,
+      confirmGameMenuPending: this.confirmGameMenuPending,
       inlineTeletypeHold: this.inlineTeletypeHold,
       pulseSafetyLockSec: this.pulseSafetyLockSec,
       debriefKeylockSec: this.debriefKeylockSec,

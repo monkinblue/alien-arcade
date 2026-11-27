@@ -78,6 +78,7 @@ export interface PerimeterHudRenderParams {
   phosphorTheme: PhosphorTheme;
   masterVolume: number;
   confirmExitPending: boolean;
+  confirmGameMenuPending: boolean;
   osdMenuOpen: boolean;
   manifestOpen: boolean;
   wikiOpen: boolean;
@@ -2599,6 +2600,8 @@ export class PerimeterHudRenderer {
         hoveredButtonId: params.hoveredButtonId,
         extraRows,
         canRestart: true,
+        canReturnToGameMenu: sim.phase !== 'BRIEFING',
+        confirmGameMenuPending: params.confirmGameMenuPending,
         restartLabel: `${SEMIOTIC_ICONS.REPLAY} RESTART WAVE 01`,
         leaderboardLabel: `${SEMIOTIC_ICONS.STAR} LEADERBOARD`,
         confirmExitPending: params.confirmExitPending,

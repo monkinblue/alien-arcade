@@ -260,9 +260,11 @@ export class CartridgeHost implements HostEnvironment {
   }
 
   public setCrtPreset(preset: CrtPreset): void {
-    if (this.crtModeLocked && preset !== 'CLASSIC_1979') {
+    if (this.crtModeLocked && preset !== this.crtPreset) {
       this.audio.playMutedAvionicsIndicatorBeep(false);
-      this.announceLive('1979 CRT Mode is locked until your active 1.5x Ranked run ends.');
+      this.announceLive(
+        `1979 CRT Mode is locked ${this.crtPreset === 'CLASSIC_1979' ? 'ON' : 'OFF'} during gameplay.`
+      );
       return;
     }
     this.crtPreset = preset;
@@ -280,7 +282,9 @@ export class CartridgeHost implements HostEnvironment {
   public toggle1979Crt(): CrtPreset {
     if (this.crtModeLocked) {
       this.audio.playMutedAvionicsIndicatorBeep(false);
-      this.announceLive('1979 CRT Mode is locked until your active 1.5x Ranked run ends.');
+      this.announceLive(
+        `1979 CRT Mode is locked ${this.crtPreset === 'CLASSIC_1979' ? 'ON' : 'OFF'} during gameplay.`
+      );
       return this.crtPreset;
     }
     const next: CrtPreset = this.crtPreset === 'CLASSIC_1979' ? 'CRISP' : 'CLASSIC_1979';

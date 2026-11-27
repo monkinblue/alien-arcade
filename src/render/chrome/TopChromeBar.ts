@@ -120,13 +120,21 @@ export function drawTopChromeBar(
 
   // 2. Right Rail: Clean 4-pill utility bar (1979 CRT: ON/OFF/LOCK | [H] CONTROLS | AUDIO | [ESC] MENU)
   const crtOn = opts.crt1979Enabled ?? isCrt1979Typography();
-  const crtLocked = Boolean(opts.crtModeLocked && crtOn);
+  const crtLocked = Boolean(opts.crtModeLocked);
   const crtText = crtLocked
-    ? ultraCompact
-      ? 'LOCK 1.5X'
-      : compact
-        ? '1979 LOCK'
-        : '■ 1979 · 1.5X LOCK'
+    ? crtOn
+      ? ultraCompact
+        ? '■ 1979'
+        : compact
+          ? '■ 1979 LOCK'
+          : opts.isRanked !== false
+            ? '■ 1979 · 1.5X LOCK'
+            : '■ 1979 CRT: LOCK'
+      : ultraCompact
+        ? '■ CRT:OFF'
+        : compact
+          ? '■ CRT LOCK'
+          : '■ 1979 CRT: OFF [LOCK]'
     : ultraCompact
       ? crtOn
         ? '1979:ON'

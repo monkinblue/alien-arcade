@@ -18,6 +18,7 @@ export const POST_RUN_IDS = {
   CALLSIGN_BOX: 'postrun-callsign-box',
   SUBMIT_SCORE: 'postrun-submit',
   PLAY_AGAIN: 'postrun-play-again',
+  GAME_MENU: 'postrun-game-menu',
   EXIT_HUB: 'postrun-exit-hub',
   OPEN_MANIFEST: 'postrun-open-manifest',
   MANIFEST_TAB_PREFIX: 'manifest-tab-',
@@ -89,7 +90,7 @@ export function drawGameOverDebriefModal(
     {
       title: opts.title,
       subtitle: opts.subtitle,
-      maxWidth: 640,
+      maxWidth: 680,
       maxHeight: 430,
       accentColor,
       rightBadge: badge,
@@ -285,9 +286,10 @@ export function drawGameOverDebriefModal(
   const btnGap = 8;
 
   if (opts.isRanked) {
-    const hubW = Math.min(136, Math.floor(contentW * 0.24));
-    const remW = contentW - hubW - btnGap * 2;
-    const submitW = Math.floor(remW * 0.55);
+    const hubW = Math.min(116, Math.floor(contentW * 0.18));
+    const menuW = Math.min(128, Math.floor(contentW * 0.20));
+    const remW = contentW - hubW - menuW - btnGap * 3;
+    const submitW = Math.floor(remW * 0.56);
     const replayW = remW - submitW;
 
     const primaryId = opts.scoreSubmitted
@@ -299,7 +301,7 @@ export function drawGameOverDebriefModal(
         ? `${SEMIOTIC_ICONS.STAR} LEADERBOARD [ENTER]`
         : locked
           ? `LOCKED (${opts.keylockRemainingSec.toFixed(1)}S)`
-          : opts.submitLabel ?? `${SEMIOTIC_ICONS.PLAY} TRANSMIT SCORE [ENTER]`;
+          : opts.submitLabel ?? `${SEMIOTIC_ICONS.PLAY} TRANSMIT [ENTER]`;
 
     drawChromeButton(
       ctx,
@@ -311,7 +313,7 @@ export function drawGameOverDebriefModal(
         active: !locked && !opts.submittingScore,
         disabled: locked || opts.submittingScore,
         hovered: opts.hoveredButtonId === primaryId,
-        fontPx: 13,
+        fontPx: 12,
       },
       buttons
     );
@@ -319,13 +321,29 @@ export function drawGameOverDebriefModal(
     drawChromeButton(
       ctx,
       { x: contentX + submitW + btnGap, y: footerY, width: replayW, height: footH },
-      locked ? `WAIT (${opts.keylockRemainingSec.toFixed(1)}S)` : opts.playAgainLabel ?? `${SEMIOTIC_ICONS.REPLAY} PLAY AGAIN [R]`,
+      locked
+        ? `WAIT (${opts.keylockRemainingSec.toFixed(1)}S)`
+        : opts.playAgainLabel ?? `${SEMIOTIC_ICONS.REPLAY} PLAY AGAIN [R]`,
       {
         id: POST_RUN_IDS.PLAY_AGAIN,
         accent: 'green',
         disabled: locked,
         hovered: opts.hoveredButtonId === POST_RUN_IDS.PLAY_AGAIN,
-        fontPx: 13,
+        fontPx: 12,
+      },
+      buttons
+    );
+
+    drawChromeButton(
+      ctx,
+      { x: contentX + submitW + replayW + btnGap * 2, y: footerY, width: menuW, height: footH },
+      '◄ GAME MENU',
+      {
+        id: POST_RUN_IDS.GAME_MENU,
+        accent: 'amber',
+        disabled: locked,
+        hovered: opts.hoveredButtonId === POST_RUN_IDS.GAME_MENU,
+        fontPx: 12,
       },
       buttons
     );
@@ -345,9 +363,11 @@ export function drawGameOverDebriefModal(
     );
   } else {
     const showManifest = opts.showViewManifestButton !== false;
-    const hubW = Math.min(136, Math.floor(contentW * 0.24));
-    const manifestW = showManifest ? Math.min(180, Math.floor(contentW * 0.30)) : 0;
-    const replayW = contentW - hubW - manifestW - btnGap * (showManifest ? 2 : 1);
+    const hubW = Math.min(124, Math.floor(contentW * 0.20));
+    const menuW = Math.min(138, Math.floor(contentW * 0.22));
+    const manifestW = showManifest ? Math.min(156, Math.floor(contentW * 0.25)) : 0;
+    const gaps = showManifest ? 3 : 2;
+    const replayW = contentW - hubW - menuW - manifestW - btnGap * gaps;
 
     drawChromeButton(
       ctx,
@@ -361,15 +381,31 @@ export function drawGameOverDebriefModal(
         active: !locked,
         disabled: locked,
         hovered: opts.hoveredButtonId === POST_RUN_IDS.PLAY_AGAIN,
-        fontPx: 13,
+        fontPx: 12,
       },
       buttons
     );
 
+    let nextX = contentX + replayW + btnGap;
+    drawChromeButton(
+      ctx,
+      { x: nextX, y: footerY, width: menuW, height: footH },
+      '◄ GAME MENU',
+      {
+        id: POST_RUN_IDS.GAME_MENU,
+        accent: 'amber',
+        disabled: locked,
+        hovered: opts.hoveredButtonId === POST_RUN_IDS.GAME_MENU,
+        fontPx: 12,
+      },
+      buttons
+    );
+    nextX += menuW + btnGap;
+
     if (showManifest) {
       drawChromeButton(
         ctx,
-        { x: contentX + replayW + btnGap, y: footerY, width: manifestW, height: footH },
+        { x: nextX, y: footerY, width: manifestW, height: footH },
         `${SEMIOTIC_ICONS.STAR} LEADERBOARD`,
         {
           id: POST_RUN_IDS.OPEN_MANIFEST,
@@ -702,11 +738,13 @@ export function drawGlobalManifestModal(
     ctx.restore();
   }
 
-  // 5. Unified Footer: ► PLAY AGAIN [R / ENTER] (optional mid-run) + [ESC] CLOSE
+  // 5. Unified Footer: ► PLAY AGAIN [R / ENTER] + ◄ GAME MENU + [ESC] CLOSE (post-run)
   const footH = 38;
   if (opts.showPlayAgain !== false) {
-    const closeW = Math.min(180, Math.floor(contentW * 0.34));
-    const playW = Math.min(300, contentW - closeW - 12);
+    const gap = 10;
+    const closeW = Math.min(164, Math.floor(contentW * 0.24));
+    const menuW = Math.min(164, Math.floor(contentW * 0.24));
+    const playW = Math.min(300, contentW - closeW - menuW - gap * 2);
 
     drawChromeButton(
       ctx,
@@ -718,6 +756,19 @@ export function drawGlobalManifestModal(
         active: true,
         hovered: opts.hoveredButtonId === POST_RUN_IDS.MANIFEST_PLAY_AGAIN,
         fontPx: 14,
+      },
+      buttons
+    );
+
+    drawChromeButton(
+      ctx,
+      { x: contentX + contentW - closeW - gap - menuW, y: footerY, width: menuW, height: footH },
+      '◄ GAME MENU',
+      {
+        id: POST_RUN_IDS.GAME_MENU,
+        accent: 'amber',
+        hovered: opts.hoveredButtonId === POST_RUN_IDS.GAME_MENU,
+        fontPx: 13,
       },
       buttons
     );

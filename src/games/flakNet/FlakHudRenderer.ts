@@ -61,6 +61,7 @@ export interface FlakHudRenderParams {
   isFullscreen: boolean;
   isTouchDevice: boolean;
   confirmExitPending: boolean;
+  confirmGameMenuPending: boolean;
   osdMenuOpen: boolean;
   manifestOpen: boolean;
   controlsOpen: boolean;
@@ -223,6 +224,9 @@ export class FlakHudRenderer {
           audioMuted: params.audioMuted,
           isFullscreen: params.isFullscreen,
           hoveredButtonId: params.hoveredButtonId,
+          canRestart: sim.phase !== 'TITLE',
+          canReturnToGameMenu: sim.phase !== 'TITLE',
+          confirmGameMenuPending: params.confirmGameMenuPending,
           restartLabel: `${SEMIOTIC_ICONS.REPLAY} RESTART WAVE 01`,
           confirmExitPending: params.confirmExitPending,
           extraRows: [

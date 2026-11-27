@@ -96,6 +96,7 @@ export interface HudRenderContext {
   masterVolume: number;
   controlsCardOpen: boolean;
   confirmExitPending: boolean;
+  confirmGameMenuPending: boolean;
   inlineTeletypeHold: boolean;
   pulseSafetyLockSec: number;
   debriefKeylockSec: number;
@@ -2861,6 +2862,8 @@ export class HudRenderer {
         hoveredButtonId: state.hoveredButtonId,
         extraRows,
         canRestart: inRun,
+        canReturnToGameMenu: state.phase !== 'TITLE_MENU' && state.phase !== 'BOOT',
+        confirmGameMenuPending: state.confirmGameMenuPending,
         restartLabel: state.isPracticeRun
           ? `${SEMIOTIC_ICONS.REPLAY} RESTART SECTOR`
           : `${SEMIOTIC_ICONS.REPLAY} RESTART RUN`,

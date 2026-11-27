@@ -1533,10 +1533,11 @@ export class MobileHudRenderer {
       ctx.restore();
     }
 
-    // Unified Footer: PLAY AGAIN + MU-TH-UR OS HUB
-    const gap = 8;
-    const hubW = Math.min(130, Math.floor(m.contentW * 0.36));
-    const replayW = m.contentW - hubW - gap;
+    // Unified Footer: PLAY AGAIN + ◄ MENU + ◄ HUB
+    const gap = 6;
+    const hubW = Math.min(96, Math.floor(m.contentW * 0.26));
+    const menuW = Math.min(108, Math.floor(m.contentW * 0.30));
+    const replayW = m.contentW - hubW - menuW - gap * 2;
     this.addTouchButton(
       ctx,
       buttonsOut,
@@ -1545,28 +1546,44 @@ export class MobileHudRenderer {
       m.footerY - 2,
       replayW,
       44,
-      locked ? `WAIT (${state.debriefKeylockSec.toFixed(1)}S)` : `${SEMIOTIC_ICONS.REPLAY} PLAY AGAIN`,
+      locked ? `WAIT (${state.debriefKeylockSec.toFixed(1)}S)` : `${SEMIOTIC_ICONS.REPLAY} REPLAY`,
       !canSubmit && !locked,
       state.hoveredButtonId,
       THEME.TEXT_BRIGHT,
       !canSubmit && !locked,
-      14,
+      13,
+      locked
+    );
+    this.addTouchButton(
+      ctx,
+      buttonsOut,
+      POST_RUN_IDS.GAME_MENU,
+      m.contentX + replayW + gap,
+      m.footerY - 2,
+      menuW,
+      44,
+      '◄ MENU',
+      false,
+      state.hoveredButtonId,
+      THEME.ACCENT_AMBER_HI,
+      false,
+      12,
       locked
     );
     this.addTouchButton(
       ctx,
       buttonsOut,
       POST_RUN_IDS.EXIT_HUB,
-      m.contentX + replayW + gap,
+      m.contentX + replayW + menuW + gap * 2,
       m.footerY - 2,
       hubW,
       44,
-      'MU-TH-UR OS',
+      '◄ HUB',
       false,
       state.hoveredButtonId,
       THEME.ACCENT_CYAN,
       false,
-      13,
+      12,
       locked
     );
   }
@@ -1676,9 +1693,9 @@ export class MobileHudRenderer {
     );
     cy += bh + gap;
 
-    // Global 1979 CRT Mode + Phosphor Cycle Row (locks during active 1.5x Ranked 1979 runs!)
+    // Global 1979 CRT Mode + Phosphor Cycle Row (locked during active gameplay!)
     const crt1979On = state.crtPreset === 'CLASSIC_1979';
-    const crtLocked = state.crtModeLocked && crt1979On;
+    const crtLocked = state.crtModeLocked;
     this.addTouchButton(
       ctx,
       buttonsOut,
@@ -1687,7 +1704,13 @@ export class MobileHudRenderer {
       cy,
       halfW,
       bh,
-      crtLocked ? '■ 1979 LOCK · 1.5X' : crt1979On ? '1979 CRT: ON (1.5X)' : '1979 CRT: OFF',
+      crtLocked
+        ? crt1979On
+          ? '■ CRT ON [LOCK]'
+          : '■ CRT OFF [LOCK]'
+        : crt1979On
+          ? '1979 CRT: ON (1.5X)'
+          : '1979 CRT: OFF',
       crt1979On,
       state.hoveredButtonId,
       crt1979On ? THEME.ACCENT_AMBER_HI : THEME.TEXT_SECONDARY,
@@ -1779,37 +1802,87 @@ export class MobileHudRenderer {
       12
     );
 
-    // Footer: CLOSE + MU-TH-UR OS HUB (Bug #4: explicit HUB button inside mobile menu!)
-    this.addTouchButton(
-      ctx,
-      buttonsOut,
-      SYSTEM_MENU_IDS.RESUME,
-      m.contentX,
-      m.footerY - 2,
-      halfW,
-      44,
-      'CLOSE MENU',
-      false,
-      state.hoveredButtonId,
-      THEME.TEXT_BRIGHT,
-      false,
-      13
-    );
-    this.addTouchButton(
-      ctx,
-      buttonsOut,
-      SYSTEM_MENU_IDS.EXIT_HUB,
-      m.contentX + halfW + gap,
-      m.footerY - 2,
-      bw - halfW - gap,
-      44,
-      state.confirmExitPending ? '[CONFIRM HUB?]' : 'MU-TH-UR OS HUB',
-      state.confirmExitPending,
-      state.hoveredButtonId,
-      state.confirmExitPending ? THEME.ALERT_RED_TEXT : THEME.ACCENT_AMBER,
-      false,
-      13
-    );
+    // Footer: CLOSE + ◄ GAME MENU (when in run) + MU-TH-UR OS HUB
+    if (inRun) {
+      const fGap = 6;
+      const thirdW = Math.floor((bw - fGap * 2) / 3);
+      this.addTouchButton(
+        ctx,
+        buttonsOut,
+        SYSTEM_MENU_IDS.RESUME,
+        m.contentX,
+        m.footerY - 2,
+        thirdW,
+        44,
+        'CLOSE',
+        false,
+        state.hoveredButtonId,
+        THEME.TEXT_BRIGHT,
+        false,
+        12
+      );
+      this.addTouchButton(
+        ctx,
+        buttonsOut,
+        SYSTEM_MENU_IDS.GAME_MENU,
+        m.contentX + thirdW + fGap,
+        m.footerY - 2,
+        thirdW,
+        44,
+        state.confirmGameMenuPending ? 'CONFIRM?' : '◄ GAME MENU',
+        state.confirmGameMenuPending,
+        state.hoveredButtonId,
+        state.confirmGameMenuPending ? THEME.ALERT_RED_TEXT : THEME.ACCENT_AMBER_HI,
+        false,
+        12
+      );
+      this.addTouchButton(
+        ctx,
+        buttonsOut,
+        SYSTEM_MENU_IDS.EXIT_HUB,
+        m.contentX + (thirdW + fGap) * 2,
+        m.footerY - 2,
+        bw - (thirdW + fGap) * 2,
+        44,
+        state.confirmExitPending ? 'CONFIRM?' : '◄ HUB',
+        state.confirmExitPending,
+        state.hoveredButtonId,
+        state.confirmExitPending ? THEME.ALERT_RED_TEXT : THEME.ACCENT_AMBER,
+        false,
+        12
+      );
+    } else {
+      this.addTouchButton(
+        ctx,
+        buttonsOut,
+        SYSTEM_MENU_IDS.RESUME,
+        m.contentX,
+        m.footerY - 2,
+        halfW,
+        44,
+        'CLOSE MENU',
+        false,
+        state.hoveredButtonId,
+        THEME.TEXT_BRIGHT,
+        false,
+        13
+      );
+      this.addTouchButton(
+        ctx,
+        buttonsOut,
+        SYSTEM_MENU_IDS.EXIT_HUB,
+        m.contentX + halfW + gap,
+        m.footerY - 2,
+        bw - halfW - gap,
+        44,
+        state.confirmExitPending ? '[CONFIRM HUB?]' : 'MU-TH-UR OS HUB',
+        state.confirmExitPending,
+        state.hoveredButtonId,
+        state.confirmExitPending ? THEME.ALERT_RED_TEXT : THEME.ACCENT_AMBER,
+        false,
+        13
+      );
+    }
   }
 
   private drawMobileManifestModal(

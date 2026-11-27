@@ -86,6 +86,8 @@ export class FlakNetCartridge implements Cartridge {
   private controlsOpen = false;
   private confirmExitPending = false;
   private confirmExitTimer = 0;
+  private confirmGameMenuPending = false;
+  private confirmGameMenuTimer = 0;
   private empTouchArmed = false;
   private glitchIntensity = 0;
 
@@ -396,6 +398,8 @@ export class FlakNetCartridge implements Cartridge {
     this.controlsOpen = false;
     this.confirmExitPending = false;
     this.confirmExitTimer = 0;
+    this.confirmGameMenuPending = false;
+    this.confirmGameMenuTimer = 0;
     this.empTouchArmed = false;
     this.callsignEditing = false;
     this.callsignOverwriteOnNextKey = false;
@@ -407,7 +411,7 @@ export class FlakNetCartridge implements Cartridge {
     const ranked1979Bonus = this.host.getCrtPreset() === 'CLASSIC_1979';
     this.callsignDraft = this.leaderboard.getSavedCallsign();
     this.sim.startNewGame({ ranked1979Bonus });
-    this.host.setCrtModeLocked(ranked1979Bonus);
+    this.host.setCrtModeLocked(true);
     if (ranked1979Bonus) {
       this.showToast('★ 1979 CRT RANKED LOCKED — 1.5X BASELINE SCORE ACTIVE ★', 'amber', 2.4);
     }
@@ -441,7 +445,17 @@ export class FlakNetCartridge implements Cartridge {
     document.body.style.cursor = 'default';
   }
 
+  private isInActiveGameplay(): boolean {
+    return (
+      !this.sim.isDemoMode &&
+      this.sim.phase !== 'TITLE' &&
+      this.sim.phase !== 'GAME_OVER'
+    );
+  }
+
   private requestExitToHub(): void {
+    this.confirmGameMenuPending = false;
+    this.confirmGameMenuTimer = 0;
     if (this.isActiveRankedRun() && !this.confirmExitPending) {
       this.confirmExitPending = true;
       this.confirmExitTimer = 3.5;
@@ -493,14 +507,40 @@ export class FlakNetCartridge implements Cartridge {
       onResume: () => {
         this.osdMenuOpen = false;
         this.confirmExitPending = false;
+        this.confirmExitTimer = 0;
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
       },
       onRestart: () => {
         this.startRun();
+      },
+      onReturnToGameMenu: () => {
+        this.confirmExitPending = false;
+        this.confirmExitTimer = 0;
+        if (this.isInActiveGameplay() && !this.confirmGameMenuPending) {
+          this.confirmGameMenuPending = true;
+          this.confirmGameMenuTimer = 4.0;
+          this.showToast('CLICK [CONFIRM MENU?] AGAIN TO RETURN TO GAME MENU', 'red', 2.4);
+          return;
+        }
+        this.demoDirector.stop(this.sim);
+        this.osdMenuOpen = false;
+        this.manifestOpen = false;
+        this.controlsOpen = false;
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
+        this.empTouchArmed = false;
+        this.host.setCrtModeLocked(false);
+        this.sim.resetToTitle();
+        this.showToast('RETURNED TO FLAK NET MENU', 'green', 1.4);
       },
       onOpenLeaderboard: () => {
         this.osdMenuOpen = false;
         this.controlsOpen = false;
         this.confirmExitPending = false;
+        this.confirmExitTimer = 0;
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
         this.manifestOpen = true;
       },
       onExitToHub: () => {
@@ -1043,9 +1083,15 @@ export class FlakNetCartridge implements Cartridge {
     // 3. Top Chrome Bar & Pause / Controls / PostRun shared actions
     if (id === TOP_CHROME_IDS.CRT) {
       this.confirmExitPending = false;
+      this.confirmGameMenuPending = false;
       if (this.host.isCrtModeLocked()) {
         this.host.audio.playMutedAvionicsIndicatorBeep(false);
-        this.showToast('1979 MODE LOCKED FOR ACTIVE 1.5X RANKED RUN', 'amber', 1.8);
+        const lockedState = this.host.getCrtPreset() === 'CLASSIC_1979' ? 'ON' : 'OFF';
+        this.showToast(
+          `1979 CRT LOCKED ${lockedState} DURING GAMEPLAY — FINISH OR EXIT RUN`,
+          'amber',
+          1.8
+        );
         return;
       }
       const next = this.host.toggle1979Crt();
@@ -1133,6 +1179,22 @@ export class FlakNetCartridge implements Cartridge {
       this.startRun();
       return;
     }
+    if (id === POST_RUN_IDS.GAME_MENU) {
+      this.host.audio.playButtonLatchLock(0.96, 0.88);
+      this.demoDirector.stop(this.sim);
+      this.osdMenuOpen = false;
+      this.manifestOpen = false;
+      this.controlsOpen = false;
+      this.confirmExitPending = false;
+      this.confirmExitTimer = 0;
+      this.confirmGameMenuPending = false;
+      this.confirmGameMenuTimer = 0;
+      this.empTouchArmed = false;
+      this.host.setCrtModeLocked(false);
+      this.sim.resetToTitle();
+      this.showToast('RETURNED TO FLAK NET MENU', 'green', 1.4);
+      return;
+    }
     if (id === POST_RUN_IDS.MANIFEST_CLOSE) {
       this.host.audio.playButtonLatchLock(0.96, 0.85);
       this.manifestOpen = false;
@@ -1197,6 +1259,13 @@ export class FlakNetCartridge implements Cartridge {
       if (this.confirmExitTimer <= 0) {
         this.confirmExitPending = false;
         this.confirmExitTimer = 0;
+      }
+    }
+    if (this.confirmGameMenuPending) {
+      this.confirmGameMenuTimer -= clampedDt;
+      if (this.confirmGameMenuTimer <= 0) {
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
       }
     }
 
@@ -1264,11 +1333,7 @@ export class FlakNetCartridge implements Cartridge {
       ? Math.min(1, this.statusToast.timer / Math.min(0.28, this.statusToast.duration))
       : 0;
 
-    const crtModeLocked =
-      this.sim.ranked1979Bonus &&
-      !this.sim.isDemoMode &&
-      this.sim.phase !== 'TITLE' &&
-      this.sim.phase !== 'GAME_OVER';
+    const crtModeLocked = this.isInActiveGameplay();
     this.host.setCrtModeLocked(crtModeLocked);
 
     this.hudRenderer.render(
@@ -1288,6 +1353,7 @@ export class FlakNetCartridge implements Cartridge {
         isFullscreen: this.host.getViewport().isFullscreen,
         isTouchDevice: this.host.isTouchDevice(),
         confirmExitPending: this.confirmExitPending,
+        confirmGameMenuPending: this.confirmGameMenuPending,
         osdMenuOpen: this.osdMenuOpen,
         manifestOpen: this.manifestOpen,
         controlsOpen: this.controlsOpen,

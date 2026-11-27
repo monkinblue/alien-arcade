@@ -32,6 +32,7 @@ export const SYSTEM_MENU_IDS = {
   SWITCH_PERIMETER: 'sys-switch-perimeter',
   SWITCH_FLAK: 'sys-switch-flak',
   SWITCH_TRENCH: 'sys-switch-trench',
+  GAME_MENU: 'sys-game-menu',
   EXIT_HUB: 'sys-exit-hub',
 } as const;
 
@@ -59,6 +60,9 @@ export interface SystemMenuOptions {
   extraRows?: readonly SystemMenuExtraRow[];
   canRestart?: boolean;
   restartLabel?: string;
+  canReturnToGameMenu?: boolean;
+  gameMenuLabel?: string;
+  confirmGameMenuPending?: boolean;
   leaderboardLabel?: string;
   confirmExitPending?: boolean;
 }
@@ -66,6 +70,7 @@ export interface SystemMenuOptions {
 export interface SystemMenuActionCallbacks {
   onResume: () => void;
   onRestart: () => void;
+  onReturnToGameMenu: () => void;
   onOpenLeaderboard: () => void;
   onExitToHub: () => void;
   onExtraAction?: (id: string) => void;
@@ -216,9 +221,9 @@ export function drawSystemMenuModal(
   };
 
   // 2. Global Hardware Settings
-  // Row A: 1979 CRT MODE (ON · 1.5X RANKED | OFF · CLEAN, or LOCKED during active 1979 Ranked run!)
+  // Row A: 1979 CRT MODE (ON · 1.5X RANKED | OFF · CLEAN, or LOCKED during active gameplay!)
   {
-    const isLocked = Boolean(opts.crtModeLocked && opts.crtPreset === 'CLASSIC_1979');
+    const isLocked = Boolean(opts.crtModeLocked);
     const { controlX, controlW } = drawSettingRowBg(
       curY,
       '1979 CRT MODE',
@@ -229,14 +234,17 @@ export function drawSystemMenuModal(
     const segH = rowH - 6;
     const segY = curY + 3;
     if (isLocked) {
+      const crtOn = opts.crtPreset === 'CLASSIC_1979';
       drawChromeButton(
         ctx,
         { x: controlX, y: segY, width: controlW, height: segH },
-        '■ LOCKED ON — 1.5X RANKED RUN ACTIVE',
+        crtOn
+          ? '■ LOCKED ON — FINISH OR EXIT RUN TO CHANGE'
+          : '■ LOCKED OFF — FINISH OR EXIT RUN TO CHANGE',
         {
-          id: SYSTEM_MENU_IDS.CRT_CLASSIC,
-          accent: 'amber',
-          active: true,
+          id: crtOn ? SYSTEM_MENU_IDS.CRT_CLASSIC : SYSTEM_MENU_IDS.CRT_CRISP,
+          accent: crtOn ? 'amber' : 'muted',
+          active: crtOn,
           disabled: true,
           hovered: false,
           fontPx: 12,
@@ -530,7 +538,7 @@ export function drawSystemMenuModal(
     );
   });
 
-  // 5. Footer: [ESC] RESUME | EXIT TO MU-TH-UR OS
+  // 5. Footer: [ESC] RESUME | ◄ GAME MENU | EXIT TO MU-TH-UR OS
   ctx.save();
   ctx.strokeStyle = THEME.BORDER_SUBTLE;
   ctx.lineWidth = 1.2;
@@ -541,8 +549,11 @@ export function drawSystemMenuModal(
   ctx.restore();
 
   const footBtnH = 36;
-  const leftBtnW = Math.min(200, Math.floor(contentW * 0.42));
-  const rightBtnW = Math.min(240, Math.floor(contentW * 0.48));
+  const footGap = 8;
+  const leftBtnW = Math.floor((contentW - footGap * 2) * 0.28);
+  const midBtnW = Math.floor((contentW - footGap * 2) * 0.34);
+  const rightBtnW = contentW - footGap * 2 - leftBtnW - midBtnW;
+  const canMenu = opts.canReturnToGameMenu !== false;
 
   drawChromeButton(
     ctx,
@@ -559,8 +570,27 @@ export function drawSystemMenuModal(
 
   drawChromeButton(
     ctx,
-    { x: contentX + contentW - rightBtnW, y: footerY, width: rightBtnW, height: footBtnH },
-    opts.confirmExitPending ? '[CONFIRM EXIT TO HUB?]' : 'EXIT TO MU-TH-UR OS',
+    { x: contentX + leftBtnW + footGap, y: footerY, width: midBtnW, height: footBtnH },
+    canMenu
+      ? opts.confirmGameMenuPending
+        ? '[CONFIRM MENU?]'
+        : (opts.gameMenuLabel ?? '◄ GAME MENU')
+      : 'ON GAME MENU',
+    {
+      id: SYSTEM_MENU_IDS.GAME_MENU,
+      accent: canMenu ? (opts.confirmGameMenuPending ? 'red' : 'amber') : 'muted',
+      active: Boolean(canMenu && opts.confirmGameMenuPending),
+      disabled: !canMenu,
+      hovered: canMenu && opts.hoveredButtonId === SYSTEM_MENU_IDS.GAME_MENU,
+      fontPx: 13,
+    },
+    buttons
+  );
+
+  drawChromeButton(
+    ctx,
+    { x: contentX + leftBtnW + midBtnW + footGap * 2, y: footerY, width: rightBtnW, height: footBtnH },
+    opts.confirmExitPending ? '[CONFIRM EXIT?]' : 'EXIT TO MU-TH-UR OS',
     {
       id: SYSTEM_MENU_IDS.EXIT_HUB,
       accent: opts.confirmExitPending ? 'red' : 'muted',
@@ -590,6 +620,10 @@ export function handleSystemMenuAction(
     case SYSTEM_MENU_IDS.RESTART:
       host.audio.playButtonLatchLock(0.95, 0.9);
       callbacks.onRestart();
+      return true;
+    case SYSTEM_MENU_IDS.GAME_MENU:
+      host.audio.playButtonLatchLock(0.92, 0.88);
+      callbacks.onReturnToGameMenu();
       return true;
     case SYSTEM_MENU_IDS.LEADERBOARD:
       host.audio.playButtonLatchLock(1.04, 0.85);

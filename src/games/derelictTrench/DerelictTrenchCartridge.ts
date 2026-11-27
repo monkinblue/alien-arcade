@@ -118,6 +118,8 @@ export class DerelictTrenchCartridge implements Cartridge {
   private wasPausedBeforeModal = false;
   private confirmExitPending = false;
   private confirmExitTimer = 0;
+  private confirmGameMenuPending = false;
+  private confirmGameMenuTimer = 0;
   private glitchIntensity = 0;
 
   // Transient HUD Toasts ([I] Pitch Axis / [M] Mute)
@@ -268,6 +270,8 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.controlsCardOpen = kind === 'controls';
     this.confirmExitPending = false;
     this.confirmExitTimer = 0;
+    this.confirmGameMenuPending = false;
+    this.confirmGameMenuTimer = 0;
 
     if (this.sim.phase === 'FLYING') {
       this.sim.paused = true;
@@ -282,6 +286,8 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.controlsCardOpen = false;
     this.confirmExitPending = false;
     this.confirmExitTimer = 0;
+    this.confirmGameMenuPending = false;
+    this.confirmGameMenuTimer = 0;
 
     if (this.sim.phase === 'FLYING') {
       if (restoreFlight) {
@@ -302,6 +308,32 @@ export class DerelictTrenchCartridge implements Cartridge {
       onRestart: () => {
         this.startSortie(true, this.lastSortieWasDrill);
       },
+      onReturnToGameMenu: () => {
+        this.confirmExitPending = false;
+        this.confirmExitTimer = 0;
+        if (this.sim.phase === 'FLYING' && !this.confirmGameMenuPending) {
+          this.confirmGameMenuPending = true;
+          this.confirmGameMenuTimer = 4.0;
+          this.showStatusToast(
+            'CLICK [CONFIRM MENU?] AGAIN TO RETURN TO GAME MENU',
+            'red',
+            2.4
+          );
+          return;
+        }
+        this.releasePointerLock(true);
+        this.haltActiveFlightInputs();
+        this.trenchAudio.silenceAll();
+        this.osdMenuOpen = false;
+        this.manifestOpen = false;
+        this.controlsCardOpen = false;
+        this.wasPausedBeforeModal = false;
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
+        this.host.setCrtModeLocked(false);
+        this.sim.resetToTitle();
+        this.showStatusToast('RETURNED TO DERELICT TRENCH MENU', 'green', 1.4);
+      },
       onOpenLeaderboard: () => {
         this.openOverlayModal('manifest');
       },
@@ -309,12 +341,14 @@ export class DerelictTrenchCartridge implements Cartridge {
         this.requestExitToHub();
       },
       onExtraAction: (id: string) => {
-        this.handleHudButton(id);
+        this.handleHudButton(id, true);
       },
     };
   }
 
   private requestExitToHub(): void {
+    this.confirmGameMenuPending = false;
+    this.confirmGameMenuTimer = 0;
     const activeRankedFlight = this.sim.phase === 'FLYING' && !this.sim.freeFlightDrill;
     if (activeRankedFlight && !this.confirmExitPending) {
       this.confirmExitPending = true;
@@ -1107,6 +1141,8 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.wasPausedBeforeModal = false;
     this.confirmExitPending = false;
     this.confirmExitTimer = 0;
+    this.confirmGameMenuPending = false;
+    this.confirmGameMenuTimer = 0;
     this.callsignEditing = false;
     this.callsignOverwriteOnNextKey = false;
     this.scoreSubmitted = false;
@@ -1120,7 +1156,7 @@ export class DerelictTrenchCartridge implements Cartridge {
     const ranked1979Bonus = !freeFlightDrill && this.host.getCrtPreset() === 'CLASSIC_1979';
     this.host.audio.playButtonLatchLock(1.0, 0.9);
     this.sim.startNewFlight({ freeFlightDrill, ranked1979Bonus });
-    this.host.setCrtModeLocked(ranked1979Bonus);
+    this.host.setCrtModeLocked(true);
     if (freeFlightDrill) {
       this.showStatusToast(
         'FREE-FLIGHT DRILL ACTIVE — FORGIVING TERRAIN BOUNCE & REDUCED SAM THREAT',
@@ -1199,9 +1235,9 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.host.audio.playButtonLatchLock(1.04, 0.9);
   }
 
-  private handleHudButton(id: string): void {
+  private handleHudButton(id: string, fromSystemMenuExtra = false): void {
     // Delegate shared System Menu actions first when System Menu is open
-    if (this.osdMenuOpen) {
+    if (this.osdMenuOpen && !fromSystemMenuExtra) {
       if (handleSystemMenuAction(id, this.host, this.getSystemMenuCallbacks())) {
         return;
       }
@@ -1212,7 +1248,12 @@ export class DerelictTrenchCartridge implements Cartridge {
       case TOP_CHROME_IDS.CRT: {
         if (this.host.isCrtModeLocked()) {
           this.host.audio.playMutedAvionicsIndicatorBeep(false);
-          this.showStatusToast('1979 MODE LOCKED FOR ACTIVE 1.5X RANKED RUN', 'amber', 1.8);
+          const lockedState = this.host.getCrtPreset() === 'CLASSIC_1979' ? 'ON' : 'OFF';
+          this.showStatusToast(
+            `1979 CRT LOCKED ${lockedState} DURING GAMEPLAY — FINISH OR EXIT RUN`,
+            'amber',
+            1.8
+          );
           return;
         }
         const next = this.host.toggle1979Crt();
@@ -1310,6 +1351,25 @@ export class DerelictTrenchCartridge implements Cartridge {
       case POST_RUN_IDS.PLAY_AGAIN:
       case POST_RUN_IDS.MANIFEST_PLAY_AGAIN:
         this.startSortie(true, this.lastSortieWasDrill);
+        return;
+      case POST_RUN_IDS.GAME_MENU:
+        if (this.sim.gameOverLockoutTimer <= 0 || this.manifestOpen) {
+          this.host.audio.playButtonLatchLock(0.96, 0.88);
+          this.releasePointerLock(true);
+          this.haltActiveFlightInputs();
+          this.trenchAudio.silenceAll();
+          this.osdMenuOpen = false;
+          this.manifestOpen = false;
+          this.controlsCardOpen = false;
+          this.wasPausedBeforeModal = false;
+          this.confirmExitPending = false;
+          this.confirmExitTimer = 0;
+          this.confirmGameMenuPending = false;
+          this.confirmGameMenuTimer = 0;
+          this.host.setCrtModeLocked(false);
+          this.sim.resetToTitle();
+          this.showStatusToast('RETURNED TO DERELICT TRENCH MENU', 'green', 1.4);
+        }
         return;
       case POST_RUN_IDS.OPEN_MANIFEST:
         this.host.audio.playButtonLatchLock(1.0, 0.85);
@@ -1436,6 +1496,12 @@ export class DerelictTrenchCartridge implements Cartridge {
         this.confirmExitPending = false;
       }
     }
+    if (this.confirmGameMenuPending) {
+      this.confirmGameMenuTimer = Math.max(0, this.confirmGameMenuTimer - clampedDt);
+      if (this.confirmGameMenuTimer <= 0) {
+        this.confirmGameMenuPending = false;
+      }
+    }
 
     const anyOverlayOpen = this.isAnyOverlayModalOpen();
     const layout = this.hudRenderer.getLayout(this.viewportWidth, this.viewportHeight);
@@ -1506,8 +1572,7 @@ export class DerelictTrenchCartridge implements Cartridge {
       anyOverlayOpen ||
       this.sim.phase === 'GAME_OVER' ||
       (this.sim.phase === 'FLYING' && this.sim.paused);
-    const crtLocked =
-      this.sim.ranked1979Bonus && !this.sim.freeFlightDrill && this.sim.phase === 'FLYING';
+    const crtLocked = this.sim.phase === 'FLYING';
     this.host.setCrtModeLocked(crtLocked);
     this.host.setModalOpen(modalActive);
 
@@ -1539,6 +1604,7 @@ export class DerelictTrenchCartridge implements Cartridge {
       isTouchDevice: this.host.isTouchDevice(),
       stickSensitivityLabel: this.stickSensitivity,
       confirmExitPending: this.confirmExitPending,
+      confirmGameMenuPending: this.confirmGameMenuPending,
       osdMenuOpen: this.osdMenuOpen,
       manifestOpen: this.manifestOpen,
       controlsCardOpen: this.controlsCardOpen,

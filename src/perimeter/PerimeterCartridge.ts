@@ -155,6 +155,8 @@ export class PerimeterCartridge implements Cartridge {
   private draftPeekMap = false;
   private confirmExitPending = false;
   private confirmExitTimer = 0;
+  private confirmGameMenuPending = false;
+  private confirmGameMenuTimer = 0;
   private postRunKeylockSec = 0;
   private callsignEditing = false;
   private prevPhase: PerimeterPhase = 'BRIEFING';
@@ -878,7 +880,17 @@ export class PerimeterCartridge implements Cartridge {
     this.host.exitToMuthurOs("TERMINATED PROGRAM 02 // HADLEY'S PERIMETER TACTICAL NET.");
   }
 
+  private isInActiveGameplay(): boolean {
+    return (
+      this.sim.phase !== 'BRIEFING' &&
+      this.sim.phase !== 'CORE_BREACHED' &&
+      this.sim.phase !== 'CALLSIGN_ENTRY'
+    );
+  }
+
   private requestExitToHub(): void {
+    this.confirmGameMenuPending = false;
+    this.confirmGameMenuTimer = 0;
     if (this.isActiveRankedRun() && !this.confirmExitPending) {
       this.confirmExitPending = true;
       this.confirmExitTimer = 4.0;
@@ -901,6 +913,8 @@ export class PerimeterCartridge implements Cartridge {
     this.draftPeekMap = false;
     this.confirmExitPending = false;
     this.confirmExitTimer = 0;
+    this.confirmGameMenuPending = false;
+    this.confirmGameMenuTimer = 0;
     this.postRunKeylockSec = 0;
     this.activeTool = { kind: 'INSPECT' };
     this.selectedTurretId = null;
@@ -909,7 +923,7 @@ export class PerimeterCartridge implements Cartridge {
     this.resetSubmissionState(true);
     const ranked1979Bonus = this.host.getCrtPreset() === 'CLASSIC_1979';
     this.sim.resetRun('ENDLESS_SIEGE', false, ranked1979Bonus);
-    this.host.setCrtModeLocked(ranked1979Bonus);
+    this.host.setCrtModeLocked(true);
     this.prevPhase = this.sim.phase;
     this.fitCameraToBlueprint();
   }
@@ -919,12 +933,47 @@ export class PerimeterCartridge implements Cartridge {
       onResume: () => {
         this.osdMenuOpen = false;
         this.confirmExitPending = false;
+        this.confirmExitTimer = 0;
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
       },
       onRestart: () => {
         this.startFreshReplay();
       },
+      onReturnToGameMenu: () => {
+        this.confirmExitPending = false;
+        this.confirmExitTimer = 0;
+        if (this.isInActiveGameplay() && !this.confirmGameMenuPending) {
+          this.confirmGameMenuPending = true;
+          this.confirmGameMenuTimer = 4.0;
+          this.showToast('CLICK [CONFIRM MENU?] AGAIN TO RETURN TO GAME MENU', 2.6);
+          return;
+        }
+        this.osdMenuOpen = false;
+        this.manifestOpen = false;
+        this.wikiOpen = false;
+        this.controlsCardOpen = false;
+        this.pauseBannerOpen = false;
+        this.draftPeekMap = false;
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
+        this.activeTool = { kind: 'INSPECT' };
+        this.selectedTurretId = null;
+        this.selectedDoorId = null;
+        this.tutorialDirector.stop(this.sim);
+        this.host.setCrtModeLocked(false);
+        this.resetSubmissionState(true);
+        this.sim.resetRun('ENDLESS_SIEGE', true, false);
+        this.prevPhase = this.sim.phase;
+        this.fitCameraToBlueprint();
+        this.showToast("RETURNED TO HADLEY'S PERIMETER MENU");
+      },
       onOpenLeaderboard: () => {
         this.osdMenuOpen = false;
+        this.confirmExitPending = false;
+        this.confirmExitTimer = 0;
+        this.confirmGameMenuPending = false;
+        this.confirmGameMenuTimer = 0;
         this.manifestOpen = true;
       },
       onExitToHub: () => {
@@ -940,6 +989,8 @@ export class PerimeterCartridge implements Cartridge {
           this.handleHudButton('perim-drill-start');
         } else if (extraId === 'perim-drill-exit') {
           this.handleHudButton('perim-drill-exit');
+        } else if (extraId === 'perim-drill-to-menu') {
+          this.handleHudButton('perim-drill-to-menu');
         }
       },
     };
@@ -1770,7 +1821,11 @@ export class PerimeterCartridge implements Cartridge {
       case TOP_CHROME_IDS.CRT: {
         if (this.host.isCrtModeLocked()) {
           this.host.audio.playMutedAvionicsIndicatorBeep(false);
-          this.showToast('1979 MODE LOCKED FOR ACTIVE 1.5X RANKED RUN', 1.8);
+          const lockedState = this.host.getCrtPreset() === 'CLASSIC_1979' ? 'ON' : 'OFF';
+          this.showToast(
+            `1979 CRT LOCKED ${lockedState} DURING GAMEPLAY — FINISH OR EXIT RUN`,
+            1.8
+          );
           return;
         }
         const next = this.host.toggle1979Crt();
@@ -1852,6 +1907,30 @@ export class PerimeterCartridge implements Cartridge {
       case POST_RUN_IDS.MANIFEST_PLAY_AGAIN:
         if (this.postRunKeylockSec <= 0 || this.manifestOpen) {
           this.startFreshReplay();
+        }
+        return;
+      case POST_RUN_IDS.GAME_MENU:
+        if (this.postRunKeylockSec <= 0 || this.manifestOpen) {
+          this.osdMenuOpen = false;
+          this.manifestOpen = false;
+          this.wikiOpen = false;
+          this.controlsCardOpen = false;
+          this.pauseBannerOpen = false;
+          this.draftPeekMap = false;
+          this.confirmExitPending = false;
+          this.confirmExitTimer = 0;
+          this.confirmGameMenuPending = false;
+          this.confirmGameMenuTimer = 0;
+          this.activeTool = { kind: 'INSPECT' };
+          this.selectedTurretId = null;
+          this.selectedDoorId = null;
+          this.tutorialDirector.stop(this.sim);
+          this.host.setCrtModeLocked(false);
+          this.resetSubmissionState(true);
+          this.sim.resetRun('ENDLESS_SIEGE', true, false);
+          this.prevPhase = this.sim.phase;
+          this.fitCameraToBlueprint();
+          this.showToast("RETURNED TO HADLEY'S PERIMETER MENU");
         }
         return;
       case POST_RUN_IDS.EXIT_HUB:
@@ -1970,7 +2049,7 @@ export class PerimeterCartridge implements Cartridge {
       case 'briefing-engage': {
         const ranked1979Bonus = this.host.getCrtPreset() === 'CLASSIC_1979';
         this.sim.ranked1979Bonus = ranked1979Bonus;
-        this.host.setCrtModeLocked(ranked1979Bonus);
+        this.host.setCrtModeLocked(true);
         this.sim.phase = 'TACTICAL_PREP';
         if (ranked1979Bonus) {
           this.showToast('★ 1979 CRT RANKED LOCKED — 1.5X BASELINE SCORE ACTIVE ★', 2.4);
@@ -2803,6 +2882,12 @@ export class PerimeterCartridge implements Cartridge {
         this.confirmExitPending = false;
       }
     }
+    if (this.confirmGameMenuTimer > 0) {
+      this.confirmGameMenuTimer = Math.max(0, this.confirmGameMenuTimer - clampedDt);
+      if (this.confirmGameMenuTimer <= 0) {
+        this.confirmGameMenuPending = false;
+      }
+    }
     if (this.postRunKeylockSec > 0) {
       this.postRunKeylockSec = Math.max(0, this.postRunKeylockSec - clampedDt);
     }
@@ -2940,12 +3025,7 @@ export class PerimeterCartridge implements Cartridge {
         : undefined,
     });
 
-    const crtModeLocked =
-      this.sim.ranked1979Bonus &&
-      !this.sim.trainingMode &&
-      this.sim.phase !== 'BRIEFING' &&
-      this.sim.phase !== 'CORE_BREACHED' &&
-      this.sim.phase !== 'CALLSIGN_ENTRY';
+    const crtModeLocked = this.isInActiveGameplay();
     this.host.setCrtModeLocked(crtModeLocked);
 
     // 2. Render Nostromo Left/Right/Top/Bottom Instrumentation & Shared Chrome Modals
@@ -2968,6 +3048,7 @@ export class PerimeterCartridge implements Cartridge {
         phosphorTheme: this.host.getPhosphorTheme(),
         masterVolume: this.host.getMasterVolume(),
         confirmExitPending: this.confirmExitPending,
+        confirmGameMenuPending: this.confirmGameMenuPending,
         osdMenuOpen: this.osdMenuOpen,
         manifestOpen: this.manifestOpen,
         wikiOpen: this.wikiOpen,

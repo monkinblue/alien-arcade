@@ -29,10 +29,12 @@ export const TRENCH_CONSTANTS = {
   SAM_FLIGHT_TIME_SEC: 4.5, // Cinematic 4.5-second SAM missile flight time
   SAM_ENGAGE_RANGE_M: 2800,
 
-  // Fixed-Forward M61A1 20mm Rotary Cannon & Ballistics
+  // Fixed-Forward M61A1 20mm Rotary Cannon & Ballistics (Drag + Gravity)
   GUN_MAX_AMMO: 510,
-  GUN_MUZZLE_SPEED_MPS: 1120,
-  GUN_GRAVITY_MPS2: 14.5,
+  GUN_MUZZLE_SPEED_MPS: 960,
+  GUN_GRAVITY_MPS2: 32.0,
+  GUN_DRAG_PER_SEC: 0.28,
+  GUN_MAX_AGE_SEC: 2.35,
 
   // Tactical Missiles (6x AGM / AIM-9) — Snappy 0.35s Locks & +40% Wider Seeker Cone!
   MISSILE_MAX_COUNT: 6,
@@ -89,6 +91,10 @@ export interface CanyonTarget {
   vx?: number;
   vy?: number;
   vz?: number;
+  /** Smoothed 3D acceleration (m/s^2) for weaving Bandit Drone lead prediction */
+  ax?: number;
+  ay?: number;
+  az?: number;
   baseY: number;
   radius: number;
   hp: number;
@@ -114,6 +120,14 @@ export interface CanyonTarget {
 
 export interface CannonRound {
   id: number;
+  /** Exact world-space launch muzzle origin (analytical drag+gravity integration) */
+  originX: number;
+  originY: number;
+  originZ: number;
+  /** Exact initial launch velocity vector (jet momentum + muzzle along bore) */
+  v0x: number;
+  v0y: number;
+  v0z: number;
   x: number;
   y: number;
   z: number;

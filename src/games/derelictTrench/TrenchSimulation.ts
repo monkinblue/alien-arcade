@@ -43,8 +43,16 @@ export interface F16FlightInput {
   deployCmdsPressed: boolean;
 }
 
+export interface GunHistorySample {
+  timeSec: number;
+  m0: Vec3;
+  v0: Vec3;
+  right: Vec3;
+}
+
 export interface BallisticPipperSolution {
   mode: 'CCIP' | 'LCOS';
+  /** Exact 3D world position where a bullet fired RIGHT NOW will end up at tofSec (or terrain impact) */
   worldPoint: Vec3;
   distM: number;
   hitTerrain: boolean;
@@ -55,6 +63,14 @@ export interface BallisticPipperSolution {
   tofSec: number;
   /** First terrain/arch impact time along current bullet path (or maxAge if open sky) */
   terrainHitT: number;
+  /** Current 3D world position of the tracked target (when LCOS is tracking a target) */
+  targetPos?: Vec3;
+  /** Exact 3D predicted intercept position where the target WILL BE when bullets arrive at tofSec */
+  targetInterceptPoint?: Vec3;
+  /** True when target is moving fast enough (>12 m/s) to show a Lead Vector + LEAD intercept cue */
+  hasMovingLead?: boolean;
+  /** True when bullets fired right now will physically hit the target at tofSec */
+  onSolution?: boolean;
 }
 
 export interface IncomingSamTelemetry {
@@ -203,6 +219,8 @@ export class TrenchSimulation {
   private spawnedSectorMax = 0;
   private scoreCarry = 0;
   private elapsedSec = 0;
+  /** Ring buffer of recent gun muzzle & bullet launch vectors for real-time sweeping F-16 EEGS funnel */
+  private gunHistory: GunHistorySample[] = [];
   private milDetentHoldTimer = 0;
   private prevThrottleUp = false;
   private ceilingSamTimer = 0;
@@ -321,6 +339,7 @@ export class TrenchSimulation {
     this.screenShake = 0;
     this.gameOverLockoutTimer = 0;
     this.elapsedSec = 0;
+    this.gunHistory = [];
 
     this.targets = [];
     this.rounds = [];
@@ -787,6 +806,114 @@ export class TrenchSimulation {
     };
   }
 
+  /**
+   * Exact closed-form analytical 3D bullet position at flight age `t` under linear air drag `k` and gravity `g`:
+   *   dv/dt = -k*v - (0, g, 0)
+   *   E(t)  = (1 - exp(-k*t)) / k
+   *   pos(t)= origin + v0 * E(t) - (0, (g/k) * (t - E(t)), 0)
+   * Shared bit-for-bit identically by live CannonRound physics, CCIP terrain raymarch, LCOS, and EEGS funnel!
+   */
+  public evalBulletPos(origin: Vec3, v0: Vec3, t: number): Vec3 {
+    const k = TRENCH_CONSTANTS.GUN_DRAG_PER_SEC;
+    const g = TRENCH_CONSTANTS.GUN_GRAVITY_MPS2;
+    const effT = k > 1e-5 ? (1 - Math.exp(-k * t)) / k : t;
+    const gravDrop = k > 1e-5 ? (g / k) * (t - effT) : 0.5 * g * t * t;
+    return {
+      x: origin.x + v0.x * effT,
+      y: origin.y + v0.y * effT - gravDrop,
+      z: origin.z + v0.z * effT,
+    };
+  }
+
+  /** Exact analytical instantaneous 3D bullet velocity at flight age `t` matching `evalBulletPos`. */
+  private evalBulletVel(v0: Vec3, t: number): Vec3 {
+    const k = TRENCH_CONSTANTS.GUN_DRAG_PER_SEC;
+    const g = TRENCH_CONSTANTS.GUN_GRAVITY_MPS2;
+    const expKt = Math.exp(-k * t);
+    const vyDrag = k > 1e-5 ? (g / k) * (1 - expKt) : g * t;
+    return {
+      x: v0.x * expKt,
+      y: v0.y * expKt - vyDrag,
+      z: v0.z * expKt,
+    };
+  }
+
+  /**
+   * Samples the real-time F-16 EEGS historical bullet ribbon:
+   * For each age `t`, computes the EXACT current 3D world position RIGHT NOW of a 20mm bullet
+   * fired `t` seconds ago from the aircraft's actual past trajectory!
+   * When banking or pulling high-G turns, this curves identically to live tracers in flight.
+   */
+  public sampleHistoricalGunRibbon(
+    ages: readonly number[]
+  ): Array<{ pos: Vec3; right: Vec3; age: number; hitTerrain: boolean }> {
+    const results: Array<{ pos: Vec3; right: Vec3; age: number; hitTerrain: boolean }> = [];
+    const curM0 = this.getGunMuzzleWorldPos();
+    const muzzle = TRENCH_CONSTANTS.GUN_MUZZLE_SPEED_MPS;
+    const curV0: Vec3 = {
+      x: this.vx + this.basis.forward.x * muzzle,
+      y: this.vy + this.basis.forward.y * muzzle,
+      z: this.vz + this.basis.forward.z * muzzle,
+    };
+    const now = this.elapsedSec;
+    const hist = this.gunHistory;
+
+    for (const age of ages) {
+      const targetTime = now - age;
+      let m0 = curM0;
+      let v0 = curV0;
+      let right = this.basis.right;
+
+      if (hist.length >= 2) {
+        if (targetTime <= hist[0].timeSec) {
+          m0 = hist[0].m0;
+          v0 = hist[0].v0;
+          right = hist[0].right;
+        } else if (targetTime >= hist[hist.length - 1].timeSec) {
+          const last = hist[hist.length - 1];
+          m0 = last.m0;
+          v0 = last.v0;
+          right = last.right;
+        } else {
+          // Binary search historical aircraft state at `now - age`
+          let lo = 0;
+          let hi = hist.length - 1;
+          while (lo + 1 < hi) {
+            const mid = (lo + hi) >> 1;
+            if (hist[mid].timeSec <= targetTime) lo = mid;
+            else hi = mid;
+          }
+          const a = hist[lo];
+          const b = hist[hi];
+          const span = Math.max(1e-5, b.timeSec - a.timeSec);
+          const f = Math.max(0, Math.min(1, (targetTime - a.timeSec) / span));
+          m0 = {
+            x: a.m0.x + (b.m0.x - a.m0.x) * f,
+            y: a.m0.y + (b.m0.y - a.m0.y) * f,
+            z: a.m0.z + (b.m0.z - a.m0.z) * f,
+          };
+          v0 = {
+            x: a.v0.x + (b.v0.x - a.v0.x) * f,
+            y: a.v0.y + (b.v0.y - a.v0.y) * f,
+            z: a.v0.z + (b.v0.z - a.v0.z) * f,
+          };
+          right = {
+            x: a.right.x + (b.right.x - a.right.x) * f,
+            y: a.right.y + (b.right.y - a.right.y) * f,
+            z: a.right.z + (b.right.z - a.right.z) * f,
+          };
+        }
+      }
+
+      const pos = this.evalBulletPos(m0, v0, age);
+      const hitTerrain = this.isPointBlockedByTerrainOrArch(pos.x, pos.y, pos.z);
+      results.push({ pos, right, age, hitTerrain });
+      if (hitTerrain) break;
+    }
+
+    return results;
+  }
+
   /** Checks whether a 3D world point intersects valley heightmap terrain or a canyon rock arch. */
   private isPointBlockedByTerrainOrArch(px: number, py: number, pz: number): boolean {
     if (py <= this.terrain.sampleHeight(px, pz) + 0.5) {
@@ -795,40 +922,29 @@ export class TrenchSimulation {
     return this.terrain.checkArchCollision(px, py, pz, 0.5);
   }
 
-  /** Raymarches the exact parabolic bullet trajectory M0 + v0*t - 0.5*g*t^2 against terrain & arches. */
+  /** Raymarches the exact drag+gravity bullet trajectory against terrain & arches. */
   private raymarchGunImpact(
     m0: Vec3,
-    v0x: number,
-    v0y: number,
-    v0z: number,
+    v0: Vec3,
     maxT: number
   ): { hit: boolean; t: number; point: Vec3 } {
-    const g = TRENCH_CONSTANTS.GUN_GRAVITY_MPS2;
     const stepT = 0.025;
     let prevT = 0;
     for (let t = stepT; t <= maxT; t += stepT) {
-      const px = m0.x + v0x * t;
-      const py = m0.y + v0y * t - 0.5 * g * t * t;
-      const pz = m0.z + v0z * t;
-      if (this.isPointBlockedByTerrainOrArch(px, py, pz)) {
+      const p = this.evalBulletPos(m0, v0, t);
+      if (this.isPointBlockedByTerrainOrArch(p.x, p.y, p.z)) {
         let lo = prevT;
         let hi = t;
         for (let k = 0; k < 6; k++) {
           const mid = (lo + hi) * 0.5;
-          const mx = m0.x + v0x * mid;
-          const my = m0.y + v0y * mid - 0.5 * g * mid * mid;
-          const mz = m0.z + v0z * mid;
-          if (this.isPointBlockedByTerrainOrArch(mx, my, mz)) hi = mid;
+          const mp = this.evalBulletPos(m0, v0, mid);
+          if (this.isPointBlockedByTerrainOrArch(mp.x, mp.y, mp.z)) hi = mid;
           else lo = mid;
         }
         return {
           hit: true,
           t: hi,
-          point: {
-            x: m0.x + v0x * hi,
-            y: m0.y + v0y * hi - 0.5 * g * hi * hi,
-            z: m0.z + v0z * hi,
-          },
+          point: this.evalBulletPos(m0, v0, hi),
         };
       }
       prevT = t;
@@ -836,29 +952,59 @@ export class TrenchSimulation {
     return {
       hit: false,
       t: maxT,
-      point: {
-        x: m0.x + v0x * maxT,
-        y: m0.y + v0y * maxT - 0.5 * g * maxT * maxT,
-        z: m0.z + v0z * maxT,
-      },
+      point: this.evalBulletPos(m0, v0, maxT),
     };
   }
 
   public computeBallisticPipper(): BallisticPipperSolution {
     const g = TRENCH_CONSTANTS.GUN_GRAVITY_MPS2;
+    const k = TRENCH_CONSTANTS.GUN_DRAG_PER_SEC;
     const muzzle = TRENCH_CONSTANTS.GUN_MUZZLE_SPEED_MPS;
-    const maxBulletAge = 2.15;
+    const maxBulletAge = TRENCH_CONSTANTS.GUN_MAX_AGE_SEC;
     const m0 = this.getGunMuzzleWorldPos();
-    const v0x = this.vx + this.basis.forward.x * muzzle;
-    const v0y = this.vy + this.basis.forward.y * muzzle;
-    const v0z = this.vz + this.basis.forward.z * muzzle;
+    const v0: Vec3 = {
+      x: this.vx + this.basis.forward.x * muzzle,
+      y: this.vy + this.basis.forward.y * muzzle,
+      z: this.vz + this.basis.forward.z * muzzle,
+    };
 
     // 1. Always raymarch exact real bullet impact against valley terrain & arches first!
-    const terrainHit = this.raymarchGunImpact(m0, v0x, v0y, v0z, maxBulletAge);
+    const terrainHit = this.raymarchGunImpact(m0, v0, maxBulletAge);
 
-    // 2. Prefer locked target; if a Cyan Resupply Pod is right on the gun bore (<=14°, <=1,250m), cue it!
+    // 2. Prefer locked target if within gun envelope; otherwise snap LCOS to any hostile right on the gun bore!
+    //    Also cue Cyan Resupply Pods right on the gun bore (<=14°, <=1,250m) for effortless strafing.
     let pipperTarget: CanyonTarget | null = this.getLockedTarget();
     let isResupplyCue = pipperTarget?.kind === 'RESUPPLY_CACHE';
+
+    const lockedDistM = pipperTarget
+      ? Math.hypot(pipperTarget.x - m0.x, pipperTarget.y - m0.y, pipperTarget.z - m0.z)
+      : Infinity;
+    const lockedAngleDeg =
+      pipperTarget && lockedDistM > 1
+        ? (Math.acos(
+            Math.max(
+              -1,
+              Math.min(
+                1,
+                ((pipperTarget.x - m0.x) * this.basis.forward.x +
+                  (pipperTarget.y - m0.y) * this.basis.forward.y +
+                  (pipperTarget.z - m0.z) * this.basis.forward.z) /
+                  lockedDistM
+              )
+            )
+          ) *
+            180) /
+          Math.PI
+        : 180;
+
+    if (!pipperTarget || lockedDistM > 1950 || lockedAngleDeg > 16) {
+      const boreHostiles = this.findForwardTargets(12, 1850, false);
+      if (boreHostiles.length > 0) {
+        boreHostiles.sort((a, b) => a.angleDeg - b.angleDeg);
+        pipperTarget = boreHostiles[0].target;
+        isResupplyCue = false;
+      }
+    }
 
     const nearPods = this.findForwardTargets(14, 1250, true).filter(
       (c) => c.target.kind === 'RESUPPLY_CACHE'
@@ -866,7 +1012,7 @@ export class TrenchSimulation {
     if (nearPods.length > 0) {
       nearPods.sort((a, b) => a.angleDeg - b.angleDeg);
       const pod = nearPods[0];
-      if (!pipperTarget || pod.distM < this.lockedSlantRangeM * 0.85 || pod.angleDeg < 8) {
+      if (!pipperTarget || pod.distM < Math.min(lockedDistM, 1400) * 0.85 || pod.angleDeg < 8) {
         pipperTarget = pod.target;
         isResupplyCue = true;
       }
@@ -877,27 +1023,59 @@ export class TrenchSimulation {
       const dy0 = pipperTarget.y - m0.y;
       const dz0 = pipperTarget.z - m0.z;
       const d0 = Math.hypot(dx0, dy0, dz0);
-      if (d0 >= 25 && d0 <= 2400) {
+      if (d0 >= 25 && d0 <= 2350) {
         const tvx = pipperTarget.vx ?? 0;
         const tvy = pipperTarget.vy ?? 0;
         const tvz = pipperTarget.vz ?? 0;
+        const tax = pipperTarget.ax ?? 0;
+        const tay = pipperTarget.ay ?? 0;
+        const taz = pipperTarget.az ?? 0;
+        const targetSpeed = Math.hypot(tvx, tvy, tvz);
 
-        // Exact off-boresight-invariant flight-time solver:
-        // Solves || (P_target - M0) - (v_jet - v_target) * t + 0.5 * g * t^2 || = muzzle * t
-        // Independent of current nose pointing error so LCOS never over-drops or swings while pulling lead!
-        const ux = this.vx - tvx;
-        const uy = this.vy - tvy;
-        const uz = this.vz - tvz;
-        const closingApprox = (ux * dx0 + uy * dy0 + uz * dz0) / d0;
-        let tof = d0 / Math.max(250, muzzle + closingApprox);
-        for (let iter = 0; iter < 4; iter++) {
-          const rx = dx0 - ux * tof;
-          const ry = dy0 - uy * tof + 0.5 * g * tof * tof;
-          const rz = dz0 - uz * tof;
-          tof = Math.hypot(rx, ry, rz) / muzzle;
+        // Singer maneuvering-target correlation time (aerospace radar standard: prevents t^2 overshoot on weaving turns)
+        const maneuverTau = 0.85;
+        const singerAccelCoeff = (t: number): number =>
+          maneuverTau * maneuverTau * (t / maneuverTau - 1 + Math.exp(-t / maneuverTau));
+
+        // Exact drag + gravity + jet-momentum + moving-target intercept TOF solver:
+        // Solves || P_target(t) - M0 - v_jet * E(t) + (0, D_g(t), 0) || = muzzle * E(t)
+        const maxEffT = k > 1e-5 ? (1 - Math.exp(-k * maxBulletAge)) / k : maxBulletAge;
+        const relClosing = ((this.vx - tvx) * dx0 + (this.vy - tvy) * dy0 + (this.vz - tvz) * dz0) / d0;
+        let tof = Math.min(maxBulletAge, d0 / Math.max(250, muzzle + relClosing));
+        let inGunRange = true;
+
+        for (let iter = 0; iter < 6; iter++) {
+          const effT = k > 1e-5 ? (1 - Math.exp(-k * tof)) / k : tof;
+          const gravDrop = k > 1e-5 ? (g / k) * (tof - effT) : 0.5 * g * tof * tof;
+          const accC = singerAccelCoeff(tof);
+          const predX = pipperTarget.x + tvx * tof + tax * accC;
+          const predY = pipperTarget.y + tvy * tof + tay * accC;
+          const predZ = pipperTarget.z + tvz * tof + taz * accC;
+
+          const rx = predX - m0.x - this.vx * effT;
+          const ry = predY - m0.y - this.vy * effT + gravDrop;
+          const rz = predZ - m0.z - this.vz * effT;
+          const reqEffT = Math.hypot(rx, ry, rz) / muzzle;
+
+          if (reqEffT >= maxEffT) {
+            inGunRange = false;
+            break;
+          }
+          tof = k > 1e-5 ? -Math.log(Math.max(1e-4, 1 - k * reqEffT)) / k : reqEffT;
         }
 
-        if (tof > 0.02 && tof <= maxBulletAge) {
+        if (inGunRange && tof > 0.02 && tof <= maxBulletAge) {
+          // Predicted 3D intercept point where the target WILL BE when bullets arrive at `tof`
+          const accC = singerAccelCoeff(tof);
+          const interceptPt: Vec3 = {
+            x: pipperTarget.x + tvx * tof + tax * accC,
+            y: pipperTarget.y + tvy * tof + tay * accC,
+            z: pipperTarget.z + tvz * tof + taz * accC,
+          };
+
+          // Literal 3D world position where bullets fired RIGHT NOW will end up at `tof`!
+          const bulletAtTof = this.evalBulletPos(m0, v0, tof);
+
           // If a closer ridge or canyon wall physically blocks the bullet well before target range, show true CCIP terrain impact!
           if (terrainHit.hit && terrainHit.t < tof * 0.86) {
             return {
@@ -912,22 +1090,35 @@ export class TrenchSimulation {
               terrainMaskedTarget: true,
               tofSec: terrainHit.t,
               terrainHitT: terrainHit.t,
+              targetPos: { x: pipperTarget.x, y: pipperTarget.y, z: pipperTarget.z },
+              targetInterceptPoint: interceptPt,
+              hasMovingLead: targetSpeed > 12,
+              onSolution: false,
             };
           }
 
-          // Exact LCOS: when pilot places this pipper directly on P_target, bullet hits P_target + v_target * tof!
-          const pipX = m0.x + (v0x - tvx) * tof;
-          const pipY = m0.y + (v0y - tvy) * tof - 0.5 * g * tof * tof;
-          const pipZ = m0.z + (v0z - tvz) * tof;
+          const missDistM = Math.hypot(
+            bulletAtTof.x - interceptPt.x,
+            bulletAtTof.y - interceptPt.y,
+            bulletAtTof.z - interceptPt.z
+          );
+          const hitRad =
+            pipperTarget.kind === 'BANDIT_DRONE'
+              ? pipperTarget.radius * 2.15
+              : pipperTarget.radius * 1.85;
 
           return {
             mode: 'LCOS',
-            worldPoint: { x: pipX, y: pipY, z: pipZ },
+            worldPoint: bulletAtTof,
             distM: d0,
             hitTerrain: false,
             isResupplyCue,
             tofSec: tof,
             terrainHitT: terrainHit.t,
+            targetPos: { x: pipperTarget.x, y: pipperTarget.y, z: pipperTarget.z },
+            targetInterceptPoint: interceptPt,
+            hasMovingLead: targetSpeed > 12,
+            onSolution: missDistM <= hitRad,
           };
         }
       }
@@ -948,14 +1139,12 @@ export class TrenchSimulation {
       };
     }
 
-    const defaultT = 0.80;
-    const px = m0.x + v0x * defaultT;
-    const py = m0.y + v0y * defaultT - 0.5 * g * defaultT * defaultT;
-    const pz = m0.z + v0z * defaultT;
+    const defaultT = 0.85;
+    const skyPt = this.evalBulletPos(m0, v0, defaultT);
     return {
       mode: 'CCIP',
-      worldPoint: { x: px, y: py, z: pz },
-      distM: Math.hypot(px - this.x, py - this.y, pz - this.z),
+      worldPoint: skyPt,
+      distM: Math.hypot(skyPt.x - this.x, skyPt.y - this.y, skyPt.z - this.z),
       hitTerrain: false,
       tofSec: defaultT,
       terrainHitT: maxBulletAge,
@@ -1186,6 +1375,24 @@ export class TrenchSimulation {
     this.raltM = Math.max(0, this.y - groundY);
     this.vviMps = this.vy;
 
+    // Record exact aircraft gun state into ring buffer for real-time sweeping F-16 EEGS funnel
+    const curM0 = this.getGunMuzzleWorldPos();
+    const muzzleSpd = TRENCH_CONSTANTS.GUN_MUZZLE_SPEED_MPS;
+    this.gunHistory.push({
+      timeSec: this.elapsedSec,
+      m0: curM0,
+      v0: {
+        x: this.vx + this.basis.forward.x * muzzleSpd,
+        y: this.vy + this.basis.forward.y * muzzleSpd,
+        z: this.vz + this.basis.forward.z * muzzleSpd,
+      },
+      right: { ...this.basis.right },
+    });
+    const minHistTime = this.elapsedSec - 2.5;
+    while (this.gunHistory.length > 2 && this.gunHistory[0].timeSec < minHistTime) {
+      this.gunHistory.shift();
+    }
+
     // Nap-Of-The-Earth (NOE < 60M RALT at >=260 KCAS) risk/reward score multiplier (1.0x -> 2.5x)!
     if (this.raltM <= TRENCH_CONSTANTS.NOE_ALTITUDE_RALT_M && this.kcas >= 260) {
       this.noeActive = true;
@@ -1355,6 +1562,10 @@ export class TrenchSimulation {
       this.audioCb.onRwrSpikeChirp(this.samLockCountdownSec < 1.6);
     }
 
+    // Advance existing 20mm rounds BEFORE spawning new rounds so newly fired rounds start at age=0
+    // right on the muzzle (keeping round.age 1:1 synced with elapsedSec - gunHistory[k].timeSec!)
+    this.stepCannonRounds(dt);
+
     // Fixed-Forward M61A1 20mm Rotary Cannon ("BRRRT")
     const canFireGun = input.firingGun && this.gunAmmo > 0;
     if (canFireGun !== this.gunFiringNow) {
@@ -1373,7 +1584,6 @@ export class TrenchSimulation {
       this.tryLaunchMissile();
     }
 
-    this.stepCannonRounds(dt);
     this.stepMissiles(dt);
     this.stepCmdsFlares(dt);
     this.stepEnemySams(dt);
@@ -1594,16 +1804,25 @@ export class TrenchSimulation {
 
     const m0 = this.getGunMuzzleWorldPos();
     const muzzle = TRENCH_CONSTANTS.GUN_MUZZLE_SPEED_MPS;
+    const v0x = this.vx + ux * muzzle;
+    const v0y = this.vy + uy * muzzle;
+    const v0z = this.vz + uz * muzzle;
     this.rounds.push({
       id: this.nextIdRef.value++,
+      originX: m0.x,
+      originY: m0.y,
+      originZ: m0.z,
+      v0x,
+      v0y,
+      v0z,
       x: m0.x,
       y: m0.y,
       z: m0.z,
-      vx: this.vx + ux * muzzle,
-      vy: this.vy + uy * muzzle,
-      vz: this.vz + uz * muzzle,
+      vx: v0x,
+      vy: v0y,
+      vz: v0z,
       age: 0,
-      maxAge: 2.15,
+      maxAge: TRENCH_CONSTANTS.GUN_MAX_AGE_SEC,
     });
   }
 
@@ -1794,13 +2013,13 @@ export class TrenchSimulation {
         const prevY = t.y;
         const prevZ = t.z;
 
-        // Cruise & weave down the wide alpine valley ahead of the pilot!
+        // Cruise & perform realistic sweeping 4-6G fighter-jet S-turns down the alpine valley!
         const cruise = t.cruiseSpeedMps ?? 105;
         const secLimitZ = t.sectorNumber * TRENCH_CONSTANTS.SECTOR_LENGTH_M - 300;
         // Slow gently near the end of its sector so player always catches up for a clean dogfight!
         const effectiveCruise = t.z > secLimitZ ? cruise * 0.25 : cruise;
         t.z += effectiveCruise * dt;
-        t.bobPhase += dt * (0.85 + this.sectorNumber * 0.18);
+        t.bobPhase += dt * Math.min(0.8, 0.46 + this.sectorNumber * 0.08);
 
         const valleyCenterX = this.terrain.getCanyonCenterX(t.z);
         t.x = valleyCenterX + Math.sin(t.bobPhase) * t.patrolAmp;
@@ -1809,9 +2028,25 @@ export class TrenchSimulation {
         t.y += (desiredY - t.y) * Math.min(1, dt * 2.5);
 
         if (dt > 0.0005) {
-          t.vx = (t.x - prevX) / dt;
-          t.vy = (t.y - prevY) / dt;
-          t.vz = (t.z - prevZ) / dt;
+          const prevVx = t.vx ?? 0;
+          const prevVy = t.vy ?? 0;
+          const prevVz = t.vz ?? 0;
+          const newVx = (t.x - prevX) / dt;
+          const newVy = (t.y - prevY) / dt;
+          const newVz = (t.z - prevZ) / dt;
+          const accLerp = Math.min(1, dt * 8);
+          if (t.vx !== undefined) {
+            t.ax = (t.ax ?? 0) + ((newVx - prevVx) / dt - (t.ax ?? 0)) * accLerp;
+            t.ay = (t.ay ?? 0) + ((newVy - prevVy) / dt - (t.ay ?? 0)) * accLerp;
+            t.az = (t.az ?? 0) + ((newVz - prevVz) / dt - (t.az ?? 0)) * accLerp;
+          } else {
+            t.ax = 0;
+            t.ay = 0;
+            t.az = 0;
+          }
+          t.vx = newVx;
+          t.vy = newVy;
+          t.vz = newVz;
         }
 
         // Record glowing amber phosphor contrails!
@@ -1825,6 +2060,9 @@ export class TrenchSimulation {
         t.vx = 0;
         t.vy = 0;
         t.vz = 0;
+        t.ax = 0;
+        t.ay = 0;
+        t.az = 0;
       }
 
       // Generous 55m Fly-Through Pickup for Cyan Resupply Pods (shoot OR fly right through!)
@@ -2055,7 +2293,6 @@ export class TrenchSimulation {
   }
 
   private stepCannonRounds(dt: number): void {
-    const g = TRENCH_CONSTANTS.GUN_GRAVITY_MPS2;
     for (let i = this.rounds.length - 1; i >= 0; i--) {
       const r = this.rounds[i];
       r.age += dt;
@@ -2063,12 +2300,18 @@ export class TrenchSimulation {
       const prevY = r.y;
       const prevZ = r.z;
 
-      const halfG = 0.5 * g * dt;
-      r.vy -= halfG;
-      r.x += r.vx * dt;
-      r.y += r.vy * dt;
-      r.z += r.vz * dt;
-      r.vy -= halfG;
+      const pos = this.evalBulletPos(
+        { x: r.originX, y: r.originY, z: r.originZ },
+        { x: r.v0x, y: r.v0y, z: r.v0z },
+        r.age
+      );
+      const vel = this.evalBulletVel({ x: r.v0x, y: r.v0y, z: r.v0z }, r.age);
+      r.x = pos.x;
+      r.y = pos.y;
+      r.z = pos.z;
+      r.vx = vel.x;
+      r.vy = vel.y;
+      r.vz = vel.z;
 
       if (r.age >= r.maxAge) {
         this.rounds.splice(i, 1);
