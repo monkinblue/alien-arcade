@@ -247,7 +247,7 @@ export class FlakLeaderboardService {
 
   /**
    * Submits finalized run score to Firestore `flak_scores` with EXACTLY the 6 required keys
-   * after strict callsign validation, profanity check, and 30s cooldown verification.
+   * after strict callsign validation, profanity check, and 15s cooldown verification.
    */
   public async submitScore(params: {
     callsign: string;
@@ -261,6 +261,7 @@ export class FlakLeaderboardService {
     rank: number;
     offlineFallback: boolean;
     docId?: string;
+    submittedScore?: number;
     rejectedReason?: string;
   }> {
     const validation = validateCallsignForSubmit(params.callsign);
@@ -284,12 +285,14 @@ export class FlakLeaderboardService {
     }
 
     const callsign = this.saveCallsign(validation.callsign);
-    const score = Math.max(1, Math.min(SCORE_CAPS.flak.score, Math.round(params.score)));
-    const wave = Math.max(1, Math.min(SCORE_CAPS.flak.wave, Math.round(params.wave)));
-    const maxChain = Math.max(1, Math.min(SCORE_CAPS.flak.maxChain, Math.round(params.maxChain)));
-    const accuracy = Math.max(0, Math.min(SCORE_CAPS.flak.accuracy, Math.round(params.accuracy)));
-
-    recordSubmissionTimestamp('flak');
+    const rawScore = Number.isFinite(params.score) ? Math.round(params.score) : 1;
+    const rawWave = Number.isFinite(params.wave) ? Math.round(params.wave) : 1;
+    const rawChain = Number.isFinite(params.maxChain) ? Math.round(params.maxChain) : 1;
+    const rawAccuracy = Number.isFinite(params.accuracy) ? Math.round(params.accuracy) : 0;
+    const score = Math.max(1, Math.min(SCORE_CAPS.flak.score, rawScore));
+    const wave = Math.max(1, Math.min(SCORE_CAPS.flak.wave, rawWave));
+    const maxChain = Math.max(1, Math.min(SCORE_CAPS.flak.maxChain, rawChain));
+    const accuracy = Math.max(0, Math.min(SCORE_CAPS.flak.accuracy, rawAccuracy));
 
     // Always mirror into localStorage fallback archive
     const localId = `local-${Date.now()}`;
@@ -311,13 +314,20 @@ export class FlakLeaderboardService {
     this.saveLocalArchive();
 
     if (!this.db) {
+      recordSubmissionTimestamp('flak');
       const idx = this.localEntries.findIndex((e) => e.id === localEntry.id);
-      return { ok: false, rank: Math.max(1, idx + 1), offlineFallback: true, docId: localId };
+      return {
+        ok: false,
+        rank: Math.max(1, idx + 1),
+        offlineFallback: true,
+        docId: localId,
+        submittedScore: score,
+      };
     }
 
     try {
       // EXACT 6-key Firestore document schema:
-      // callsign (^[A-Z0-9_-]{1,12}$), score (1..2500000), wave (1..99), maxChain (1..32), accuracy (0..100), createdAt
+      // callsign (^[A-Z0-9_-]{1,12}$), score (1..25000000), wave (1..99), maxChain (1..32), accuracy (0..100), createdAt
       const docRef = await addDoc(collection(this.db, 'flak_scores'), {
         callsign,
         score,
@@ -326,16 +336,29 @@ export class FlakLeaderboardService {
         accuracy,
         createdAt: serverTimestamp(),
       });
+      recordSubmissionTimestamp('flak');
 
       let higherCount = 0;
       for (const item of this.onlineEntries) {
         if (item.score > score) higherCount++;
       }
-      return { ok: true, rank: higherCount + 1, offlineFallback: false, docId: docRef.id };
+      return {
+        ok: true,
+        rank: higherCount + 1,
+        offlineFallback: false,
+        docId: docRef.id,
+        submittedScore: score,
+      };
     } catch (err) {
       console.warn('[FLAK NET UPLINK] Firestore flak_scores write fell back to local archive:', err);
       const idx = this.localEntries.findIndex((e) => e.id === localEntry.id);
-      return { ok: false, rank: Math.max(1, idx + 1), offlineFallback: true, docId: localId };
+      return {
+        ok: false,
+        rank: Math.max(1, idx + 1),
+        offlineFallback: true,
+        docId: localId,
+        submittedScore: score,
+      };
     }
   }
 }

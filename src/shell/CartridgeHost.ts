@@ -8,22 +8,34 @@ import {
   BOOT_TIMING,
   BootLogoRenderer,
   CARTRIDGE_LAUNCH_TIMING,
+  RELAY_SNAP_DURATION_SEC,
 } from '../render/BootLogoRenderer';
 import type { CrtInteractiveButton } from '../render/HudRenderer';
-import { WebGLCRT } from '../render/WebGLCRT';
+import { CRT_PRESET_CONFIG, WebGLCRT } from '../render/WebGLCRT';
+import { setCrt1979Typography } from '../render/theme';
 import { MuthurTerminalCartridge } from '../terminal/MuthurTerminalCartridge';
 import type { SafeAreaInsets, ViewportRect } from '../types';
 import type {
   Cartridge,
   CartridgeProgramId,
+  CrtPreset,
   CrtShaderFrameParams,
   HostEnvironment,
   PhosphorTheme,
 } from './Cartridge';
 
 const PHOSPHOR_STORAGE_KEY = 'muthur_phosphor_theme_v1';
+const CRT_PRESET_STORAGE_KEY = 'muthur_crt_preset_v2';
+const SESSION_LAUNCHED_KEY = 'muthur_launched_programs_v1';
 
-type HostStage = 'BOOT_HANDSHAKE' | 'CARTRIDGE_LAUNCH' | 'ACTIVE_CARTRIDGE';
+const PROGRAM_LABELS: Record<CartridgeProgramId, string> = {
+  lander: 'SLOT 01 // LUNAR LANDER',
+  perimeter: "SLOT 02 // HADLEY'S PERIMETER",
+  flak: 'SLOT 03 // FLAK NET',
+  trench: 'SLOT 04 // DERELICT TRENCH',
+};
+
+type HostStage = 'BOOT_HANDSHAKE' | 'CARTRIDGE_LAUNCH' | 'RELAY_SNAP' | 'ACTIVE_CARTRIDGE';
 
 export class CartridgeHost implements HostEnvironment {
   public readonly audio = new AudioEngine();
@@ -41,6 +53,7 @@ export class CartridgeHost implements HostEnvironment {
   private flakCartridge: FlakNetCartridge;
   private trenchCartridge: DerelictTrenchCartridge;
   private activeCartridge: Cartridge | null = null;
+  private activeProgramId: CartridgeProgramId | 'hub' = 'hub';
 
   private stage: HostStage = 'BOOT_HANDSHAKE';
   private stageListenerAbort: AbortController | null = null;
@@ -55,12 +68,16 @@ export class CartridgeHost implements HostEnvironment {
   private fullscreenActive = false;
   private mobileMode = false;
 
-  // Locked flat 0% blur/curvature CRT monitor across all programs + user-selectable phosphor tint
-  private readonly crtIntensity = 0;
+  // Global CRT Mode (defaults OFF / Modern Clean; user toggle persists in localStorage), Phosphor Theme & Audio
+  private crtPreset: CrtPreset = 'CRISP';
   private phosphorTheme: PhosphorTheme = 'GREEN';
   private audioMuted = false;
+  private modalOpen = false;
 
-  // Boot & Cartridge Launch Transition State
+  // Session-level memory of which cartridges have already played their 4s vector splash
+  private launchedThisSession = new Set<CartridgeProgramId>();
+
+  // Boot & Cartridge Launch / Relay Snap Transition State
   private bootPoweredOn = false;
   private bootElapsedSec = 0;
   private bootButtons: CrtInteractiveButton[] = [];
@@ -84,20 +101,13 @@ export class CartridgeHost implements HostEnvironment {
     this.offscreenCtx = ctx;
     this.webglCrt = new WebGLCRT(this.webglCanvas);
 
+    this.loadPersistedPreferences();
+
     this.terminalCartridge = new MuthurTerminalCartridge(this);
     this.landerCartridge = new GameController(this);
     this.perimeterCartridge = new PerimeterCartridge(this);
     this.flakCartridge = new FlakNetCartridge(this);
     this.trenchCartridge = new DerelictTrenchCartridge(this);
-
-    try {
-      const savedTheme = window.localStorage.getItem(PHOSPHOR_STORAGE_KEY);
-      if (savedTheme === 'GREEN' || savedTheme === 'AMBER' || savedTheme === 'CYAN') {
-        this.phosphorTheme = savedTheme;
-      }
-    } catch {
-      // Ignore storage restrictions
-    }
 
     const syncFs = () => {
       const docAny = document as Document & { webkitFullscreenElement?: Element | null };
@@ -109,8 +119,113 @@ export class CartridgeHost implements HostEnvironment {
     document.addEventListener('fullscreenchange', syncFs);
     document.addEventListener('webkitfullscreenchange', syncFs);
 
+    this.bindGlobalA11ySwitches();
     this.resize(window.innerWidth, window.innerHeight, 0, 0);
     this.enterStage('BOOT_HANDSHAKE');
+  }
+
+  private loadPersistedPreferences(): void {
+    try {
+      const savedTheme = window.localStorage.getItem(PHOSPHOR_STORAGE_KEY);
+      if (savedTheme === 'GREEN' || savedTheme === 'AMBER' || savedTheme === 'CYAN') {
+        this.phosphorTheme = savedTheme;
+      }
+      const savedPreset = window.localStorage.getItem(CRT_PRESET_STORAGE_KEY);
+      if (savedPreset === 'CRISP' || savedPreset === 'CLASSIC_1979') {
+        this.crtPreset = savedPreset;
+      } else if (savedPreset === 'NOSTROMO_TUBE') {
+        this.crtPreset = 'CLASSIC_1979';
+      }
+    } catch {
+      // Ignore storage restrictions
+    }
+    setCrt1979Typography(this.crtPreset === 'CLASSIC_1979');
+
+    try {
+      const raw = window.sessionStorage.getItem(SESSION_LAUNCHED_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (
+              item === 'lander' ||
+              item === 'perimeter' ||
+              item === 'flak' ||
+              item === 'trench'
+            ) {
+              this.launchedThisSession.add(item);
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore sessionStorage restrictions
+    }
+  }
+
+  private markProgramLaunchedInSession(program: CartridgeProgramId): void {
+    this.launchedThisSession.add(program);
+    try {
+      window.sessionStorage.setItem(
+        SESSION_LAUNCHED_KEY,
+        JSON.stringify(Array.from(this.launchedThisSession))
+      );
+    } catch {
+      // Ignore sessionStorage restrictions
+    }
+  }
+
+  private announceLive(message: string): void {
+    if (this.srLiveRegion) {
+      this.srLiveRegion.textContent = message;
+    }
+  }
+
+  private bindGlobalA11ySwitches(): void {
+    const crtOrder: readonly CrtPreset[] = ['CLASSIC_1979', 'CRISP'];
+    const phosphorOrder: readonly PhosphorTheme[] = ['GREEN', 'AMBER', 'CYAN'];
+
+    document.getElementById('a11y-crt-preset')?.addEventListener('click', () => {
+      void this.audio.unlock();
+      const next = crtOrder[(crtOrder.indexOf(this.crtPreset) + 1) % crtOrder.length];
+      this.setCrtPreset(next);
+    });
+
+    document.getElementById('a11y-phosphor-cycle')?.addEventListener('click', () => {
+      void this.audio.unlock();
+      const next =
+        phosphorOrder[(phosphorOrder.indexOf(this.phosphorTheme) + 1) % phosphorOrder.length];
+      this.setPhosphorTheme(next);
+      this.audio.playButtonLatchLock(1.04, 0.85);
+    });
+
+    document.getElementById('a11y-mute-toggle')?.addEventListener('click', () => {
+      void this.audio.unlock();
+      this.setMuted(!this.audioMuted);
+      this.announceLive(this.audioMuted ? 'Audio bus muted.' : 'Audio bus active.');
+    });
+
+    document.getElementById('a11y-fullscreen-toggle')?.addEventListener('click', () => {
+      this.toggleFullscreen();
+    });
+
+    document.getElementById('a11y-hub-return')?.addEventListener('click', () => {
+      if (this.activeProgramId !== 'hub') {
+        this.exitToMuthurOs('RETURNED VIA ACCESSIBILITY SWITCH.');
+      }
+    });
+  }
+
+  public isTouchDevice(): boolean {
+    const coarse =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(pointer: coarse)').matches;
+    const touchPoints = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
+    return coarse || (touchPoints && Math.min(this.viewportWidth, this.viewportHeight) < 900);
+  }
+
+  private syncMobileMode(): void {
+    this.mobileMode = this.isTouchDevice() && this.viewportWidth < 900;
   }
 
   public getViewport() {
@@ -128,7 +243,30 @@ export class CartridgeHost implements HostEnvironment {
   }
 
   public getCrtIntensity(): number {
-    return this.crtIntensity;
+    return CRT_PRESET_CONFIG[this.crtPreset].curve;
+  }
+
+  public getCrtPreset(): CrtPreset {
+    return this.crtPreset;
+  }
+
+  public setCrtPreset(preset: CrtPreset): void {
+    this.crtPreset = preset;
+    setCrt1979Typography(preset === 'CLASSIC_1979');
+    try {
+      window.localStorage.setItem(CRT_PRESET_STORAGE_KEY, preset);
+    } catch {
+      // Ignore storage restrictions
+    }
+    this.webglCrt.triggerDegauss();
+    this.audio.playDegaussRelay();
+    this.announceLive(`1979 CRT Mode ${preset === 'CLASSIC_1979' ? 'enabled' : 'disabled'}.`);
+  }
+
+  public toggle1979Crt(): CrtPreset {
+    const next: CrtPreset = this.crtPreset === 'CLASSIC_1979' ? 'CRISP' : 'CLASSIC_1979';
+    this.setCrtPreset(next);
+    return next;
   }
 
   public getPhosphorTheme(): PhosphorTheme {
@@ -142,6 +280,15 @@ export class CartridgeHost implements HostEnvironment {
     } catch {
       // Ignore storage restrictions
     }
+    this.announceLive(`Phosphor mode set to ${theme}.`);
+  }
+
+  public getMasterVolume(): number {
+    return this.audio.getMasterVolume();
+  }
+
+  public setMasterVolume(vol: number): void {
+    this.audio.setMasterVolume(vol);
   }
 
   public isMuted(): boolean {
@@ -151,6 +298,14 @@ export class CartridgeHost implements HostEnvironment {
   public setMuted(muted: boolean): void {
     this.audioMuted = muted;
     this.audio.setMuted(muted);
+  }
+
+  public getActiveProgramId(): CartridgeProgramId | 'hub' {
+    return this.activeProgramId;
+  }
+
+  public setModalOpen(open: boolean): void {
+    this.modalOpen = open;
   }
 
   public toggleFullscreen(): void {
@@ -187,26 +342,59 @@ export class CartridgeHost implements HostEnvironment {
   }
 
   public launchProgram(program: CartridgeProgramId): void {
+    this.startProgramTransition(program);
+  }
+
+  public quickSwitchProgram(program: CartridgeProgramId): void {
+    this.startProgramTransition(program);
+  }
+
+  private startProgramTransition(program: CartridgeProgramId): void {
     this.unmountActiveCartridge();
     this.audio.stopCartridgeLoops();
     this.launchingProgram = program;
     this.launchElapsedSec = 0;
-    this.hostGlitch = Math.max(this.hostGlitch, 0.78);
-    this.audio.playScaryComputerTransition('dark', 0, 0.55);
-    this.audio.playAlienComputerActivity(0.45);
-    this.enterStage('CARTRIDGE_LAUNCH');
+
+    const alreadySeen = this.launchedThisSession.has(program);
+    if (alreadySeen) {
+      // Snappy 0.45s CRT relay snap on repeat switches
+      this.hostGlitch = Math.max(this.hostGlitch, 0.46);
+      this.audio.playRelaySnap();
+      this.enterStage('RELAY_SNAP');
+    } else {
+      // Iconic full vector launch only on FIRST launch per program per session (0ms instant skip!)
+      this.markProgramLaunchedInSession(program);
+      this.hostGlitch = Math.max(this.hostGlitch, 0.72);
+      this.audio.playScaryComputerTransition('dark', 0, 0.52);
+      this.audio.playAlienComputerActivity(0.42);
+      this.enterStage('CARTRIDGE_LAUNCH');
+    }
+  }
+
+  private mountProgramById(program: CartridgeProgramId): void {
+    this.audio.fadeOutBootStartupAudio(0.45);
+    this.hostGlitch = Math.max(this.hostGlitch, 0.30);
+    if (program === 'lander') {
+      this.mountCartridge(this.landerCartridge, 'lander');
+    } else if (program === 'perimeter') {
+      this.mountCartridge(this.perimeterCartridge, 'perimeter');
+    } else if (program === 'trench') {
+      this.mountCartridge(this.trenchCartridge, 'trench');
+    } else {
+      this.mountCartridge(this.flakCartridge, 'flak');
+    }
   }
 
   public exitToMuthurOs(reasonLog?: string): void {
     this.unmountActiveCartridge();
     this.audio.stopCartridgeLoops();
-    this.hostGlitch = 0.92;
-    this.syncTearTimer = 0.32;
-    this.audio.playScaryComputerTransition('dark', 0, 0.5);
+    this.hostGlitch = 0.72;
+    this.syncTearTimer = 0.24;
+    this.audio.playRelaySnap();
     this.terminalCartridge.setReturnNotice(
       reasonLog ?? 'RETURNED TO MU-TH-UR 6000 COMMAND TERMINAL.'
     );
-    this.mountCartridge(this.terminalCartridge);
+    this.mountCartridge(this.terminalCartridge, 'hub');
   }
 
   public coldRebootMuthur(): void {
@@ -226,18 +414,26 @@ export class CartridgeHost implements HostEnvironment {
   }
 
   private unmountActiveCartridge(): void {
+    this.modalOpen = false;
     if (this.activeCartridge) {
       this.activeCartridge.unmount();
       this.activeCartridge = null;
     }
   }
 
-  private mountCartridge(cartridge: Cartridge): void {
+  private mountCartridge(cartridge: Cartridge, programId: CartridgeProgramId | 'hub'): void {
     this.clearStageListeners();
     this.unmountActiveCartridge();
     this.stage = 'ACTIVE_CARTRIDGE';
     this.activeCartridge = cartridge;
+    this.activeProgramId = programId;
+    this.modalOpen = false;
     cartridge.mount();
+    this.announceLive(
+      programId === 'hub'
+        ? 'MU-TH-UR 6000 OS Hub active.'
+        : `${PROGRAM_LABELS[programId]} active.`
+    );
   }
 
   private clearStageListeners(): void {
@@ -249,12 +445,23 @@ export class CartridgeHost implements HostEnvironment {
     document.body.style.cursor = 'default';
   }
 
-  private enterStage(nextStage: 'BOOT_HANDSHAKE' | 'CARTRIDGE_LAUNCH'): void {
+  private enterStage(nextStage: 'BOOT_HANDSHAKE' | 'CARTRIDGE_LAUNCH' | 'RELAY_SNAP'): void {
     this.clearStageListeners();
     this.unmountActiveCartridge();
     this.stage = nextStage;
     this.stageListenerAbort = new AbortController();
     const signal = this.stageListenerAbort.signal;
+
+    const completeCurrentTransition = (): void => {
+      if (this.stage === 'BOOT_HANDSHAKE') {
+        this.audio.playRelaySnap();
+        this.hostGlitch = Math.max(this.hostGlitch, 0.32);
+        this.mountCartridge(this.terminalCartridge, 'hub');
+      } else if (this.stage === 'CARTRIDGE_LAUNCH' || this.stage === 'RELAY_SNAP') {
+        this.audio.playRelaySnap();
+        this.mountProgramById(this.launchingProgram);
+      }
+    };
 
     window.addEventListener(
       'pointermove',
@@ -268,7 +475,7 @@ export class CartridgeHost implements HostEnvironment {
           e.clientX - this.offsetX,
           e.clientY - this.offsetY,
           this.crtRect,
-          this.crtIntensity
+          this.getCrtIntensity()
         );
         if (!mapped.inside) {
           this.bootHoveredBtnId = null;
@@ -294,23 +501,14 @@ export class CartridgeHost implements HostEnvironment {
             this.awakenHardware();
             return;
           }
-          if (this.bootElapsedSec >= 0.72 && this.bootElapsedSec < BOOT_TIMING.LOGO_HOLD_END_SEC) {
-            this.audio.playButtonLatchLock(0.95, 0.9);
-            this.bootElapsedSec = BOOT_TIMING.LOGO_HOLD_END_SEC;
-            this.hostGlitch = Math.max(this.hostGlitch, 0.45);
-          }
+          // Instant 0ms skip straight into MU-TH-UR Hub (zero lockout, zero collapse tail!)
+          completeCurrentTransition();
           return;
         }
 
-        if (this.stage === 'CARTRIDGE_LAUNCH') {
-          if (
-            this.launchElapsedSec >= 0.35 &&
-            this.launchElapsedSec < CARTRIDGE_LAUNCH_TIMING.HOLD_END_SEC
-          ) {
-            this.audio.playButtonLatchLock(0.95, 0.9);
-            this.launchElapsedSec = CARTRIDGE_LAUNCH_TIMING.HOLD_END_SEC;
-            this.hostGlitch = Math.max(this.hostGlitch, 0.42);
-          }
+        if (this.stage === 'CARTRIDGE_LAUNCH' || this.stage === 'RELAY_SNAP') {
+          // Instant 0ms skip straight into target cartridge
+          completeCurrentTransition();
         }
       },
       { signal }
@@ -327,27 +525,16 @@ export class CartridgeHost implements HostEnvironment {
             this.awakenHardware();
             return;
           }
-          if (
-            (e.code === 'Space' || e.code === 'Enter' || e.code === 'Escape') &&
-            this.bootElapsedSec >= 0.72 &&
-            this.bootElapsedSec < BOOT_TIMING.LOGO_HOLD_END_SEC
-          ) {
-            this.audio.playButtonLatchLock(0.95, 0.9);
-            this.bootElapsedSec = BOOT_TIMING.LOGO_HOLD_END_SEC;
-            this.hostGlitch = Math.max(this.hostGlitch, 0.45);
+          // Instant 0ms skip on any key once powered on
+          if (!e.repeat && !['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(e.code)) {
+            completeCurrentTransition();
           }
           return;
         }
 
-        if (this.stage === 'CARTRIDGE_LAUNCH') {
-          if (
-            (e.code === 'Space' || e.code === 'Enter' || e.code === 'Escape') &&
-            this.launchElapsedSec >= 0.35 &&
-            this.launchElapsedSec < CARTRIDGE_LAUNCH_TIMING.HOLD_END_SEC
-          ) {
-            this.audio.playButtonLatchLock(0.95, 0.9);
-            this.launchElapsedSec = CARTRIDGE_LAUNCH_TIMING.HOLD_END_SEC;
-            this.hostGlitch = Math.max(this.hostGlitch, 0.42);
+        if (this.stage === 'CARTRIDGE_LAUNCH' || this.stage === 'RELAY_SNAP') {
+          if (e.code === 'Space' || e.code === 'Enter' || e.code === 'Escape') {
+            completeCurrentTransition();
           }
         }
       },
@@ -357,7 +544,7 @@ export class CartridgeHost implements HostEnvironment {
 
   private awakenHardware(): void {
     if (this.bootPoweredOn) return;
-    this.mobileMode = false;
+    this.syncMobileMode();
     this.bootPoweredOn = true;
     this.bootElapsedSec = 0;
     this.hostGlitch = 0.88;
@@ -387,6 +574,7 @@ export class CartridgeHost implements HostEnvironment {
     this.offsetX = offsetX;
     this.offsetY = offsetY;
     this.dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    this.syncMobileMode();
 
     this.webglCanvas.width = Math.round(this.viewportWidth * this.dpr);
     this.webglCanvas.height = Math.round(this.viewportHeight * this.dpr);
@@ -444,10 +632,9 @@ export class CartridgeHost implements HostEnvironment {
       }
 
       if (this.bootPoweredOn && this.bootElapsedSec >= BOOT_TIMING.PROTOCOL_START_SEC) {
-        // Transition directly from hardware power-on + 180924609 // INTERFACE 2037 handshake into MU-TH-UR 6000 OS Hub!
         oCtx.restore();
-        this.hostGlitch = Math.max(this.hostGlitch, 0.36);
-        this.mountCartridge(this.terminalCartridge);
+        this.hostGlitch = Math.max(this.hostGlitch, 0.32);
+        this.mountCartridge(this.terminalCartridge, 'hub');
         this.updateAndRender(0.001);
         return;
       }
@@ -468,24 +655,39 @@ export class CartridgeHost implements HostEnvironment {
       });
 
       shaderParams.tubeTurnOn =
-        this.bootPoweredOn && this.bootElapsedSec < 1.05
-          ? Math.pow(1 - this.bootElapsedSec / 1.05, 1.35)
+        this.bootPoweredOn && this.bootElapsedSec < 0.95
+          ? Math.pow(1 - this.bootElapsedSec / 0.95, 1.35)
           : 0;
+    } else if (this.stage === 'RELAY_SNAP') {
+      this.launchElapsedSec += dt;
+      if (this.launchElapsedSec >= RELAY_SNAP_DURATION_SEC) {
+        oCtx.restore();
+        this.mountProgramById(this.launchingProgram);
+        this.updateAndRender(0.001);
+        return;
+      }
+
+      this.bootButtons = [];
+      this.bootLogoRenderer.render(oCtx, {
+        width: this.crtRect.width,
+        height: this.crtRect.height,
+        timeSec: this.totalTimeSec,
+        bootPoweredOn: true,
+        mobileMode: this.mobileMode,
+        bootElapsedSec: this.launchElapsedSec,
+        bootProgressChars: 0,
+        bootLines: [],
+        hoveredButtonId: null,
+        buttonsOut: this.bootButtons,
+        sequenceMode: 'RELAY_SNAP',
+        relayTargetLabel: PROGRAM_LABELS[this.launchingProgram],
+      });
+      shaderParams.interference = 0.04;
     } else if (this.stage === 'CARTRIDGE_LAUNCH') {
       this.launchElapsedSec += dt;
       if (this.launchElapsedSec >= CARTRIDGE_LAUNCH_TIMING.COMPLETE_SEC) {
         oCtx.restore();
-        this.hostGlitch = Math.max(this.hostGlitch, 0.35);
-        this.audio.fadeOutBootStartupAudio(0.8);
-        if (this.launchingProgram === 'lander') {
-          this.mountCartridge(this.landerCartridge);
-        } else if (this.launchingProgram === 'perimeter') {
-          this.mountCartridge(this.perimeterCartridge);
-        } else if (this.launchingProgram === 'trench') {
-          this.mountCartridge(this.trenchCartridge);
-        } else {
-          this.mountCartridge(this.flakCartridge);
-        }
+        this.mountProgramById(this.launchingProgram);
         this.updateAndRender(0.001);
         return;
       }
@@ -520,7 +722,7 @@ export class CartridgeHost implements HostEnvironment {
     if (this.syncTearTimer > 0) {
       const p = this.syncTearTimer / 0.32;
       oCtx.fillStyle = `rgba(68, 255, 119, ${(0.28 * p).toFixed(2)})`;
-      const y1 = ((this.totalTimeSec * 420) % this.crtRect.height);
+      const y1 = (this.totalTimeSec * 420) % this.crtRect.height;
       oCtx.fillRect(0, y1, this.crtRect.width, 10 * p);
       oCtx.fillStyle = `rgba(255, 176, 0, ${(0.24 * p).toFixed(2)})`;
       oCtx.fillRect(0, this.crtRect.height - y1, this.crtRect.width, 6 * p);
@@ -531,19 +733,34 @@ export class CartridgeHost implements HostEnvironment {
     const phosphorMode =
       this.phosphorTheme === 'AMBER' ? 1 : this.phosphorTheme === 'CYAN' ? 2 : 0;
 
+    const presetCfg = CRT_PRESET_CONFIG[this.crtPreset];
+    const isModal = this.modalOpen || Boolean(shaderParams.modalActive);
+    let effectiveChroma: number;
+    if (!presetCfg.enabled1979) {
+      effectiveChroma = 0.0;
+    } else if (isModal) {
+      effectiveChroma = 0.36;
+    } else if (shaderParams.chromaScale !== undefined) {
+      effectiveChroma =
+        shaderParams.chromaScale <= 0.12 ? 0.36 : presetCfg.defaultChroma;
+    } else {
+      effectiveChroma = presetCfg.defaultChroma;
+    }
+
     this.webglCrt.render(
       this.offscreenCanvas,
       this.crtRect,
       this.dpr,
       this.totalTimeSec,
-      this.crtIntensity,
+      this.getCrtIntensity(),
       shaderParams.interference,
       Math.max(shaderParams.glitch, this.hostGlitch),
       shaderParams.overdrive,
       shaderParams.tubeTurnOn,
       shaderParams.shockwaves,
       phosphorMode,
-      shaderParams.chromaScale ?? 1.0
+      effectiveChroma,
+      this.crtPreset
     );
   }
 }

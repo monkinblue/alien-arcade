@@ -1,26 +1,30 @@
 import { COLORS } from '../constants';
 import type { Vec2 } from '../types';
 import type { CrtInteractiveButton } from './HudRenderer';
+import { drawCornerBrackets, drawEllipsizedText, font, SEMIOTIC_ICONS, THEME } from './theme';
 
 export type BootSequenceMode =
   | 'HARDWARE_HANDSHAKE'
   | 'LANDER_LAUNCH'
   | 'PERIMETER_LAUNCH'
   | 'FLAK_LAUNCH'
-  | 'TRENCH_LAUNCH';
+  | 'TRENCH_LAUNCH'
+  | 'RELAY_SNAP';
+
+export const RELAY_SNAP_DURATION_SEC = 0.45;
 
 export const BOOT_TIMING = {
-  FLASH_END_SEC: 0.88,
-  LOGO_DRAW_END_SEC: 4.55,
-  LOGO_HOLD_END_SEC: 5.45,
-  PROTOCOL_START_SEC: 5.95,
+  FLASH_END_SEC: 0.78,
+  LOGO_DRAW_END_SEC: 4.15,
+  LOGO_HOLD_END_SEC: 4.95,
+  PROTOCOL_START_SEC: 5.05,
 } as const;
 
 export const CARTRIDGE_LAUNCH_TIMING = {
-  FLASH_END_SEC: 0.28,
-  DRAW_END_SEC: 3.15,
+  FLASH_END_SEC: 0.24,
+  DRAW_END_SEC: 3.05,
   HOLD_END_SEC: 3.85,
-  COMPLETE_SEC: 4.25,
+  COMPLETE_SEC: 4.00,
 } as const;
 
 interface MeasuredPath {
@@ -932,6 +936,7 @@ export interface BootLogoRenderParams {
   hoveredButtonId: string | null;
   buttonsOut: CrtInteractiveButton[];
   sequenceMode?: BootSequenceMode;
+  relayTargetLabel?: string;
 }
 
 interface DualChannelEmblem {
@@ -1574,6 +1579,11 @@ export class BootLogoRenderer {
     const mode = params.sequenceMode ?? 'HARDWARE_HANDSHAKE';
     const { width: w, height: h, bootPoweredOn, bootElapsedSec } = params;
 
+    if (mode === 'RELAY_SNAP') {
+      this.renderRelaySnap(ctx, w, h, params);
+      return;
+    }
+
     if (
       mode === 'LANDER_LAUNCH' ||
       mode === 'PERIMETER_LAUNCH' ||
@@ -1600,6 +1610,63 @@ export class BootLogoRenderer {
     }
 
     this.drawFullScreenAwakeningProtocol(ctx, w, h, params);
+  }
+
+  /**
+   * Snappy 0.45s electromechanical CRT relay snap used for repeat cartridge switches
+   * and Quick Cartridge Switcher jumps.
+   */
+  public renderRelaySnap(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    params: BootLogoRenderParams
+  ): void {
+    const p = Math.max(0, Math.min(1, params.bootElapsedSec / RELAY_SNAP_DURATION_SEC));
+    const targetLabel = params.relayTargetLabel ?? 'MOUNTING CARTRIDGE';
+
+    ctx.save();
+    ctx.fillStyle = THEME.BG_VOID;
+    ctx.fillRect(0, 0, w, h);
+
+    // Quick CRT beam phosphor horizontal lock sweep
+    const sweepBandH = p < 0.35 ? Math.max(6, h * (1 - p / 0.35) * 0.18) : Math.max(8, h * ((p - 0.35) / 0.65));
+    const bandY = (h - sweepBandH) * 0.5;
+    ctx.fillStyle = `rgba(18, 68, 36, ${(0.24 * (1 - Math.abs(p - 0.5))).toFixed(3)})`;
+    ctx.fillRect(0, bandY, w, sweepBandH);
+
+    // Bright cathode horizontal deflection scan beam
+    const beamAlpha = p < 0.45 ? 0.85 : Math.max(0, (1 - p) * 1.4);
+    ctx.fillStyle = `rgba(158, 247, 184, ${beamAlpha.toFixed(3)})`;
+    ctx.fillRect(0, h * 0.5 - 2, w, 4);
+
+    // Centered crisp cartridge bay lock badge
+    const boxW = Math.min(460, w - 48);
+    const boxH = 82;
+    const bx = Math.round((w - boxW) * 0.5);
+    const by = Math.round((h - boxH) * 0.5);
+
+    ctx.fillStyle = THEME.BG_PANEL;
+    ctx.fillRect(bx, by, boxW, boxH);
+    drawCornerBrackets(ctx, bx, by, boxW, boxH, 14, THEME.ACCENT_AMBER, 2.2);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
+    ctx.fillText('MU-TH-UR 6000 // TAPE TRANSPORT RELAY LOCK', w * 0.5, by + 24);
+
+    ctx.font = font('display', 18);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
+    drawEllipsizedText(ctx, `${SEMIOTIC_ICONS.PLAY} ${targetLabel}`, w * 0.5, by + 54, boxW - 28);
+
+    // Micro progress rail at bottom of badge
+    ctx.fillStyle = THEME.BORDER_SUBTLE;
+    ctx.fillRect(bx + 16, by + boxH - 9, boxW - 32, 3);
+    ctx.fillStyle = THEME.TEXT_PRIMARY;
+    ctx.fillRect(bx + 16, by + boxH - 9, Math.round((boxW - 32) * p), 3);
+
+    ctx.restore();
   }
 
   /**
@@ -1812,7 +1879,8 @@ export class BootLogoRenderer {
   }
 
   /**
-   * Stage 0: Full-Screen Dormant Terminal ("Option to Awaken") — zero HUD chrome!
+   * Stage 0: Full-Screen Standby Terminal with high-contrast 0.78-alpha telemetry
+   * and a tactile backlit [ POWER ON // CLICK OR PRESS ANY KEY ] hardware breaker.
    */
   private drawDormantScreen(
     ctx: CanvasRenderingContext2D,
@@ -1821,10 +1889,10 @@ export class BootLogoRenderer {
     params: BootLogoRenderParams
   ): void {
     ctx.save();
-    ctx.fillStyle = '#010302';
+    ctx.fillStyle = THEME.BG_VOID;
     ctx.fillRect(0, 0, w, h);
 
-    // Subtle unlit cathode-glass reflection while computer sits quietly in standby
+    // Subtle cathode-glass ambient glow
     const glassGrad = ctx.createRadialGradient(
       w * 0.5,
       h * 0.46,
@@ -1833,47 +1901,91 @@ export class BootLogoRenderer {
       h * 0.5,
       Math.max(w, h) * 0.72
     );
-    glassGrad.addColorStop(0, 'rgba(10, 20, 14, 0.14)');
-    glassGrad.addColorStop(0.65, 'rgba(4, 8, 5, 0.08)');
-    glassGrad.addColorStop(1, 'rgba(0, 0, 0, 0.92)');
+    glassGrad.addColorStop(0, 'rgba(18, 52, 30, 0.24)');
+    glassGrad.addColorStop(0.65, 'rgba(6, 16, 10, 0.14)');
+    glassGrad.addColorStop(1, 'rgba(0, 0, 0, 0.88)');
     ctx.fillStyle = glassGrad;
     ctx.fillRect(0, 0, w, h);
 
-    // Entire screen acts as wake trigger
+    const pad = Math.max(18, Math.round(Math.min(w, h) * 0.03));
+    drawCornerBrackets(ctx, pad, pad, w - pad * 2, h - pad * 2, 24, THEME.BORDER_SUBTLE, 2.0);
+
+    // Entire screen acts as wake trigger while highlighting the central tactile breaker
     params.buttonsOut.push({
       id: 'boot-awaken',
       rect: { x: 0, y: 0, width: w, height: h },
-      label: 'WAKE TERMINAL',
+      label: 'POWER ON // CLICK OR PRESS ANY KEY',
     });
 
-    const isNarrow = w < 560;
-    const marginX = Math.max(24, Math.round(w * 0.055));
-    const topY = Math.max(44, Math.round(h * 0.085));
-    const fontPx = isNarrow ? 13.5 : 15.5;
-    const lineStep = Math.round(fontPx * 1.72);
-    const cursorOn = Math.sin(params.timeSec * Math.PI * 1.8) >= 0;
-    const heaterBreath = 0.28 + 0.2 * (0.5 + 0.5 * Math.sin(params.timeSec * 1.6));
+    const isNarrow = w < 620;
+    const marginX = Math.max(28, Math.round(w * 0.06));
+    const topY = Math.max(48, Math.round(h * 0.10));
+    const cursorOn = Math.sin(params.timeSec * Math.PI * 2.0) >= 0;
+    const pulse = 0.55 + 0.45 * Math.sin(params.timeSec * 3.2);
+    const hovered = params.hoveredButtonId === 'boot-awaken';
 
+    // High-contrast 0.78+ alpha standby header (eliminating dim 2.1:1 readability failure)
     ctx.textAlign = 'left';
-    ctx.font = `${fontPx}px "JetBrains Mono", "Share Tech Mono", monospace`;
+    ctx.textBaseline = 'middle';
+    ctx.font = font('head', isNarrow ? 14 : 17);
+    ctx.fillStyle = 'rgba(158, 247, 184, 0.82)';
+    ctx.fillText('WEYLAND-YUTANI CORP // INTERFACE 2037 // MU-TH-UR 6000', marginX, topY);
 
-    ctx.fillStyle = 'rgba(59, 224, 104, 0.36)';
-    ctx.fillText('WEYLAND-YUTANI // MU-TH-UR 6000', marginX, topY);
-    ctx.fillText('SYSTEM STATE: STANDBY', marginX, topY + lineStep);
+    ctx.font = font('data', isNarrow ? 12 : 14);
+    ctx.fillStyle = 'rgba(68, 255, 119, 0.78)';
+    ctx.fillText('SYSTEM STATE: STANDBY  //  4 ARCADE SIMULATION CARTRIDGES LOADED', marginX, topY + 28);
 
-    ctx.fillStyle = 'rgba(68, 255, 119, 0.62)';
-    const wakePrompt = isNarrow ? '> TOUCH OR PRESS KEY ' : '> PRESS ANY KEY OR CLICK ';
-    ctx.fillText(
-      `${wakePrompt}${cursorOn ? '█' : ' '}`,
-      marginX,
-      topY + lineStep * 2.35
+    // Centered tactile backlit Aerospace Breaker Button
+    const btnW = Math.min(500, w - 48);
+    const btnH = isNarrow ? 64 : 70;
+    const btnX = Math.round((w - btnW) * 0.5);
+    const btnY = Math.round(h * 0.5 - btnH * 0.5);
+
+    ctx.fillStyle = hovered
+      ? 'rgba(72, 42, 6, 0.94)'
+      : `rgba(12, 34, 20, ${(0.86 + pulse * 0.10).toFixed(3)})`;
+    ctx.fillRect(btnX, btnY, btnW, btnH);
+
+    // Top backlit glass diffuser strip
+    ctx.fillStyle = hovered ? 'rgba(255, 228, 143, 0.16)' : 'rgba(68, 255, 119, 0.10)';
+    ctx.fillRect(btnX + 2, btnY + 2, btnW - 4, 16);
+
+    ctx.strokeStyle = hovered ? '#FFFFFF' : pulse > 0.5 ? THEME.ACCENT_AMBER_HI : THEME.ACCENT_AMBER;
+    ctx.lineWidth = hovered ? 2.6 : 2.2;
+    ctx.strokeRect(btnX + 0.5, btnY + 0.5, btnW - 1, btnH - 1);
+    drawCornerBrackets(
+      ctx,
+      btnX - 6,
+      btnY - 6,
+      btnW + 12,
+      btnH + 12,
+      14,
+      hovered ? THEME.ACCENT_AMBER_HI : THEME.TEXT_PRIMARY,
+      2.0
     );
 
-    // Tiny dim cathode filament standby LED in bottom-right corner
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = font('display', isNarrow ? 15 : 18);
+    ctx.fillStyle = hovered ? '#FFFFFF' : THEME.ACCENT_AMBER_HI;
+    const breakerText = isNarrow
+      ? '[ POWER ON // TAP OR PRESS KEY ]'
+      : '[ POWER ON // CLICK OR PRESS ANY KEY ]';
+    drawEllipsizedText(ctx, breakerText, w * 0.5, btnY + btnH * 0.44, btnW - 24);
+
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
+    ctx.fillText(
+      `> INITIALIZE CRT & AUDIO TELEMETRY BUS ${cursorOn ? '█' : ' '}`,
+      w * 0.5,
+      btnY + btnH * 0.76
+    );
+
+    // Crisp illuminated standby LED in bottom-right corner (>=12px effective)
     ctx.textAlign = 'right';
-    ctx.font = `${isNarrow ? 11 : 12}px "JetBrains Mono", monospace`;
-    ctx.fillStyle = `rgba(255, 176, 0, ${heaterBreath.toFixed(2)})`;
-    ctx.fillText('● STANDBY', w - marginX, h - Math.max(24, Math.round(h * 0.05)));
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = `rgba(255, 176, 0, ${(0.68 + pulse * 0.30).toFixed(2)})`;
+    ctx.fillText(`${SEMIOTIC_ICONS.DOT_LIVE} CATHODE STANDBY`, w - marginX, h - Math.max(28, Math.round(h * 0.055)));
 
     ctx.restore();
   }
@@ -2052,16 +2164,14 @@ export class BootLogoRenderer {
       ctx.restore();
     }
 
-    if (t >= 0.95) {
-      ctx.font = 'bold 14px "Share Tech Mono", monospace';
-      ctx.fillStyle = 'rgba(238, 247, 255, 0.70)';
-      ctx.textAlign = 'center';
-      ctx.fillText(
-        '180924609 // INTERFACE 2037 HANDSHAKE ACTIVE — [SPACE / CLICK] ENTER MU-TH-UR OS',
-        w * 0.5,
-        h - 28
-      );
-    }
+    ctx.font = font('button', 14);
+    ctx.fillStyle = 'rgba(238, 247, 255, 0.84)';
+    ctx.textAlign = 'center';
+    ctx.fillText(
+      '180924609 // INTERFACE 2037 HANDSHAKE — [CLICK OR PRESS ANY KEY TO SKIP]',
+      w * 0.5,
+      h - 28
+    );
 
     ctx.restore();
   }

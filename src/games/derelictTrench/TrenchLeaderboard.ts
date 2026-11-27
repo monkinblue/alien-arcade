@@ -224,6 +224,7 @@ export class TrenchLeaderboardService {
     online: boolean;
     rank: number;
     docId?: string;
+    submittedScore?: number;
     error?: string;
     rejectedReason?: string;
   }> {
@@ -248,17 +249,17 @@ export class TrenchLeaderboardService {
     }
 
     const cleanCallsign = validation.callsign;
-    const cleanScore = Math.max(1, Math.min(SCORE_CAPS.trench.score, Math.round(params.score)));
-    const cleanDistance = Math.max(
-      0,
-      Math.min(SCORE_CAPS.trench.distance, Math.round(params.distance))
-    );
+    const rawScore = Number.isFinite(params.score) ? Math.round(params.score) : 1;
+    const rawDistance = Number.isFinite(params.distance) ? Math.round(params.distance) : 0;
+    const rawMaxMach = Number.isFinite(params.maxMach) ? params.maxMach : 0;
+    const rawGrazes = Number.isFinite(params.grazes) ? Math.round(params.grazes) : 0;
+    const cleanScore = Math.max(1, Math.min(SCORE_CAPS.trench.score, rawScore));
+    const cleanDistance = Math.max(0, Math.min(SCORE_CAPS.trench.distance, rawDistance));
     const cleanMaxMach =
-      Math.round(Math.max(0, Math.min(SCORE_CAPS.trench.maxMach, params.maxMach)) * 10) / 10;
-    const cleanGrazes = Math.max(0, Math.min(SCORE_CAPS.trench.grazes, Math.round(params.grazes)));
+      Math.round(Math.max(0, Math.min(SCORE_CAPS.trench.maxMach, rawMaxMach)) * 10) / 10;
+    const cleanGrazes = Math.max(0, Math.min(SCORE_CAPS.trench.grazes, rawGrazes));
 
     this.saveCallsign(cleanCallsign);
-    recordSubmissionTimestamp('trench');
 
     const localId = `local-${Date.now()}`;
     const localEntry: TrenchScoreEntry = {
@@ -279,12 +280,20 @@ export class TrenchLeaderboardService {
     this.saveLocalFallback(nextLocal);
 
     if (!this.db) {
+      recordSubmissionTimestamp('trench');
       const rank = nextLocal.findIndex((e) => e.id === localId) + 1;
-      return { ok: true, online: false, rank: Math.max(1, rank), docId: localId };
+      return {
+        ok: true,
+        online: false,
+        rank: Math.max(1, rank),
+        docId: localId,
+        submittedScore: cleanScore,
+      };
     }
 
     try {
-      // Exact 6-field schema for Firestore `trench_scores` (no extra keys!)
+      // Exact 6-field schema for Firestore `trench_scores` (no extra keys!):
+      // callsign (^[A-Z0-9_-]{1,12}$), score (1..5000000), distance (0..500000), maxMach (0..5), grazes (0..10000), createdAt
       const docRef = await addDoc(collection(this.db, 'trench_scores'), {
         callsign: cleanCallsign,
         score: cleanScore,
@@ -293,6 +302,7 @@ export class TrenchLeaderboardService {
         grazes: cleanGrazes,
         createdAt: serverTimestamp(),
       });
+      recordSubmissionTimestamp('trench');
 
       const insertedId = docRef.id;
       const merged = [
@@ -305,7 +315,13 @@ export class TrenchLeaderboardService {
       this.status = 'LIVE';
 
       const rank = merged.findIndex((e) => e.id === insertedId) + 1;
-      return { ok: true, online: true, rank: Math.max(1, rank), docId: insertedId };
+      return {
+        ok: true,
+        online: true,
+        rank: Math.max(1, rank),
+        docId: insertedId,
+        submittedScore: cleanScore,
+      };
     } catch (err) {
       console.warn('[TRENCH UPLINK] Score submission failed; kept local fallback:', err);
       const rank = nextLocal.findIndex((e) => e.id === localId) + 1;
@@ -314,6 +330,7 @@ export class TrenchLeaderboardService {
         online: false,
         rank: Math.max(1, rank),
         docId: localId,
+        submittedScore: cleanScore,
         error: String(err),
       };
     }

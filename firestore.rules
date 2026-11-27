@@ -32,7 +32,7 @@ service cloud.firestore {
         && isValidCallsign(request.resource.data.callsign)
         && request.resource.data.score is int
         && request.resource.data.score >= 1
-        && request.resource.data.score <= 500000
+        && request.resource.data.score <= 10000000
         && request.resource.data.sector is int
         && request.resource.data.sector >= 1
         && request.resource.data.sector <= 99
@@ -67,13 +67,13 @@ service cloud.firestore {
         && isValidCallsign(request.resource.data.callsign)
         && request.resource.data.score is int
         && request.resource.data.score >= 1
-        && request.resource.data.score <= 1000000
+        && request.resource.data.score <= 50000000
         && request.resource.data.waves is int
         && request.resource.data.waves >= 1
         && request.resource.data.waves <= 200
         && request.resource.data.kills is int
         && request.resource.data.kills >= 0
-        && request.resource.data.kills <= 25000
+        && request.resource.data.kills <= 100000
         && request.resource.data.mode is string
         && request.resource.data.mode in ['CAMPAIGN', 'ENDLESS']
         && isServerTimestamp(request.resource.data.createdAt);
@@ -102,7 +102,7 @@ service cloud.firestore {
         && isValidCallsign(request.resource.data.callsign)
         && request.resource.data.score is int
         && request.resource.data.score >= 1
-        && request.resource.data.score <= 2500000
+        && request.resource.data.score <= 25000000
         && request.resource.data.wave is int
         && request.resource.data.wave >= 1
         && request.resource.data.wave <= 99
@@ -138,16 +138,16 @@ service cloud.firestore {
         && isValidCallsign(request.resource.data.callsign)
         && request.resource.data.score is int
         && request.resource.data.score >= 1
-        && request.resource.data.score <= 500000
+        && request.resource.data.score <= 5000000
         && request.resource.data.distance is int
         && request.resource.data.distance >= 0
-        && request.resource.data.distance <= 250000
+        && request.resource.data.distance <= 500000
         && request.resource.data.maxMach is number
         && request.resource.data.maxMach >= 0
         && request.resource.data.maxMach <= 5
         && request.resource.data.grazes is int
         && request.resource.data.grazes >= 0
-        && request.resource.data.grazes <= 5000
+        && request.resource.data.grazes <= 10000
         && isServerTimestamp(request.resource.data.createdAt);
       allow update, delete: if false;
     }

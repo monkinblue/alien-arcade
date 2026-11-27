@@ -1,5 +1,10 @@
-import { COLORS } from '../constants';
-import type { CrtInteractiveButton } from '../render/HudRenderer';
+import {
+  drawCornerBrackets,
+  drawEllipsizedText,
+  font,
+  THEME,
+  type ChromeButtonHitbox,
+} from '../render/chrome';
 import type { ViewportRect } from '../types';
 import {
   PERIMETER_WIKI_CHAPTERS,
@@ -19,7 +24,7 @@ export interface WikiRenderParams {
 }
 
 export interface WikiRenderResult {
-  buttons: CrtInteractiveButton[];
+  buttons: ChromeButtonHitbox[];
   maxScrollPx: number;
   contentViewport: ViewportRect;
   scrollbarTrack: ViewportRect;
@@ -53,7 +58,7 @@ export class PerimeterWikiRenderer {
     params: WikiRenderParams
   ): WikiRenderResult {
     const { width: w, height: h, chapterIdx, hoveredButtonId, trainingActive } = params;
-    const buttons: CrtInteractiveButton[] = [];
+    const buttons: ChromeButtonHitbox[] = [];
 
     const safeIdx = Math.max(0, Math.min(PERIMETER_WIKI_CHAPTERS.length - 1, chapterIdx));
     const chapter = PERIMETER_WIKI_CHAPTERS[safeIdx];
@@ -89,7 +94,7 @@ export class PerimeterWikiRenderer {
     ctx.save();
 
     // Solid full-screen deep P39 CRT console backdrop
-    ctx.fillStyle = '#020804';
+    ctx.fillStyle = THEME.BG_VOID;
     ctx.fillRect(0, 0, w, h);
 
     // Console Outer Frame & Glowing Corner Brackets
@@ -98,12 +103,12 @@ export class PerimeterWikiRenderer {
     ctx.strokeStyle = 'rgba(68, 255, 119, 0.42)';
     ctx.lineWidth = 1.6;
     ctx.strokeRect(bx + 1, by + 1, boxW - 2, boxH - 2);
-    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 26, chapter.accent, 3.0);
+    drawCornerBrackets(ctx, bx, by, boxW, boxH, 26, chapter.accent, 3.0);
 
     // === TOP CONSOLE HEADER BAR ===
     ctx.fillStyle = 'rgba(9, 26, 16, 0.94)';
     ctx.fillRect(bx + 3, by + 3, boxW - 6, headerH - 5);
-    ctx.strokeStyle = COLORS.GREEN_DIM;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
     ctx.lineWidth = 2.0;
     ctx.beginPath();
     ctx.moveTo(bx + 12, by + headerH - 2);
@@ -126,8 +131,8 @@ export class PerimeterWikiRenderer {
       backRect,
       trainingActive ? '◄ BACK TO DRILL [ESC]' : '◄ BACK TO GAME [ESC]',
       hoveredButtonId,
-      '#FFB000',
-      '#FFE082',
+      THEME.ACCENT_AMBER,
+      THEME.ACCENT_AMBER_HI,
       17
     );
 
@@ -137,14 +142,15 @@ export class PerimeterWikiRenderer {
     const titleMaxW = Math.max(200, bx + boxW - titleX - rightStatusW - 16);
 
     ctx.textAlign = 'left';
-    ctx.font = 'bold 25px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#52FF86';
-    ctx.fillText("MU-TH-UR 6000 // TACTICAL DATABASE", titleX, by + 35, titleMaxW);
+    ctx.font = font('display', 25);
+    ctx.fillStyle = THEME.TEXT_PRIMARY;
+    drawEllipsizedText(ctx, 'MU-TH-UR 6000 // TACTICAL DATABASE', titleX, by + 35, titleMaxW);
 
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(
-      'USCM SEC-01 FIELD MANUAL · [1-8] CHAPTERS · [WHEEL / ↑↓] SCROLL · [ESC / H] RESUME',
+    ctx.font = font('data', 13);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
+    drawEllipsizedText(
+      ctx,
+      'USCM SEC-01 FIELD MANUAL · [1-8] CHAPTERS · [WHEEL / ↑↓] SCROLL · [ESC / H] CLOSE',
       titleX,
       by + 57,
       titleMaxW
@@ -154,13 +160,13 @@ export class PerimeterWikiRenderer {
     const pausePillX = bx + boxW - rightStatusW - 14;
     ctx.fillStyle = 'rgba(22, 44, 28, 0.85)';
     ctx.fillRect(pausePillX, by + 18, rightStatusW, 36);
-    ctx.strokeStyle = '#44FF77';
+    ctx.strokeStyle = THEME.TEXT_PRIMARY;
     ctx.lineWidth = 1.5;
     ctx.strokeRect(pausePillX, by + 18, rightStatusW, 36);
     ctx.textAlign = 'center';
-    ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#8EF5AB';
-    ctx.fillText('❚❚ SIM PAUSED · SAFE', pausePillX + rightStatusW * 0.5, by + 41, rightStatusW - 12);
+    ctx.font = font('button', 13);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
+    drawEllipsizedText(ctx, '❚❚ SIM PAUSED · SAFE', pausePillX + rightStatusW * 0.5, by + 41, rightStatusW - 12);
 
     // === LEFT CHAPTER INDEX SIDEBAR ===
     const sideX = bx + 14;
@@ -170,13 +176,13 @@ export class PerimeterWikiRenderer {
 
     ctx.fillStyle = 'rgba(5, 16, 10, 0.96)';
     ctx.fillRect(sideX, sideY, sideInnerW, sideH);
-    ctx.strokeStyle = COLORS.GREEN_DIM;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
     ctx.lineWidth = 1.5;
     ctx.strokeRect(sideX, sideY, sideInnerW, sideH);
 
     ctx.textAlign = 'left';
-    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
+    ctx.font = font('head', 15);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
     ctx.fillText('DOSSIER INDEX [1–8]', sideX + 12, sideY + 24);
 
     const tabTop = sideY + 36;
@@ -212,7 +218,7 @@ export class PerimeterWikiRenderer {
           : 'rgba(4, 13, 8, 0.94)';
       ctx.fillRect(sideX + 8, ty, sideInnerW - 16, tabH);
 
-      ctx.strokeStyle = isAct ? ch.accent : isHov ? '#FFFFFF' : 'rgba(59, 224, 104, 0.38)';
+      ctx.strokeStyle = isAct ? ch.accent : isHov ? '#FFFFFF' : THEME.BORDER_SUBTLE;
       ctx.lineWidth = isAct ? 2.4 : 1.3;
       ctx.strokeRect(sideX + 8, ty, sideInnerW - 16, tabH);
 
@@ -222,13 +228,14 @@ export class PerimeterWikiRenderer {
       }
 
       ctx.textAlign = 'left';
-      ctx.font = 'bold 14.5px "JetBrains Mono", monospace';
-      ctx.fillStyle = isAct ? '#FFE082' : ch.accent;
+      ctx.font = font('data', 14);
+      ctx.fillStyle = isAct ? THEME.ACCENT_AMBER_HI : ch.accent;
       ctx.fillText(`[${ch.code}]`, sideX + 18, ty + Math.round(tabH * 0.45));
 
-      ctx.font = 'bold 16px "Share Tech Mono", monospace';
-      ctx.fillStyle = isAct ? '#FFFFFF' : isHov ? '#FFFFFF' : '#A6F8C0';
-      ctx.fillText(
+      ctx.font = font('head', 16);
+      ctx.fillStyle = isAct || isHov ? '#FFFFFF' : THEME.TEXT_BRIGHT;
+      drawEllipsizedText(
+        ctx,
         ch.shortTitle,
         sideX + 62,
         ty + Math.round(tabH * 0.46),
@@ -236,9 +243,10 @@ export class PerimeterWikiRenderer {
       );
 
       if (tabH >= 48) {
-        ctx.font = '11.5px "JetBrains Mono", monospace';
-        ctx.fillStyle = isAct ? '#D4FFE0' : '#65A87A';
-        ctx.fillText(
+        ctx.font = font('micro', 12);
+        ctx.fillStyle = isAct ? THEME.TEXT_BRIGHT : THEME.TEXT_SECONDARY;
+        drawEllipsizedText(
+          ctx,
           ch.subtitle.split('·')[0].trim(),
           sideX + 18,
           ty + tabH - 10,
@@ -286,13 +294,13 @@ export class PerimeterWikiRenderer {
 
     // Large Chapter Console Masthead
     ctx.textAlign = 'left';
-    ctx.font = 'bold 24px "Share Tech Mono", monospace';
+    ctx.font = font('display', 24);
     ctx.fillStyle = chapter.accent;
-    ctx.fillText(chapter.fullTitle, originX, curY + 18, innerW);
+    drawEllipsizedText(ctx, chapter.fullTitle, originX, curY + 18, innerW);
 
-    ctx.font = 'bold 14px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(chapter.subtitle, originX, curY + 44, innerW);
+    ctx.font = font('data', 14);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
+    drawEllipsizedText(ctx, chapter.subtitle, originX, curY + 44, innerW);
 
     ctx.strokeStyle = chapter.accent;
     ctx.lineWidth = 2.0;
@@ -338,7 +346,7 @@ export class PerimeterWikiRenderer {
     // === WIDE EASY-CLICK VERTICAL SCROLLBAR ===
     ctx.fillStyle = 'rgba(10, 28, 18, 0.88)';
     ctx.fillRect(scrollbarTrack.x, scrollbarTrack.y, scrollbarTrack.width, scrollbarTrack.height);
-    ctx.strokeStyle = COLORS.GREEN_DIM;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
     ctx.lineWidth = 1.2;
     ctx.strokeRect(scrollbarTrack.x, scrollbarTrack.y, scrollbarTrack.width, scrollbarTrack.height);
 
@@ -364,27 +372,27 @@ export class PerimeterWikiRenderer {
     const footY = by + boxH - footerH + 9;
     const footH = 42;
 
-    ctx.strokeStyle = COLORS.GREEN_DIM;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.moveTo(bx + 12, by + boxH - footerH);
     ctx.lineTo(bx + boxW - 12, by + boxH - footerH);
     ctx.stroke();
 
-    // Left: Launch Interactive Training Drill CTA
+    // Left: During Drill -> Exit straight to Main Menu; otherwise Launch 4-Stage Drill
     const drillBtnW = Math.min(390, Math.round(boxW * 0.34));
     this.drawButton(
       ctx,
       buttons,
-      trainingActive ? 'perim-wiki-close' : 'perim-drill-start',
+      trainingActive ? 'perim-drill-to-menu' : 'perim-drill-start',
       { x: bx + 16, y: footY, width: drillBtnW, height: footH },
       trainingActive
-        ? '◄ RETURN TO ACTIVE TRAINING DRILL'
-        : '► LAUNCH 9-STAGE TRAINING DRILL [T]',
+        ? '◄ MAIN MENU (EXIT DRILL)'
+        : '► LAUNCH 4-STAGE TRAINING DRILL [T]',
       !trainingActive,
       hoveredButtonId,
-      '#00F0FF',
-      15.5
+      trainingActive ? THEME.ACCENT_AMBER : THEME.ACCENT_CYAN,
+      15
     );
 
     // Center: Large Scroll Up / Down Buttons
@@ -400,7 +408,7 @@ export class PerimeterWikiRenderer {
         '▲ SCROLL UP',
         false,
         hoveredButtonId,
-        clampedScroll > 0 ? '#8EF5AB' : COLORS.GREEN_DIM,
+        clampedScroll > 0 ? THEME.TEXT_BRIGHT : THEME.TEXT_MUTED,
         14
       );
       this.drawButton(
@@ -411,22 +419,22 @@ export class PerimeterWikiRenderer {
         '▼ SCROLL DN',
         false,
         hoveredButtonId,
-        clampedScroll < maxScrollPx ? '#8EF5AB' : COLORS.GREEN_DIM,
+        clampedScroll < maxScrollPx ? THEME.TEXT_BRIGHT : THEME.TEXT_MUTED,
         14
       );
     }
 
-    // Right: Solid Bright Green "◄ RETURN TO GAME [ESC / H]" Button
+    // Right: Single crisp Close Manual CTA (no duplicate "BACK TO DRILL" phrasing!)
     this.drawSolidCtaButton(
       ctx,
       buttons,
       'perim-wiki-close',
       { x: bx + boxW - doneBtnW - 16, y: footY, width: doneBtnW, height: footH },
-      trainingActive ? '◄ RESUME DRILL [ESC / H]' : '◄ RETURN TO GAME [ESC / H]',
+      'CLOSE MANUAL [ESC / H]',
       hoveredButtonId,
-      '#44FF77',
-      '#B6FFD0',
-      16.5
+      THEME.TEXT_PRIMARY,
+      THEME.TEXT_BRIGHT,
+      16
     );
 
     ctx.restore();
@@ -538,9 +546,9 @@ export class PerimeterWikiRenderer {
       ctx.fillStyle = accent;
       ctx.fillRect(x, y, 5, 34);
       ctx.textAlign = 'left';
-      ctx.font = 'bold 18px "Share Tech Mono", monospace';
+      ctx.font = font('head', 18);
       ctx.fillStyle = accent;
-      ctx.fillText(block.text, x + 15, y + 23, innerW - 22);
+      drawEllipsizedText(ctx, block.text, x + 15, y + 23, innerW - 22);
       return y + 46;
     }
 
@@ -611,9 +619,9 @@ export class PerimeterWikiRenderer {
       ctx.fillRect(x, y, 5, boxH);
 
       ctx.textAlign = 'left';
-      ctx.font = 'bold 17px "Share Tech Mono", monospace';
+      ctx.font = font('head', 17);
       ctx.fillStyle = borderCol;
-      ctx.fillText(`${icon} ${block.title}`, x + 18, y + 26, innerW - 28);
+      drawEllipsizedText(ctx, `${icon} ${block.title}`, x + 18, y + 26, innerW - 28);
 
       ctx.font = '15.5px "JetBrains Mono", monospace';
       ctx.fillStyle = '#EEFFF4';
@@ -641,9 +649,9 @@ export class PerimeterWikiRenderer {
       ctx.strokeRect(x, y, innerW, boxH);
 
       ctx.textAlign = 'left';
-      ctx.font = 'bold 16px "Share Tech Mono", monospace';
-      ctx.fillStyle = '#00F0FF';
-      ctx.fillText(`◈ ${block.title}`, x + 16, y + 25, innerW - 28);
+      ctx.font = font('head', 16);
+      ctx.fillStyle = THEME.ACCENT_CYAN;
+      drawEllipsizedText(ctx, `◈ ${block.title}`, x + 16, y + 25, innerW - 28);
 
       let fy = y + 50;
       ctx.font = 'bold 15.5px "JetBrains Mono", monospace';
@@ -667,17 +675,17 @@ export class PerimeterWikiRenderer {
       const headH = 36;
       ctx.fillStyle = 'rgba(18, 50, 30, 0.90)';
       ctx.fillRect(x, y, innerW, headH);
-      ctx.strokeStyle = COLORS.GREEN_DIM;
+      ctx.strokeStyle = THEME.BORDER_SUBTLE;
       ctx.lineWidth = 1.4;
       ctx.strokeRect(x, y, innerW, headH);
 
       let colX = x;
       ctx.textAlign = 'left';
-      ctx.font = 'bold 15px "Share Tech Mono", monospace';
-      ctx.fillStyle = '#FFB000';
+      ctx.font = font('head', 15);
+      ctx.fillStyle = THEME.ACCENT_AMBER;
       block.headers.forEach((hdr, ci) => {
         const cw = innerW * (block.colFracs[ci] ?? 0.25);
-        ctx.fillText(hdr, colX + 8, y + 23, cw - 12);
+        drawEllipsizedText(ctx, hdr, colX + 8, y + 23, cw - 12);
         colX += cw;
       });
 
@@ -791,22 +799,22 @@ export class PerimeterWikiRenderer {
 
     // Bottom scanner code strip inside viewport
     ctx.fillStyle = 'rgba(12, 32, 20, 0.85)';
-    ctx.fillRect(vx + 1, vy + vh - 19, vw - 2, 18);
+    ctx.fillRect(vx + 1, vy + vh - 20, vw - 2, 19);
     ctx.textAlign = 'center';
-    ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
+    ctx.font = font('micro', 12);
     ctx.fillStyle = entry.accent;
-    ctx.fillText(`ID: ${entry.code}`, scx, vy + vh - 6);
+    drawEllipsizedText(ctx, `ID: ${entry.code}`, scx, vy + vh - 6, vw - 8);
 
     // Right Dossier Details
     const tx = vx + vw + 16;
 
     // Row 1: Name + Right Role Tag Pill
     ctx.textAlign = 'left';
-    ctx.font = 'bold 18px "Share Tech Mono", monospace';
+    ctx.font = font('head', 18);
     ctx.fillStyle = entry.accent;
-    ctx.fillText(entry.name, tx, y + 25, textW - 154);
+    drawEllipsizedText(ctx, entry.name, tx, y + 25, textW - 154);
 
-    ctx.font = 'bold 12px "Share Tech Mono", monospace';
+    ctx.font = font('micro', 12);
     const tagW = Math.min(148, Math.ceil(ctx.measureText(entry.roleTag).width) + 16);
     const tagX = x + innerW - tagW - 12;
     ctx.fillStyle = 'rgba(14, 30, 20, 0.94)';
@@ -816,15 +824,15 @@ export class PerimeterWikiRenderer {
     ctx.strokeRect(tagX, y + 9, tagW, 22);
     ctx.textAlign = 'center';
     ctx.fillStyle = '#FFFFFF';
-    ctx.fillText(entry.roleTag, tagX + tagW * 0.5, y + 24, tagW - 8);
+    drawEllipsizedText(ctx, entry.roleTag, tagX + tagW * 0.5, y + 24, tagW - 8);
 
     // Row 2: Tabular Telemetry Strip
     ctx.fillStyle = 'rgba(12, 30, 19, 0.72)';
     ctx.fillRect(tx, y + 34, textW, 22);
     ctx.textAlign = 'left';
-    ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#FFE082';
-    ctx.fillText(entry.statsLine, tx + 8, y + 49, textW - 14);
+    ctx.font = font('data', 12);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+    drawEllipsizedText(ctx, entry.statsLine, tx + 8, y + 49, textW - 14);
 
     // Row 3: Threat description
     let ty = y + 73;
@@ -1129,7 +1137,7 @@ export class PerimeterWikiRenderer {
 
   private drawSolidCtaButton(
     ctx: CanvasRenderingContext2D,
-    buttons: CrtInteractiveButton[],
+    buttons: ChromeButtonHitbox[],
     id: string,
     rect: ViewportRect,
     label: string,
@@ -1146,10 +1154,11 @@ export class PerimeterWikiRenderer {
     ctx.lineWidth = hov ? 2.6 : 2.0;
     ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
 
-    ctx.font = `bold ${fontPx}px "Share Tech Mono", monospace`;
-    ctx.fillStyle = '#030A05';
+    ctx.font = font('button', fontPx);
+    ctx.fillStyle = THEME.INK_INVERSE;
     ctx.textAlign = 'center';
-    ctx.fillText(
+    drawEllipsizedText(
+      ctx,
       label,
       rect.x + rect.width * 0.5,
       rect.y + rect.height * 0.5 + fontPx * 0.34,
@@ -1159,7 +1168,7 @@ export class PerimeterWikiRenderer {
 
   private drawButton(
     ctx: CanvasRenderingContext2D,
-    buttons: CrtInteractiveButton[],
+    buttons: ChromeButtonHitbox[],
     id: string,
     rect: ViewportRect,
     label: string,
@@ -1173,52 +1182,22 @@ export class PerimeterWikiRenderer {
     ctx.fillStyle = hov
       ? 'rgba(255, 176, 0, 0.28)'
       : active
-        ? 'rgba(0, 240, 255, 0.16)'
-        : 'rgba(6, 16, 10, 0.94)';
+        ? 'rgba(76, 238, 255, 0.16)'
+        : THEME.BG_PILL;
     ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
     ctx.strokeStyle = hov ? '#FFFFFF' : accent;
     ctx.lineWidth = hov || active ? 2.2 : 1.6;
     ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
 
-    ctx.font = `bold ${fontPx}px "Share Tech Mono", monospace`;
+    ctx.font = font('button', fontPx);
     ctx.fillStyle = hov ? '#FFFFFF' : accent;
     ctx.textAlign = 'center';
-    ctx.fillText(
+    drawEllipsizedText(
+      ctx,
       label,
       rect.x + rect.width * 0.5,
       rect.y + rect.height * 0.5 + fontPx * 0.34,
       rect.width - 12
     );
-  }
-
-  private drawCornerBrackets(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    len: number,
-    color: string,
-    lineWidth: number
-  ): void {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = lineWidth;
-    ctx.beginPath();
-    ctx.moveTo(x, y + len);
-    ctx.lineTo(x, y);
-    ctx.lineTo(x + len, y);
-
-    ctx.moveTo(x + w - len, y);
-    ctx.lineTo(x + w, y);
-    ctx.lineTo(x + w, y + len);
-
-    ctx.moveTo(x, y + h - len);
-    ctx.lineTo(x, y + h);
-    ctx.lineTo(x + len, y + h);
-
-    ctx.moveTo(x + w - len, y + h);
-    ctx.lineTo(x + w, y + h);
-    ctx.lineTo(x + w, y + h - len);
-    ctx.stroke();
   }
 }

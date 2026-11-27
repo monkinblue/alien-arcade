@@ -12,21 +12,26 @@ export const PERIMETER_CONSTANTS = {
   INITIAL_SCRAP: 280,
   BASE_REACTOR_KW: 115,
   AUTO_REACTOR_KW_CAP: 205, // Auto wave unlocks cap here; players can still expand with Scrap!
-  MAX_REACTOR_KW_HARD_CAP: 360,
+  SCRAP_REACTOR_KW_HARD_CAP: 295, // Scrap reactor expansions stop at 295 kW; ONLY AUX_BUS pushes 295 -> 375 kW!
+  MAX_REACTOR_KW_HARD_CAP: 375,
   MAX_BULKHEAD_SEALS: 3,
 
   CORE_BASELINE_SWEEP_INTERVAL: 2.15,
-  CORE_BASELINE_SWEEP_RADIUS: 690, // ~23m baseline perimeter tracker from Core
+  CORE_BASELINE_SWEEP_RADIUS: 500, // ~16.7m baseline perimeter tracker from Core (compressed for real fog-of-war)
   CORE_LIT_RADIUS: 135, // Inner sterile lit chamber around Reactor Core
 
-  WELD_COST_SCRAP: 55,
-  DOOR_MAX_HP: 380,
+  WELD_COST_SCRAP: 65,
+  DOOR_MAX_HP: 480,
   MAX_ACTIVE_DOOR_SEALS: 3,
-  WELD_DURATION_SEC: 2.0,
+  WELD_DURATION_SEC: 1.5,
+  DOOR_MIDWAVE_WELD_SEC: 1.5,
   WELD_REPAIR_COOLDOWN_SEC: 4.0,
 
-  CLAYMORE_COST_SCRAP: 35,
-  CLAYMORE_MAX_ACTIVE: 8,
+  CLAYMORE_COST_SCRAP: 50,
+  CLAYMORE_MAX_ACTIVE: 6,
+  CLAYMORE_STOCK_PER_WAVE: 6,
+  CLAYMORE_PREP_ARM_SEC: 0.5,
+  CLAYMORE_MIDWAVE_ARM_SEC: 1.5,
   CLAYMORE_TRIGGER_RADIUS_PX: 54,
   CLAYMORE_BLAST_RADIUS_PX: 152,
   CLAYMORE_DAMAGE: 195,
@@ -39,15 +44,28 @@ export const PERIMETER_CONSTANTS = {
   REACTOR_EXPAND_KW_STEP: 15,
   SEAL_REBUILD_COST_SCRAP: 480,
 
+  TURRET_POWER_SPINUP_SEC: 2.5,
+
+  PROTOCOL_REROLL_BASE_COST: 150,
+  PROTOCOL_REROLL_STEP_COST: 150,
+
+  MK4_REFIT_COSTS: [450, 700, 1000] as const,
+  MK4_DMG_PER_LEVEL: 0.1,
+  MK4_KW_PER_LEVEL: 1,
+
+  RESUPPLY_BASE_COST: 250,
+  RESUPPLY_STEP_COST: 100,
+
   DARK_CORRIDOR_RANGE_MULT: 0.55,
   DARK_CORRIDOR_MISS_CHANCE: 0.2,
+  RAIL_DARK_MISS_CHANCE: 0.1,
   ILLUMINATED_CRIT_MULT: 1.2,
 
   REACTOR_OVERLOAD_TRIP_SEC: 4.0,
   REACTOR_BLACKOUT_SEC: 3.5,
   GRATE_TELEGRAPH_SEC: 5.0,
 
-  FLARE_COOLDOWN_SEC: 15,
+  FLARE_COOLDOWN_SEC: 18,
   FLARE_DURATION_SEC: 12,
   FLARE_RADIUS_PX: 255,
   FLARE_SURGE_KW: 0,
@@ -58,7 +76,7 @@ export const PERIMETER_CONSTANTS = {
   OVERCLOCK_RADIUS_PX: 265,
   OVERCLOCK_SURGE_KW: 22,
 
-  FLOODLIGHT_BATTERY_COST: 60, // Consumes 60% Reactor Reserve Battery for 7.5s map-wide light!
+  FLOODLIGHT_BATTERY_COST: 40, // Consumes 40% Reactor Reserve Battery for 7.5s map-wide light + crit + jam purge!
   FLOODLIGHT_DURATION_SEC: 7.5,
   FLOODLIGHT_COOLDOWN_SEC: 20,
 
@@ -69,12 +87,33 @@ export const PERIMETER_CONSTANTS = {
   PURGE_PUSH_PX: 290,
 } as const;
 
+export interface GridCoord {
+  col: number;
+  row: number;
+}
+
+export type SectorId = 'SEC-01' | 'SEC-02' | 'SEC-03';
+
+export interface DynamicBreachDef {
+  id: string;
+  /** Explicit waves on which this breach triggers (e.g., [5] or [15, 25]) */
+  triggerWaves: number[];
+  /** Optional modulo-10 trigger (e.g. 5 -> fires on W5, W15, W25... when cycling back to this sector) */
+  triggerWaveMod10?: 5 | 15 | 25;
+  label: string;
+  /** AIR_SHAFT / BULKHEAD cells that collapse into walkable 'CORRIDOR' upon breach */
+  tiles: GridCoord[];
+  /** Optional CAD fracture lines in virtual pixel coordinates for Prep telegraph rendering */
+  previewLines?: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+}
+
 export type TileKind =
   | 'BULKHEAD'
   | 'AIR_SHAFT'
   | 'CORRIDOR'
   | 'MOUNT_PAD'
   | 'DUCT_GRATE'
+  | 'SPAWN_GRATE'
   | 'BLAST_DOOR'
   | 'AIRLOCK'
   | 'CORE';
@@ -119,7 +158,7 @@ export const MK3_BRANCH_SPECS: Record<TurretKind, Record<Mk3BranchId, Mk3BranchS
       code: 'TWIN-LINK',
       costScrap: 240,
       extraKw: 4,
-      summary: '640 DRUM · +35% ROF · KNOCKBACK',
+      summary: '640 DRUM · +35% ROF · LOW HEAT · 2-TARGET SPLASH',
     },
   },
   INCINERATOR: {
@@ -128,14 +167,14 @@ export const MK3_BRANCH_SPECS: Record<TurretKind, Record<Mk3BranchId, Mk3BranchS
       code: 'THERMITE',
       costScrap: 250,
       extraKw: 4,
-      summary: '+65% BURN DPS · MELTS BOSSES',
+      summary: '+65% BURN DPS · -35% ARMOR MELT (4S)',
     },
     B: {
       id: 'B',
       code: 'FIREWALL',
       costScrap: 250,
       extraKw: 4,
-      summary: '+45% RADIUS · 5.2S FLAME WALL',
+      summary: '+45% RADIUS · -25% SLOW · EGG TARGETING',
     },
   },
   RAIL_LANCE: {
@@ -144,7 +183,7 @@ export const MK3_BRANCH_SPECS: Record<TurretKind, Record<Mk3BranchId, Mk3BranchS
       code: 'OVERPEN',
       costScrap: 280,
       extraKw: 6,
-      summary: 'INFINITE HALL PIERCE · +40% DMG',
+      summary: 'PIERCES 12 FOES · +40% DMG · 10% DARK MISS',
     },
     B: {
       id: 'B',
@@ -160,14 +199,14 @@ export const MK3_BRANCH_SPECS: Record<TurretKind, Record<Mk3BranchId, Mk3BranchS
       code: 'DEEP FREEZE',
       costScrap: 190,
       extraKw: 2,
-      summary: '72% SLOW · +55% SHATTER VULN',
+      summary: '72% SLOW (36% BOSS) · +55% SHATTER VULN',
     },
     B: {
       id: 'B',
       code: 'CRYO COOLER',
       costScrap: 190,
       extraKw: 0,
-      summary: '2X GUN COOLING AURA & RADIUS',
+      summary: '320PX 2X COOL AURA · -20% HEAT · +15% ROF',
     },
   },
   SHOCK_COIL: {
@@ -176,14 +215,14 @@ export const MK3_BRANCH_SPECS: Record<TurretKind, Record<Mk3BranchId, Mk3BranchS
       code: 'TESLA CHAIN',
       costScrap: 210,
       extraKw: 4,
-      summary: 'CHAINS 7 TARGETS · +35% ARC DMG',
+      summary: '7-CHAIN · WAVE SCALING + 5% MAX-HP SHOCK',
     },
     B: {
       id: 'B',
       code: 'EMP PULSE',
       costScrap: 210,
       extraKw: 2,
-      summary: '1.2S STUN · SLOWS CRUSHER/QUEEN',
+      summary: '1.2S STUN · -50% ARMOR SHRED · 4S SILENCE',
     },
   },
   MOTION_RELAY: {
@@ -191,8 +230,8 @@ export const MK3_BRANCH_SPECS: Record<TurretKind, Record<Mk3BranchId, Mk3BranchS
       id: 'A',
       code: 'FLOODLIGHT',
       costScrap: 175,
-      extraKw: 4,
-      summary: 'PERMANENT 240PX LIT HALO AURA',
+      extraKw: 2,
+      summary: '280PX JAM-IMMUNE OPTICAL HALO · +15% CRIT',
     },
     B: {
       id: 'B',
@@ -249,7 +288,7 @@ export const HARDWARE_SPECS: Record<Exclude<BuildToolId, 'NONE'>, HardwareSpec> 
     rangePx: 204, // 6.8m choke-point projector
     coneHalfAngleRad: (38 * Math.PI) / 180, // 76° flame arc
     maxAmmo: 0,
-    summary: 'PAD · NAPALM LIGHTS & STERILIZES ACID',
+    summary: 'PAD · NAPALM REVEALS & STERILIZES ACID',
   },
   RAIL_LANCE: {
     id: 'RAIL_LANCE',
@@ -259,10 +298,10 @@ export const HARDWARE_SPECS: Record<Exclude<BuildToolId, 'NONE'>, HardwareSpec> 
     costScrap: 150,
     powerKw: 30,
     upgradeCostScrap: 125,
-    rangePx: 540, // 18.0m long-hallway corridor sniper!
+    rangePx: 460, // 15.3m compressed corridor sniper lane
     coneHalfAngleRad: (16 * Math.PI) / 180, // Focused 32° corridor sniper lane
     maxAmmo: 0,
-    summary: 'PAD · PIERCES ARMOR & 4 LINED FOES',
+    summary: 'PAD · PIERCES ARMOR & 4 FOES · 10% DARK MISS',
   },
   CRYO_VALVE: {
     id: 'CRYO_VALVE',
@@ -272,10 +311,10 @@ export const HARDWARE_SPECS: Record<Exclude<BuildToolId, 'NONE'>, HardwareSpec> 
     costScrap: 80,
     powerKw: 14,
     upgradeCostScrap: 75,
-    rangePx: 142, // 4.7m duct grate plume
+    rangePx: 142, // 4.7m LOS-bound duct grate plume
     coneHalfAngleRad: 0,
     maxAmmo: 0,
-    summary: 'GRATE · SLOWS 58% · SHATTER +35%',
+    summary: 'GRATE · LOS SLOW 58% · SHATTER +35%',
   },
   SHOCK_COIL: {
     id: 'SHOCK_COIL',
@@ -285,10 +324,10 @@ export const HARDWARE_SPECS: Record<Exclude<BuildToolId, 'NONE'>, HardwareSpec> 
     costScrap: 95,
     powerKw: 18,
     upgradeCostScrap: 85,
-    rangePx: 168, // 5.6m Tesla arc discharge
+    rangePx: 168, // 5.6m LOS-bound Tesla arc discharge
     coneHalfAngleRad: 0,
     maxAmmo: 0,
-    summary: 'GRATE · CHAIN STUN · DECLOAKS STALKER',
+    summary: 'GRATE · WAVE-SCALING ARC · DECLOAKS STALKER',
   },
   MOTION_RELAY: {
     id: 'MOTION_RELAY',
@@ -298,7 +337,7 @@ export const HARDWARE_SPECS: Record<Exclude<BuildToolId, 'NONE'>, HardwareSpec> 
     costScrap: 65,
     powerKw: 10,
     upgradeCostScrap: 60,
-    rangePx: 465, // 15.5m radar sweep
+    rangePx: 390, // 13.0m radar sweep (MK-II ~430px)
     coneHalfAngleRad: 0,
     maxAmmo: 0,
     summary: 'PAD · ILLUMINATES & +24% LINKED RNG',
@@ -308,26 +347,26 @@ export const HARDWARE_SPECS: Record<Exclude<BuildToolId, 'NONE'>, HardwareSpec> 
     shortKey: '7',
     code: 'ARC-WELD',
     name: 'ARC-WELD DOOR SEAL',
-    costScrap: 55,
+    costScrap: 65,
     powerKw: 0,
     upgradeCostScrap: 0,
     rangePx: 0,
     coneHalfAngleRad: 0,
     maxAmmo: 0,
-    summary: 'DOOR · 2.0S TORCH · REROUTES PATHS',
+    summary: 'DOOR · 1.5S TORCH · 480 HP · REROUTES PATHS',
   },
   CLAYMORE: {
     id: 'CLAYMORE',
     shortKey: '8',
     code: 'M18 MINE',
     name: 'PROXIMITY CLAYMORE',
-    costScrap: 35,
+    costScrap: 50,
     powerKw: 0,
     upgradeCostScrap: 0,
     rangePx: 152,
     coneHalfAngleRad: 0,
     maxAmmo: 0,
-    summary: 'CORRIDOR · 0 kW · 195 BLAST + ACID CLEAR',
+    summary: 'CORRIDOR · 6/WAVE · WAVE-SCALED BLAST + ACID CLEAR',
   },
 };
 
@@ -437,7 +476,7 @@ export const HOSTILE_SPECS: Record<HostileKind, HostileSpec> = {
     kind: 'CRUSHER',
     name: 'JUGGERNAUT CRUSHER',
     shortCode: 'CRSH',
-    baseHp: 1120,
+    baseHp: 960,
     speedPxS: 44,
     radiusPx: 26,
     scrapReward: 95,
@@ -469,7 +508,7 @@ export type ProtocolId =
   | 'CAPACITOR_DRIVE'
   | 'SALVAGE_BONUS'
   | 'BULKHEAD_ARMOR'
-  | 'SEAL_FABRICATION';
+  | 'AEGIS_SHIELD';
 
 export interface TacticalProtocolSpec {
   id: ProtocolId;
@@ -485,15 +524,15 @@ export const TACTICAL_PROTOCOLS: Record<ProtocolId, TacticalProtocolSpec> = {
     id: 'DU_ROUNDS',
     code: 'DU-10MM',
     title: 'DEPLETED URANIUM ROUNDS',
-    desc: '+18% SENTRY & RAIL DMG · +25% ARMOR PIERCE',
+    desc: '+15% SENTRY/RAIL DMG · +25% AP (100% CAP, EXCESS -> BOSS DMG)',
     accent: '#FFB000',
-    maxStacks: 4,
+    maxStacks: 3,
   },
   AUTOLOADER: {
     id: 'AUTOLOADER',
     code: 'AUTO-BELT',
     title: 'AUTOLOADER BELT FEEDS',
-    desc: '-45% REARM TIME · -35% REARM SCRAP COST',
+    desc: '-45% REARM TIME/COST · AUTO-REARMS · +20% DRUM · -15% SENTRY HEAT',
     accent: '#44FF77',
     maxStacks: 2,
   },
@@ -501,67 +540,162 @@ export const TACTICAL_PROTOCOLS: Record<ProtocolId, TacticalProtocolSpec> = {
     id: 'AUX_BUS',
     code: '+20kW BUS',
     title: 'AUXILIARY REACTOR CAPACITOR',
-    desc: '+20 kW MAX POWER CAPACITY IMMEDIATELY',
+    desc: '+20 kW NOW & +20 kW TO HARD CAP (295 -> 375 kW)',
     accent: '#00F0FF',
-    maxStacks: 5,
+    maxStacks: 4,
   },
   CRYO_SHATTER: {
     id: 'CRYO_SHATTER',
     code: 'SHATTER+',
     title: 'CRYO-SHATTER RESONANCE',
-    desc: '+25% SHATTER CRIT DMG · +20% CRYO & SHOCK RADIUS',
+    desc: '+20% SHATTER DMG · +15% LOS-BOUND CRYO & SHOCK RADIUS',
     accent: '#9BF8FF',
-    maxStacks: 3,
+    maxStacks: 2,
   },
   THERMITE_CATALYST: {
     id: 'THERMITE_CATALYST',
     code: 'THERMITE',
     title: 'THERMITE NAPALM CATALYST',
-    desc: '+30% BURN DPS · +20 EXTRA SCRAP PER STERILIZE',
+    desc: '+25% BURN DPS · +12 FLAT STERILIZE SCRAP (NO DECAY)',
     accent: '#FF7733',
-    maxStacks: 3,
+    maxStacks: 2,
   },
   OPTICS_GAIN: {
     id: 'OPTICS_GAIN',
     code: 'OPTICS+',
     title: 'HIGH-GAIN THERMAL OPTICS',
-    desc: '+18% ILLUMINATED CRIT · +4S FLARE & FLOODLIGHT',
+    desc: '+15% LIT CRIT DMG · +2.5S FLARE & FLOODLIGHT',
     accent: '#FFF6CC',
-    maxStacks: 3,
+    maxStacks: 2,
   },
   CAPACITOR_DRIVE: {
     id: 'CAPACITOR_DRIVE',
     code: 'CAP-DRIVE',
     title: 'RESERVE BATTERY OVERDRIVE',
-    desc: '+50% BATTERY CHARGE RATE · +2.5S OVERCLOCK',
+    desc: '+40% BATTERY CHARGE · +2.0S OVERCLOCK · -20% OC SURGE kW',
     accent: '#44FFDD',
-    maxStacks: 3,
+    maxStacks: 2,
   },
   SALVAGE_BONUS: {
     id: 'SALVAGE_BONUS',
     code: 'SALVAGE+',
     title: 'WEYLAND SALVAGE REQUISITION',
-    desc: '+22% SCRAP FROM ALL KILLS & WAVE BONUSES',
+    desc: '+25% ALL SCRAP (INCL. ACID/EGGS) · +1 FREE DRAFT REROLL',
     accent: '#FFB000',
-    maxStacks: 3,
+    maxStacks: 2,
   },
   BULKHEAD_ARMOR: {
     id: 'BULKHEAD_ARMOR',
     code: 'DOOR-ARMOR',
-    title: 'REINFORCED BULKHEAD PLATING',
-    desc: '+45% DOOR SEAL HP · +1 MAX SIMULTANEOUS SEAL',
+    title: 'ELECTRIFIED BULKHEAD PLATING',
+    desc: '+50% DOOR HP · +1 SEAL · 55 DPS RECOIL · 50% ACID REFLECT',
     accent: '#8EF5AB',
     maxStacks: 2,
   },
-  SEAL_FABRICATION: {
-    id: 'SEAL_FABRICATION',
-    code: '+1 SEAL',
-    title: 'EMERGENCY CORE SEAL FABRICATION',
-    desc: 'IMMEDIATELY RESTORES +1 BLOWN REACTOR CORE SEAL',
-    accent: '#44FF77',
-    maxStacks: 99,
+  AEGIS_SHIELD: {
+    id: 'AEGIS_SHIELD',
+    code: 'AEGIS-SHD',
+    title: 'AEGIS CORE ENERGY BARRIER',
+    desc: '+1 CORE SEAL NOW · 1-HIT CORE BARRIER (RECHARGES EVERY 5 WAVES)',
+    accent: '#00F0FF',
+    maxStacks: 2,
   },
 };
+
+export type OmegaDirectiveId =
+  | 'VOLATILE_OVERPRESSURE'
+  | 'THERMAL_SHOCK'
+  | 'BREACH_SAPPER'
+  | 'NIGHT_HUNTER_OPTICS';
+
+export interface OmegaDirectiveSpec {
+  id: OmegaDirectiveId;
+  code: string;
+  title: string;
+  upside: string;
+  downside: string;
+  desc: string;
+  accent: string;
+}
+
+export const OMEGA_DIRECTIVES: Record<OmegaDirectiveId, OmegaDirectiveSpec> = {
+  VOLATILE_OVERPRESSURE: {
+    id: 'VOLATILE_OVERPRESSURE',
+    code: 'Ω-OVERPRES',
+    title: 'VOLATILE OVERPRESSURE',
+    upside: '+30% ALL TURRET FIRE RATE',
+    downside: '+35% BARREL HEAT BUILDUP',
+    desc: '+30% ALL TURRET ROF · BUT +35% HEAT BUILDUP',
+    accent: '#FF6622',
+  },
+  THERMAL_SHOCK: {
+    id: 'THERMAL_SHOCK',
+    code: 'Ω-THRMSHK',
+    title: 'THERMAL SHOCK DETONATION',
+    upside: 'CRYO/RAIL ON BURNING FOE = 8% MAX-HP BLAST (4S ICD)',
+    downside: 'CONSUMES & CLEARS BURN + CRYO ON TRIGGER',
+    desc: 'CRYO/RAIL VS BURNING: 8% MAX-HP BLAST (4S ICD) · CLEARS BURN & CRYO',
+    accent: '#00F0FF',
+  },
+  BREACH_SAPPER: {
+    id: 'BREACH_SAPPER',
+    code: 'Ω-SAPPER',
+    title: 'BREACH SAPPER PROTOCOL',
+    upside: '+4 MINES/WAVE · +50% BLAST DMG · 4S NAPALM · AUTO-SEEDS GRATES',
+    downside: 'DEDICATES BOSS OMEGA SLOT TO CORRIDOR ORDNANCE',
+    desc: '+4 MINES/WAVE · +50% BLAST · 4S NAPALM · AUTO-SEEDS RATTLING GRATES',
+    accent: '#FFB000',
+  },
+  NIGHT_HUNTER_OPTICS: {
+    id: 'NIGHT_HUNTER_OPTICS',
+    code: 'Ω-NIGHTOPT',
+    title: 'NIGHT-HUNTER OPTICS',
+    upside: '+35% DMG IN DARKNESS · 0% DARK MISS CHANCE',
+    downside: 'DISABLES [L] EMERGENCY FLOODLIGHT',
+    desc: '+35% DMG IN DARKNESS · 0% DARK MISS · DISABLES [L] FLOODLIGHT',
+    accent: '#D477FF',
+  },
+};
+
+export type EndgameDirectiveId =
+  | 'EMERGENCY_ORDNANCE'
+  | 'REACTOR_OVERDRIVE'
+  | 'COMBAT_TELEMETRY';
+
+export interface EndgameDirectiveSpec {
+  id: EndgameDirectiveId;
+  code: string;
+  title: string;
+  desc: string;
+  accent: string;
+}
+
+export const ENDGAME_DIRECTIVES: Record<EndgameDirectiveId, EndgameDirectiveSpec> = {
+  EMERGENCY_ORDNANCE: {
+    id: 'EMERGENCY_ORDNANCE',
+    code: 'END-ORD',
+    title: 'EMERGENCY ORDNANCE DROP',
+    desc: '+1 AIRLOCK PURGE CHARGE · +250 SCRAP IMMEDIATELY',
+    accent: '#FFB000',
+  },
+  REACTOR_OVERDRIVE: {
+    id: 'REACTOR_OVERDRIVE',
+    code: 'END-OVR',
+    title: 'REACTOR OVERDRIVE TUNING',
+    desc: '+5% GLOBAL OVERCLOCK & TURRET DMG (STACKABLE)',
+    accent: '#00F0FF',
+  },
+  COMBAT_TELEMETRY: {
+    id: 'COMBAT_TELEMETRY',
+    code: 'END-TLM',
+    title: 'COMBAT TELEMETRY UPLINK',
+    desc: '+15% PERMANENT SCORE MULTIPLIER (STACKABLE)',
+    accent: '#44FF77',
+  },
+};
+
+export type DraftChoiceId = ProtocolId | EndgameDirectiveId;
+export type DraftMode = 'PROTOCOL' | 'OMEGA';
 
 export type WaveMutatorId =
   | 'NONE'
@@ -575,6 +709,7 @@ export interface WaveMutatorSpec {
   label: string;
   desc: string;
   scoreMult: number;
+  scrapMult: number;
   color: string;
 }
 
@@ -584,34 +719,39 @@ export const WAVE_MUTATORS: Record<WaveMutatorId, WaveMutatorSpec> = {
     label: 'NOMINAL',
     desc: 'STANDARD STATION CONDITIONS',
     scoreMult: 1.0,
+    scrapMult: 1.0,
     color: '#44FF77',
   },
   GRID_BROWNOUT: {
     id: 'GRID_BROWNOUT',
     label: 'GRID BROWNOUT',
-    desc: 'CORE LIGHT HALVED · +50% WAVE SCORE',
+    desc: 'CORE LIGHT HALVED · +20% SCRAP · +50% SCORE',
     scoreMult: 1.5,
+    scrapMult: 1.2,
     color: '#FFB000',
   },
   ACIDIC_SURGE: {
     id: 'ACIDIC_SURGE',
     label: 'ACIDIC SURGE',
-    desc: 'VOLATILE ACID POOLS · 2X STERILIZE SCRAP · +50% SCORE',
+    desc: 'VOLATILE ACID POOLS · 2X STERILIZE · +20% SCRAP · +50% SCORE',
     scoreMult: 1.5,
+    scrapMult: 1.2,
     color: '#B8FF3B',
   },
   SUBFLOOR_BREACH: {
     id: 'SUBFLOOR_BREACH',
     label: 'SUB-FLOOR BREACH',
-    desc: 'ALL 4 FLOOR GRATES ACTIVE · +50% WAVE SCORE',
+    desc: 'ALL 4 FLOOR GRATES ACTIVE · +20% SCRAP · +50% SCORE',
     scoreMult: 1.5,
+    scrapMult: 1.2,
     color: '#FF5522',
   },
   THERMAL_SPIKE: {
     id: 'THERMAL_SPIKE',
     label: 'THERMAL SPIKE',
-    desc: '+28% BARREL HEAT · FASTER COOLANT FLUSH · +50% SCORE',
+    desc: '+28% BARREL HEAT · FASTER FLUSH · +20% SCRAP · +50% SCORE',
     scoreMult: 1.5,
+    scrapMult: 1.2,
     color: '#FF8833',
   },
 };
@@ -628,7 +768,7 @@ export interface BreachVentDef {
 export interface BlastDoorDef {
   id: string;
   label: string;
-  tiles: Array<{ col: number; row: number }>;
+  tiles: GridCoord[];
   center: Vec2;
   orientation: 'HORIZONTAL' | 'VERTICAL';
 }
@@ -636,10 +776,10 @@ export interface BlastDoorDef {
 export interface AirlockChamberDef {
   id: string;
   label: string;
-  tiles: Array<{ col: number; row: number }>;
+  tiles: GridCoord[];
   bounds: ViewportRect;
   center: Vec2;
-  flushDir: Vec2; // Unit vector pointing outward away from Core
+  flushDir: Vec2; // Unit vector pointing strictly outward away from Core
 }
 
 export interface RoomLabelDef {
@@ -649,6 +789,27 @@ export interface RoomLabelDef {
   y: number;
 }
 
+export interface ColonyBlueprint {
+  sectorId: SectorId;
+  sectorName: string;
+  /** Legacy aliases matching sectorId / sectorName for backwards compatibility */
+  code: SectorId;
+  name: string;
+  cols: number;
+  rows: number;
+  tileSize: number;
+  tiles: TileKind[][];
+  coreCenter: Vec2;
+  coreTiles: GridCoord[];
+  vents: BreachVentDef[];
+  blastDoors: BlastDoorDef[];
+  airlocks: AirlockChamberDef[];
+  roomLabels: RoomLabelDef[];
+  dynamicBreaches: DynamicBreachDef[];
+}
+
+export type SectorBlueprint = ColonyBlueprint;
+
 export interface BlastDoorState {
   def: BlastDoorDef;
   welded: boolean;
@@ -656,12 +817,16 @@ export interface BlastDoorState {
   maxHp: number;
   underAttackTimer: number;
   acidCorrodingTimer: number;
-  /** >0 while mid-wave 2.0s Arc-Weld torch sequence is actively running */
+  /** >0 while mid-wave 1.5s Arc-Weld torch sequence is actively running */
   weldingTimer: number;
   weldingDuration: number;
   /** Brief cooldown after a weld/repair completes to prevent mid-wave repair spam */
   repairCooldown: number;
+  /** Tracks HP band (4: >75%, 3: <=75%, 2: <=50%, 1: <=25%) to trigger damaged-door path recompute */
+  lastPathHpBand?: number;
 }
+
+export type DoorState = BlastDoorState;
 
 export interface PlacedTurret {
   id: string;
@@ -673,6 +838,12 @@ export interface PlacedTurret {
   powered: boolean;
   level: 1 | 2 | 3;
   mk3Branch?: Mk3BranchId;
+  /** MK-IV late-game refit level (0..3): +10% DMG / +1 kW per level */
+  mk4Level: number;
+  /** Mid-wave capacitor spin-up timer (2.5s) when toggled ON mid-wave */
+  powerUpTimer: number;
+  /** Cumulative Scrap spent on deploy + MK-II/III + MK-IV refits (100% refunded on Sector Extraction) */
+  totalInvestedScrap: number;
   angle: number; // Current mechanical barrel/emitter heading (radians)
   targetAngle: number; // Desired heading (servo slews toward this)
   ammo: number;
@@ -689,8 +860,8 @@ export interface PlacedTurret {
   overclockTimer: number;
   relayBoosted: boolean;
   relayMatrixBoosted: boolean;
-  acidDebuffTimer: number; // Spitter acid glob temporarily blinds/heats turret!
-  jammedTimer: number; // Screamer jams M314 radar sweeps!
+  acidDebuffTimer: number; // Spitter acid glob / acid pool temporarily blinds/heats turret!
+  jammedTimer: number; // Screamer jams M314 radar sweeps & relay links!
   // Laser tripwire endpoint for MOTION_RELAY
   tripwireStart?: Vec2;
   tripwireEnd?: Vec2;
@@ -698,12 +869,14 @@ export interface PlacedTurret {
   kills: number;
 }
 
+export type TurretEntity = PlacedTurret;
+
 export interface ProximityClaymore {
   id: string;
   col: number;
   row: number;
   pos: Vec2;
-  armTimer: number; // 0.6s arming delay
+  armTimer: number; // 0.5s prep / 1.5s mid-wave arming delay
 }
 
 export interface AcidSpitProjectile {
@@ -767,7 +940,28 @@ export interface HostileEntity {
   cryoDeepFreeze: boolean; // True if hit by MK-III Deep Freeze Cryo
   napalmBurnTimer: number;
   stunTimer: number;
-  /** True when illuminated by Flare, Floodlight, M314 sweep, Tripwire, Cryo, Core Light, or Napalm */
+  /** Carapace stagger-immunity recovery timer (prevents permanent stunlock on bosses & elites!) */
+  stunImmuneTimer?: number;
+  knockbackVel?: Vec2;
+  knockbackTimer?: number;
+  knockbackMaxTimer?: number;
+  /** EMP PULSE -50% frontal armor shred timer */
+  armorShredTimer: number;
+  /** EMP PULSE 4.0s caster silence timer (blocks Spitter/Screamer/Queen egg-lay) */
+  silenceTimer: number;
+  /** THERMAL_SHOCK Omega Directive 4.0s internal cooldown */
+  thermalShockIcd: number;
+  /** THERMITE Incinerator -35% armor melt timer (4.0s) */
+  burnArmorMeltTimer: number;
+  /** Seconds continuously battering a welded door (triggers Burster 1.5s acid-detonation / Crusher 5s ram) */
+  doorBatterTimer: number;
+  /** M314 FLOODLIGHT 6.0s Stalker stealth burn timer */
+  stealthBurnTimer?: number;
+  /** FIREWALL Incinerator -25% slow timer */
+  firewallSlowTimer?: number;
+  /** True when revealed by optical/sensor light (Flare, Floodlight, M314, Tripwire, Shock, Core) vs Cryo/Napalm only */
+  opticalIlluminated?: boolean;
+  /** True when illuminated by Flare, Floodlight, M314 sweep, Tripwire, Core Light, or Relay Flood */
   illuminated: boolean;
   verified: boolean; // True when illuminated OR inside turret's short 55% unlit IR cone
   batteringDoorId: string | null;
@@ -817,6 +1011,7 @@ export interface NapalmCloud {
   maxSec: number;
   dps: number;
   isThermite?: boolean;
+  isFirewall?: boolean;
   sourceTurretId?: string;
 }
 
@@ -834,7 +1029,10 @@ export interface AcidHazardPool {
   radius: number;
   remainingSec: number;
   maxSec: number;
+  fromBursterDoorBlast?: boolean;
 }
+
+export type AcidPool = AcidHazardPool;
 
 export interface AirlockPurgeWave {
   chamberId: string;
@@ -874,6 +1072,8 @@ export interface WaveSpawnGroup {
   count: number;
   intervalSec: number;
   delaySec: number;
+  /** Optional explicit max HP override for special encounters (e.g., softened W5 Crusher = 960 HP) */
+  hpOverride?: number;
 }
 
 export interface WaveDefinition {
@@ -883,6 +1083,8 @@ export interface WaveDefinition {
   scrapBonus: number;
   mutator?: WaveMutatorId;
   hasBoss?: 'CRUSHER' | 'QUEEN';
+  /** Smoothed wave HP multiplier computed by Sector01Blueprint / SectorCatalog */
+  hpScale?: number;
 }
 
 export type PerimeterMode = 'ENDLESS_SIEGE';

@@ -1,3 +1,4 @@
+import { THEME } from '../../render/theme';
 import type { ViewportRect } from '../../types';
 import type { TrenchSimulation } from './TrenchSimulation';
 import {
@@ -747,21 +748,21 @@ export class TrenchRenderer {
         ctx.stroke();
       }
     } else {
-      // `RESUPPLY_CACHE`: Unmistakable Electric Cyan (#00F0FF) Glowing 3D Hexagonal Supply Pod!
-      const spin = timeSec * 1.8 + t.id;
+      // `RESUPPLY_CACHE`: Electric Cyan (#4CEEFF) Hexagonal Pod paired with Ron Cobb Diamond + Cross (◈ / ✚)
+      // so P3 AMBER monochrome phosphor mode retains 100% unmistakable supply silhouette clarity!
       const strokeCol = hitFlash
         ? '#FFFFFF'
         : isLocked
-          ? '#B8FFFF'
-          : `rgba(0, 240, 255, ${(0.72 + fog * 0.28).toFixed(3)})`;
+          ? '#D8FFFF'
+          : `rgba(76, 238, 255, ${(0.76 + fog * 0.24).toFixed(3)})`;
 
       // Optional overhead cable suspension tether when hanging beneath an arch
       const groundAt = sim.terrain.sampleHeight(t.x, t.z);
       if (t.y - groundAt > 48) {
         const anchorTop = this.projectWorld(sim, t.x, t.y + 42, t.z);
         if (anchorTop) {
-          ctx.strokeStyle = 'rgba(0, 240, 255, 0.52)';
-          ctx.lineWidth = 1.4;
+          ctx.strokeStyle = 'rgba(76, 238, 255, 0.56)';
+          ctx.lineWidth = 1.5;
           ctx.setLineDash([4, 4]);
           ctx.beginPath();
           ctx.moveTo(p.sx, p.sy - r * 0.85);
@@ -771,12 +772,12 @@ export class TrenchRenderer {
         }
       }
 
+      // Outer 3D Hexagonal Pod Shell with dark halo underpass for crisp separation
+      const hexR = Math.max(8.5, r * 1.12);
       ctx.strokeStyle = strokeCol;
-      ctx.fillStyle = hitFlash ? 'rgba(200, 255, 255, 0.65)' : 'rgba(2, 34, 42, 0.88)';
-      ctx.lineWidth = isLocked ? 2.6 : 1.9 + fog * 0.9;
+      ctx.fillStyle = hitFlash ? 'rgba(200, 255, 255, 0.65)' : 'rgba(2, 34, 42, 0.90)';
+      ctx.lineWidth = isLocked ? 2.6 : 2.0 + fog * 0.9;
 
-      // Outer 3D Hexagonal Pod Shell
-      const hexR = Math.max(7.5, r * 1.08);
       ctx.beginPath();
       for (let k = 0; k < 6; k++) {
         const a = (k / 6) * Math.PI * 2 + Math.PI / 6;
@@ -789,27 +790,48 @@ export class TrenchRenderer {
       ctx.fill();
       ctx.stroke();
 
-      // Counter-rotating inner wireframe hexagon core for unmistakable high-tech supply readout!
-      const innerR = hexR * 0.56;
-      ctx.strokeStyle = '#B8FFFF';
-      ctx.lineWidth = 1.4;
+      // Ron Cobb Semiotic Inner Diamond (◈) framing the Supply Cross (✚)
+      const diaR = hexR * 0.66;
+      ctx.strokeStyle = THEME.HALO_DARK;
+      ctx.lineWidth = 3.6;
       ctx.beginPath();
-      for (let k = 0; k < 6; k++) {
-        const a = (k / 6) * Math.PI * 2 + spin;
-        const hx = p.sx + Math.cos(a) * innerR;
-        const hy = p.sy + Math.sin(a) * innerR;
-        if (k === 0) ctx.moveTo(hx, hy);
-        else ctx.lineTo(hx, hy);
-      }
+      ctx.moveTo(p.sx, p.sy - diaR);
+      ctx.lineTo(p.sx + diaR, p.sy);
+      ctx.lineTo(p.sx, p.sy + diaR);
+      ctx.lineTo(p.sx - diaR, p.sy);
       ctx.closePath();
       ctx.stroke();
 
-      // Pulsing electric cyan/white beacon orb at center
-      const pulseOn = Math.sin(timeSec * 10 + t.id) > -0.15;
-      ctx.fillStyle = pulseOn ? '#FFFFFF' : '#00F0FF';
+      ctx.strokeStyle = '#C8FFFF';
+      ctx.lineWidth = 1.65;
       ctx.beginPath();
-      ctx.arc(p.sx, p.sy, Math.max(2.6, hexR * 0.24), 0, Math.PI * 2);
-      ctx.fill();
+      ctx.moveTo(p.sx, p.sy - diaR);
+      ctx.lineTo(p.sx + diaR, p.sy);
+      ctx.lineTo(p.sx, p.sy + diaR);
+      ctx.lineTo(p.sx - diaR, p.sy);
+      ctx.closePath();
+      ctx.stroke();
+
+      // Bold Ron Cobb Medical/Supply Cross (✚) inside the diamond — unmistakable in P3 AMBER!
+      const crossR = Math.max(3.6, hexR * 0.36);
+      const pulseOn = Math.sin(timeSec * 8 + t.id) > -0.2;
+      ctx.strokeStyle = THEME.HALO_DARK;
+      ctx.lineWidth = 4.2;
+      ctx.beginPath();
+      ctx.moveTo(p.sx - crossR, p.sy);
+      ctx.lineTo(p.sx + crossR, p.sy);
+      ctx.moveTo(p.sx, p.sy - crossR);
+      ctx.lineTo(p.sx, p.sy + crossR);
+      ctx.stroke();
+
+      ctx.strokeStyle = pulseOn ? '#FFFFFF' : THEME.ACCENT_CYAN;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(p.sx - crossR, p.sy);
+      ctx.lineTo(p.sx + crossR, p.sy);
+      ctx.moveTo(p.sx, p.sy - crossR);
+      ctx.lineTo(p.sx, p.sy + crossR);
+      ctx.stroke();
     }
 
     ctx.restore();

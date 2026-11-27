@@ -84,13 +84,13 @@
     >
     <div id="safe-area-probe" aria-hidden="true"></div>
 
-    <!-- Keyboard-accessible mirror buttons for console OSD switches (WCAG Audio & Control Parity) -->
-    <nav class="sr-only" aria-label="Console Hardware Switches">
-      <button type="button" id="a11y-sas-toggle">Toggle SAS 50% Gentle Roll Authority</button>
-      <button type="button" id="a11y-zoom-toggle">Toggle Auto-Zoom Approach</button>
-      <button type="button" id="a11y-crt-step">Cycle CRT Glass and Bloom Intensity</button>
-      <button type="button" id="a11y-mute-toggle">Toggle Intercom and Audio Bus Mute</button>
-      <button type="button" id="a11y-logs-toggle">Toggle MU-TH-UR 6000 Flight Logs</button>
+    <!-- Keyboard-accessible mirror buttons for global MU-TH-UR console switches (WCAG Parity) -->
+    <nav id="a11y-console-nav" class="sr-only" aria-label="MU-TH-UR 6000 Console Switches">
+      <button type="button" id="a11y-crt-preset">Cycle CRT Display Preset</button>
+      <button type="button" id="a11y-phosphor-cycle">Cycle Phosphor Monitor Color</button>
+      <button type="button" id="a11y-mute-toggle">Toggle Audio Bus Mute</button>
+      <button type="button" id="a11y-fullscreen-toggle">Toggle Fullscreen Monitor</button>
+      <button type="button" id="a11y-hub-return">Return to MU-TH-UR 6000 Hub</button>
     </nav>
   </main>
 

@@ -1,7 +1,12 @@
-import { COLORS } from '../constants';
 import { SectorGenerator } from '../levels/SectorGenerator';
 import type { MenuModeSelection, SectorConfig, ViewportRect } from '../types';
 import type { CrtInteractiveButton } from './HudRenderer';
+import {
+  drawEllipsizedText,
+  font,
+  SEMIOTIC_ICONS,
+  THEME,
+} from './theme';
 
 export interface SectorMapSummary {
   num: number;
@@ -33,12 +38,12 @@ export class CampaignMapRenderer {
 
   constructor() {
     const meta: Array<{ num: number; shortTitle: string; hazardTag: string }> = [
-      { num: 1, shortTitle: 'THEDUS ORBITAL', hazardTag: '1.62G • VACUUM • 1X–3X' },
-      { num: 2, shortTitle: 'ACHERON BASALT', hazardTag: '2.40G • HIGH-G GORGE • +FUEL' },
-      { num: 3, shortTitle: 'SILICATE GALE', hazardTag: '2.08G • COUNTER-SHEAR WINDS' },
-      { num: 4, shortTitle: 'DERELICT CAVERN', hazardTag: '1.95G • PITCH-BLACK CAVE' },
-      { num: 5, shortTitle: 'EM WHITEOUT', hazardTag: '2.20G • ION OPTIC BLACKOUT' },
-      { num: 6, shortTitle: 'THERMAL SHAFT', hazardTag: '2.35G • CORE FINALE • 6X' },
+      { num: 1, shortTitle: 'THEDUS ORBITAL', hazardTag: '1.62G · VACUUM · 1X–3X' },
+      { num: 2, shortTitle: 'ACHERON BASALT', hazardTag: '2.40G · HIGH-G · ✚ FUEL' },
+      { num: 3, shortTitle: 'SILICATE GALE', hazardTag: '2.08G · COUNTER-SHEAR' },
+      { num: 4, shortTitle: 'DERELICT CAVERN', hazardTag: '1.95G · PITCH-BLACK CAVE' },
+      { num: 5, shortTitle: 'EM WHITEOUT', hazardTag: '2.20G · ⬡ ION BLACKOUT' },
+      { num: 6, shortTitle: 'THERMAL SHAFT', hazardTag: '2.35G · CORE FINALE · 6X' },
     ];
 
     this.sectors = meta.map((m) => {
@@ -62,10 +67,10 @@ export class CampaignMapRenderer {
     ctx.save();
 
     // 1. Deep Nostromo Cathode Field + Subtle Tactical Survey Grid
-    ctx.fillStyle = COLORS.BG_DEEP;
+    ctx.fillStyle = THEME.BG_VOID;
     ctx.fillRect(0, 0, w, h);
 
-    ctx.strokeStyle = 'rgba(22, 68, 36, 0.24)';
+    ctx.strokeStyle = 'rgba(28, 92, 49, 0.24)';
     ctx.lineWidth = 1;
     const gridStep = 46;
     ctx.beginPath();
@@ -80,7 +85,7 @@ export class CampaignMapRenderer {
     ctx.stroke();
 
     // Subtle Curved LV-426 Planetary Limb Wireframe Arcs in Deep Background
-    ctx.strokeStyle = 'rgba(42, 132, 68, 0.16)';
+    ctx.strokeStyle = 'rgba(68, 255, 119, 0.12)';
     ctx.lineWidth = 1.4;
     for (let i = 0; i < 3; i++) {
       ctx.beginPath();
@@ -97,8 +102,8 @@ export class CampaignMapRenderer {
     }
 
     // Check flanking space around the central menu box
-    const marginX = Math.max(16, Math.round(w * 0.016));
-    const gapToMenu = 18;
+    const marginX = Math.max(14, Math.round(w * 0.015));
+    const gapToMenu = 16;
     const leftFlankW = Math.floor(menuBox.x - marginX - gapToMenu);
     const rightFlankX = Math.ceil(menuBox.x + menuBox.width + gapToMenu);
     const rightFlankW = Math.floor(w - marginX - rightFlankX);
@@ -108,28 +113,46 @@ export class CampaignMapRenderer {
       return;
     }
 
-    const colTopY = topHeaderY + 52;
-    const bottomCorridorY = Math.min(h - 36, Math.max(menuBox.y + menuBox.height + 18, h - 44));
-    const colAvailH = Math.max(300, bottomCorridorY - colTopY - 18);
-    const cardGap = 14;
+    const colTopY = topHeaderY + 46;
+    const bottomCorridorY = Math.min(h - 44, Math.max(menuBox.y + menuBox.height + 16, h - 50));
+    const colAvailH = Math.max(290, bottomCorridorY - colTopY - 12);
+    const cardGap = 12;
     const cardH = Math.floor((colAvailH - cardGap * 2) / 3);
 
     // 2. Flanking Column Scope Headers (Highlighting "6-SECTOR CAMPAIGN DESCENT")
     ctx.textAlign = 'left';
-    ctx.font = 'bold 16px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText('LV-426 CAMPAIGN MAP // 6 SECTORS TOTAL', marginX, topHeaderY + 21);
-    ctx.font = 'bold 13px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.fillText('UPPER DESCENT: SECTORS 01 → 03 (ORBIT TO GALE)', marginX, topHeaderY + 40);
+    ctx.font = font('head', 15);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
+    drawEllipsizedText(ctx, 'LV-426 CAMPAIGN MAP // 6 SECTORS', marginX, topHeaderY + 18, leftFlankW);
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = THEME.TEXT_SECONDARY;
+    drawEllipsizedText(
+      ctx,
+      'CLICK ANY SECTOR CARD TO PRACTICE',
+      marginX,
+      topHeaderY + 35,
+      leftFlankW
+    );
 
     ctx.textAlign = 'right';
-    ctx.font = 'bold 16px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText('DEEP CORE APPROACH // SECTORS 04 → 06', w - marginX, topHeaderY + 21);
-    ctx.font = 'bold 13px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.fillText('CAVERNS → ION STORM → REACTOR FINALE', w - marginX, topHeaderY + 40);
+    ctx.font = font('head', 15);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
+    drawEllipsizedText(
+      ctx,
+      'DEEP CORE APPROACH // 04 → 06',
+      w - marginX,
+      topHeaderY + 18,
+      rightFlankW
+    );
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = THEME.TEXT_SECONDARY;
+    drawEllipsizedText(
+      ctx,
+      'CAVERNS → ION STORM → REACTOR',
+      w - marginX,
+      topHeaderY + 35,
+      rightFlankW
+    );
 
     // Compute exact card rectangles for all 6 Campaign Sectors
     const cardRects: ViewportRect[] = [];
@@ -150,7 +173,7 @@ export class CampaignMapRenderer {
       });
     }
 
-    // 3. Draw Connecting 6-Sector Descent Trajectory Vector Path + Animated Drop-Shuttle
+    // 3. Draw Connecting 6-Sector Descent Trajectory Vector Path
     this.drawDescentRouteConnectors(ctx, w, h, cardRects, menuBox, timeSec);
 
     // 4. Render All 6 Topographic Sector Mini-Map Cards
@@ -171,9 +194,8 @@ export class CampaignMapRenderer {
     timeSec: number
   ): void {
     ctx.save();
-    const dashOffset = -(timeSec * 28) % 24;
+    const dashOffset = -(timeSec * 24) % 24;
 
-    // Vertical drop connectors between Left cards (01->02, 02->03) and Right cards (04->05, 05->06)
     const pairs: Array<[number, number]> = [
       [0, 1],
       [1, 2],
@@ -181,8 +203,8 @@ export class CampaignMapRenderer {
       [4, 5],
     ];
 
-    ctx.strokeStyle = COLORS.AMBER_CAUTION;
-    ctx.lineWidth = 2.0;
+    ctx.strokeStyle = THEME.ACCENT_AMBER;
+    ctx.lineWidth = 1.8;
     ctx.setLineDash([5, 5]);
     ctx.lineDashOffset = dashOffset;
 
@@ -198,10 +220,9 @@ export class CampaignMapRenderer {
       ctx.lineTo(cx, y2);
       ctx.stroke();
 
-      // Small directional chevron arrow
       ctx.setLineDash([]);
-      const midY = (y1 + y2) * 0.5 + 2;
-      ctx.fillStyle = COLORS.AMBER_BRIGHT;
+      const midY = (y1 + y2) * 0.5 + 1;
+      ctx.fillStyle = THEME.ACCENT_AMBER_HI;
       ctx.beginPath();
       ctx.moveTo(cx, midY + 4);
       ctx.lineTo(cx - 4.5, midY - 3);
@@ -215,15 +236,15 @@ export class CampaignMapRenderer {
     // Cross-screen subterranean transit path from SEC-03 bottom -> under Menu -> up to SEC-04 top
     const c3 = cards[2];
     const c4 = cards[3];
-    const transitY = Math.min(h - 32, Math.max(c3.y + c3.height + 11, menuBox.y + menuBox.height + 12));
+    const transitY = Math.min(h - 34, Math.max(c3.y + c3.height + 10, menuBox.y + menuBox.height + 11));
     const startX = c3.x + c3.width * 0.5;
     const startY = c3.y + c3.height;
     const midRightX = c4.x - 10;
     const endX = c4.x + c4.width * 0.22;
     const endY = c4.y;
 
-    ctx.strokeStyle = 'rgba(255, 176, 0, 0.65)';
-    ctx.lineWidth = 1.8;
+    ctx.strokeStyle = 'rgba(255, 176, 0, 0.55)';
+    ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.moveTo(startX, startY);
     ctx.lineTo(startX, transitY);
@@ -234,16 +255,16 @@ export class CampaignMapRenderer {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Subsurface Transit Scope Callout Centered Beneath Menu Box
-    if (transitY < h - 18 && transitY > menuBox.y + menuBox.height + 4) {
-      const label = '▲ CAMPAIGN ROUTE: 6 SECTORS TOTAL (SEC-01 ORBIT ──► SEC-06 REACTOR CORE) ▲';
-      ctx.font = 'bold 14px "Share Tech Mono", monospace';
-      const tw = ctx.measureText(label).width + 28;
+    // Subsurface Transit Scope Callout Centered Beneath Menu Box (cleanly above 22px Controls Strip)
+    if (transitY < h - 28 && transitY > menuBox.y + menuBox.height + 4) {
+      const label = `${SEMIOTIC_ICONS.TRIANGLE} CAMPAIGN ROUTE: 6 SECTORS TOTAL (SEC-01 ORBIT ──► SEC-06 REACTOR CORE) ${SEMIOTIC_ICONS.TRIANGLE}`;
+      ctx.font = font('micro', 12);
+      const tw = Math.min(w - 40, ctx.measureText(label).width + 24);
       ctx.fillStyle = 'rgba(4, 11, 7, 0.94)';
-      ctx.fillRect(w * 0.5 - tw * 0.5, transitY - 11, tw, 22);
-      ctx.fillStyle = '#FFB000';
+      ctx.fillRect(w * 0.5 - tw * 0.5, transitY - 10, tw, 20);
+      ctx.fillStyle = THEME.ACCENT_AMBER;
       ctx.textAlign = 'center';
-      ctx.fillText(label, w * 0.5, transitY + 5);
+      drawEllipsizedText(ctx, label, w * 0.5, transitY + 4, tw - 12);
     }
 
     ctx.restore();
@@ -263,119 +284,124 @@ export class CampaignMapRenderer {
       label: `${summary.code} ${summary.shortTitle}`,
     });
 
-    const isRankedAllOrange = params.selectedMenuMode === 'RANKED_CAMPAIGN';
+    const hoveringRankedBtn = params.hoveredButtonId === 'menu-select-ranked';
+    const isHovered = params.hoveredButtonId === btnId;
+    const isRankedGlow =
+      (params.selectedMenuMode === 'RANKED_CAMPAIGN' || hoveringRankedBtn) && !isHovered;
     const isPracticeSelected =
       params.selectedMenuMode === 'PRACTICE' && params.selectedStartSector === summary.num;
-    const isHovered = params.hoveredButtonId === btnId;
     const isFinale = summary.num === 6;
 
     ctx.save();
 
-    // Card Background & Nostromo Framing: ALL 6 MAPS GLOW ORANGE IN RANKED CAMPAIGN!
-    ctx.fillStyle = isRankedAllOrange
-      ? 'rgba(46, 20, 4, 0.88)'
-      : isPracticeSelected
-        ? 'rgba(22, 54, 30, 0.88)'
-        : isHovered
-          ? 'rgba(18, 42, 24, 0.84)'
-          : 'rgba(5, 14, 9, 0.80)';
+    // Card Background & Nostromo Framing
+    ctx.fillStyle = isHovered
+      ? 'rgba(20, 56, 32, 0.92)'
+      : isRankedGlow
+        ? 'rgba(46, 22, 4, 0.86)'
+        : isPracticeSelected
+          ? 'rgba(18, 50, 28, 0.90)'
+          : 'rgba(5, 14, 9, 0.84)';
     ctx.fillRect(x, y, cw, ch);
 
-    const borderCol = isRankedAllOrange
-      ? COLORS.AMBER_CAUTION
-      : isPracticeSelected
-        ? COLORS.GREEN_BRIGHT
-        : isHovered
-          ? '#FFB000'
-          : COLORS.GREEN_DIM;
+    const borderCol = isHovered
+      ? '#FFFFFF'
+      : isRankedGlow
+        ? THEME.ACCENT_AMBER
+        : isPracticeSelected
+          ? THEME.TEXT_PRIMARY
+          : THEME.BORDER_SUBTLE;
     ctx.strokeStyle = borderCol;
-    ctx.lineWidth = isRankedAllOrange || isPracticeSelected || isHovered ? 2.6 : 1.5;
+    ctx.lineWidth = isHovered || isRankedGlow || isPracticeSelected ? 2.2 : 1.4;
     ctx.strokeRect(x, y, cw, ch);
 
-    // Stage Badge Pill [01/06] .. [06/06] (High-contrast glowing phosphor text on dark framed badge so CRT bloom never blurs digits!)
-    const badgeText = isFinale ? `06/06 FINALE` : `0${summary.num}/06`;
-    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-    const badgeW = ctx.measureText(badgeText).width + 16;
-    ctx.fillStyle = isRankedAllOrange
-      ? 'rgba(88, 36, 4, 0.95)'
-      : isPracticeSelected
-        ? 'rgba(20, 68, 34, 0.95)'
-        : 'rgba(8, 30, 16, 0.95)';
+    // Stage Badge Pill [01/06] .. [06/06 FINALE]
+    const badgeText = isFinale ? '06/06 FINALE' : `0${summary.num}/06`;
+    ctx.font = font('button', 13);
+    const badgeW = Math.ceil(ctx.measureText(badgeText).width + 14);
+    ctx.fillStyle = isHovered
+      ? 'rgba(24, 78, 40, 0.95)'
+      : isRankedGlow
+        ? 'rgba(84, 38, 4, 0.95)'
+        : isPracticeSelected
+          ? 'rgba(20, 68, 34, 0.95)'
+          : 'rgba(8, 30, 16, 0.95)';
     ctx.fillRect(x + 8, y + 6, badgeW, 22);
-    ctx.strokeStyle = isRankedAllOrange
-      ? COLORS.AMBER_BRIGHT
-      : isPracticeSelected
-        ? '#FFFFFF'
-        : COLORS.GREEN_BRIGHT;
-    ctx.lineWidth = 1.8;
+    ctx.strokeStyle = isHovered
+      ? '#FFFFFF'
+      : isRankedGlow
+        ? THEME.ACCENT_AMBER_HI
+        : isPracticeSelected
+          ? THEME.TEXT_BRIGHT
+          : THEME.TEXT_PRIMARY;
+    ctx.lineWidth = 1.6;
     ctx.strokeRect(x + 8, y + 6, badgeW, 22);
 
-    ctx.fillStyle = isRankedAllOrange
-      ? '#FFF0C2'
-      : isPracticeSelected
-        ? '#FFFFFF'
-        : COLORS.GREEN_BRIGHT;
+    ctx.fillStyle = isHovered
+      ? '#FFFFFF'
+      : isRankedGlow
+        ? THEME.ACCENT_AMBER_HI
+        : THEME.TEXT_BRIGHT;
     ctx.textAlign = 'center';
-    ctx.fillText(badgeText, x + 8 + badgeW * 0.5, y + 22);
+    ctx.fillText(badgeText, x + 8 + badgeW * 0.5, y + 21);
 
-    // Sector Title (Larger & Crisper)
+    // Sector Title
     ctx.textAlign = 'left';
-    const titleFontPx = cw < 290 ? 14.5 : 16.5;
-    ctx.font = `bold ${titleFontPx}px "Share Tech Mono", monospace`;
-    ctx.fillStyle = isRankedAllOrange
-      ? COLORS.AMBER_BRIGHT
-      : isPracticeSelected
-        ? '#FFFFFF'
-        : COLORS.GREEN_BRIGHT;
-    const titleX = x + 15 + badgeW;
-    const maxTitleW = Math.max(60, cw - (titleX - x) - 8);
-    let fullTitle = `${summary.code}: ${summary.shortTitle}`;
-    while (fullTitle.length > 8 && ctx.measureText(fullTitle).width > maxTitleW) {
-      fullTitle = `${fullTitle.slice(0, -2)}…`;
-    }
-    ctx.fillText(fullTitle, titleX, y + 23);
+    const titleFontPx = cw < 280 ? 14 : 15;
+    ctx.font = font('head', titleFontPx);
+    ctx.fillStyle = isHovered
+      ? '#FFFFFF'
+      : isRankedGlow
+        ? THEME.ACCENT_AMBER_HI
+        : isPracticeSelected
+          ? THEME.TEXT_BRIGHT
+          : THEME.TEXT_PRIMARY;
+    const titleX = x + 14 + badgeW;
+    const maxTitleW = Math.max(54, cw - (titleX - x) - 8);
+    drawEllipsizedText(ctx, `${summary.code}: ${summary.shortTitle}`, titleX, y + 22, maxTitleW);
 
-    // Hazard Telemetry Subtitle + Ranked / Practice Target Tag
-    ctx.font = cw < 290 ? 'bold 12px "JetBrains Mono", monospace' : 'bold 13.5px "JetBrains Mono", monospace';
-    const rightTag = isRankedAllOrange ? '★ RANKED' : isPracticeSelected ? '► PRACTICE' : '';
-    const rightTagW = rightTag ? ctx.measureText(rightTag).width + 12 : 0;
-    const maxHazW = Math.max(60, cw - 16 - rightTagW);
-    let hazStr = summary.hazardTag;
-    while (hazStr.length > 8 && ctx.measureText(hazStr).width > maxHazW) {
-      hazStr = `${hazStr.slice(0, -2)}…`;
-    }
+    // Hazard Telemetry Subtitle + Action Tag (guaranteed >=12px JetBrains Mono!)
+    ctx.font = font('micro', 12);
+    const rightTag = isHovered
+      ? `${SEMIOTIC_ICONS.PLAY} PRACTICE`
+      : isRankedGlow
+        ? `${SEMIOTIC_ICONS.STAR} RANKED`
+        : isPracticeSelected
+          ? `${SEMIOTIC_ICONS.PLAY} ARMED`
+          : '';
+    const rightTagW = rightTag ? ctx.measureText(rightTag).width + 10 : 0;
+    const maxHazW = Math.max(50, cw - 16 - rightTagW);
     ctx.textAlign = 'left';
-    ctx.fillStyle = isRankedAllOrange
-      ? '#FFD27D'
-      : isPracticeSelected
-        ? COLORS.GREEN_BRIGHT
-        : COLORS.GREEN_PRIMARY;
-    ctx.fillText(hazStr, x + 8, y + 43);
+    ctx.fillStyle = isHovered
+      ? THEME.TEXT_BRIGHT
+      : isRankedGlow
+        ? THEME.ACCENT_AMBER_HI
+        : THEME.TEXT_SECONDARY;
+    drawEllipsizedText(ctx, summary.hazardTag, x + 8, y + 42, maxHazW);
 
     if (rightTag) {
-      const pulse = isRankedAllOrange
-        ? 0.76 + 0.24 * Math.sin(params.timeSec * 6.5 + summary.num * 0.5)
-        : 0.72 + 0.28 * Math.sin(params.timeSec * 8);
-      ctx.globalAlpha = pulse;
       ctx.textAlign = 'right';
-      ctx.fillStyle = isRankedAllOrange ? COLORS.AMBER_BRIGHT : COLORS.GREEN_BRIGHT;
-      ctx.fillText(rightTag, x + cw - 8, y + 43);
-      ctx.globalAlpha = 1;
+      ctx.fillStyle = isHovered
+        ? '#FFFFFF'
+        : isRankedGlow
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_PRIMARY;
+      ctx.fillText(rightTag, x + cw - 8, y + 42);
     }
 
     // Miniature Vector Topographic Cross-Section Viewport inside Card
     const mapX = x + 8;
-    const mapY = y + 50;
+    const mapY = y + 49;
     const mapW = cw - 16;
-    const mapH = Math.max(36, ch - 58);
+    const mapH = Math.max(34, ch - 57);
 
-    ctx.fillStyle = isRankedAllOrange
+    ctx.fillStyle = isRankedGlow
       ? 'rgba(16, 6, 1, 0.92)'
       : summary.sector.darknessLevel > 0.8
         ? 'rgba(1, 4, 2, 0.95)'
-        : 'rgba(2, 8, 4, 0.88)';
+        : 'rgba(2, 8, 4, 0.90)';
     ctx.fillRect(mapX, mapY, mapW, mapH);
-    ctx.strokeStyle = isRankedAllOrange ? 'rgba(255, 140, 0, 0.55)' : 'rgba(32, 96, 52, 0.45)';
+    ctx.strokeStyle = isRankedGlow ? 'rgba(255, 176, 0, 0.45)' : 'rgba(28, 92, 49, 0.65)';
     ctx.lineWidth = 1;
     ctx.strokeRect(mapX, mapY, mapW, mapH);
 
@@ -388,17 +414,19 @@ export class CampaignMapRenderer {
     const toSx = (wx: number) => mapX + (wx / sec.worldWidth) * mapW;
     const toSy = (wy: number) => mapY + mapH - (wy / (sec.worldHeight * 0.92)) * mapH;
 
-    // Environmental Hazard Indicators inside Mini-Map:
     // A. Wind Shear Streaks (SEC-03, SEC-05)
     if (sec.windBands.length > 0) {
       ctx.strokeStyle = 'rgba(255, 176, 0, 0.34)';
       ctx.lineWidth = 1.2;
       for (let b = 0; b < Math.min(3, sec.windBands.length); b++) {
         const band = sec.windBands[b];
-        const wy = Math.min(sec.worldHeight * 0.8, (band.minY + Math.min(sec.worldHeight, band.maxY)) * 0.5);
+        const wy = Math.min(
+          sec.worldHeight * 0.8,
+          (band.minY + Math.min(sec.worldHeight, band.maxY)) * 0.5
+        );
         const sy = toSy(wy);
         const dir = band.baseVx >= 0 ? 1 : -1;
-        const shift = ((params.timeSec * 26 * dir) % 42 + 42) % 42;
+        const shift = (((params.timeSec * 26 * dir) % 42) + 42) % 42;
         ctx.beginPath();
         for (let lx = mapX - 20 + shift; lx < mapX + mapW; lx += 42) {
           ctx.moveTo(lx, sy);
@@ -410,7 +438,7 @@ export class CampaignMapRenderer {
 
     // B. EM Ion Interference Wave (SEC-05)
     if (sec.emBlackoutPulse) {
-      ctx.strokeStyle = 'rgba(130, 210, 255, 0.36)';
+      ctx.strokeStyle = 'rgba(76, 238, 255, 0.38)';
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       for (let ix = 0; ix <= mapW; ix += 6) {
@@ -423,7 +451,7 @@ export class CampaignMapRenderer {
 
     // C. Rising Thermal Reactor Plumes (SEC-06)
     if (sec.thermalVents.length > 0) {
-      ctx.strokeStyle = 'rgba(255, 95, 45, 0.45)';
+      ctx.strokeStyle = 'rgba(255, 98, 71, 0.45)';
       ctx.lineWidth = 1.4;
       for (const vent of sec.thermalVents) {
         const vx = toSx(vent.x);
@@ -437,7 +465,7 @@ export class CampaignMapRenderer {
 
     // D. Overhead Enclosed Cavern Ceiling Polyline (SEC-04, SEC-06)
     if (sec.ceiling && sec.ceiling.length > 1) {
-      ctx.fillStyle = isRankedAllOrange ? 'rgba(95, 42, 6, 0.30)' : 'rgba(20, 58, 32, 0.32)';
+      ctx.fillStyle = isRankedGlow ? 'rgba(95, 42, 6, 0.30)' : 'rgba(20, 58, 32, 0.32)';
       ctx.beginPath();
       ctx.moveTo(mapX, mapY);
       for (let i = 0; i < sec.ceiling.length; i += 2) {
@@ -449,7 +477,7 @@ export class CampaignMapRenderer {
       ctx.closePath();
       ctx.fill();
 
-      ctx.strokeStyle = isRankedAllOrange || isPracticeSelected ? COLORS.AMBER_CAUTION : COLORS.GREEN_MID;
+      ctx.strokeStyle = isRankedGlow ? THEME.ACCENT_AMBER : THEME.TEXT_SECONDARY;
       ctx.lineWidth = 1.6;
       ctx.beginPath();
       for (let i = 0; i < sec.ceiling.length; i += 2) {
@@ -463,7 +491,7 @@ export class CampaignMapRenderer {
 
     // E. Planetary Surface / Gorge Terrain Polyline
     if (sec.terrain.length > 1) {
-      ctx.fillStyle = isRankedAllOrange ? 'rgba(120, 52, 6, 0.28)' : 'rgba(24, 72, 38, 0.28)';
+      ctx.fillStyle = isRankedGlow ? 'rgba(120, 52, 6, 0.28)' : 'rgba(24, 72, 38, 0.28)';
       ctx.beginPath();
       ctx.moveTo(mapX, mapY + mapH);
       for (let i = 0; i < sec.terrain.length; i += 2) {
@@ -475,12 +503,14 @@ export class CampaignMapRenderer {
       ctx.closePath();
       ctx.fill();
 
-      ctx.strokeStyle = isRankedAllOrange
-        ? COLORS.AMBER_BRIGHT
-        : isPracticeSelected
-          ? COLORS.GREEN_BRIGHT
-          : COLORS.GREEN_PRIMARY;
-      ctx.lineWidth = 1.9;
+      ctx.strokeStyle = isHovered
+        ? '#FFFFFF'
+        : isRankedGlow
+          ? THEME.ACCENT_AMBER_HI
+          : isPracticeSelected
+            ? THEME.TEXT_BRIGHT
+            : THEME.TEXT_PRIMARY;
+      ctx.lineWidth = 1.8;
       ctx.beginPath();
       for (let i = 0; i < sec.terrain.length; i += 2) {
         const px = toSx(sec.terrain[i].x);
@@ -496,7 +526,7 @@ export class CampaignMapRenderer {
       const px1 = toSx(pad.x1);
       const px2 = Math.max(px1 + 7, toSx(pad.x2));
       const py = toSy(pad.y);
-      ctx.strokeStyle = pad.type === 'DEPOT' ? '#44FF77' : '#FFB000';
+      ctx.strokeStyle = pad.type === 'DEPOT' ? THEME.ACCENT_CYAN : THEME.ACCENT_AMBER;
       ctx.lineWidth = 3.0;
       ctx.beginPath();
       ctx.moveTo(px1, py);

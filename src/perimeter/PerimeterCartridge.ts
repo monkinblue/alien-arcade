@@ -1,4 +1,14 @@
 import {
+  CONTROLS_CARD_IDS,
+  handleSystemMenuAction,
+  handleSystemMenuKey,
+  hitTestChromeButtons,
+  PAUSE_BANNER_IDS,
+  POST_RUN_IDS,
+  TOP_CHROME_IDS,
+  type SystemMenuActionCallbacks,
+} from '../render/chrome';
+import {
   CALLSIGN_CHAR_REGEX,
   CALLSIGN_MAX_LEN,
   sanitizeCallsignDraft,
@@ -19,16 +29,23 @@ import { PerimeterSimulation } from './PerimeterSimulation';
 import { PerimeterTutorialDirector } from './PerimeterTutorialDirector';
 import { PERIMETER_WIKI_CHAPTERS } from './PerimeterWikiData';
 import {
+  ENDGAME_DIRECTIVES,
   MK3_BRANCH_SPECS,
+  OMEGA_DIRECTIVES,
   PERIMETER_CONSTANTS,
   TACTICAL_PROTOCOLS,
   WAVE_MUTATORS,
   type ActiveCursorTool,
   type BuildToolId,
   type CommandAbilityId,
+  type DraftChoiceId,
+  type EndgameDirectiveId,
   type Mk3BranchId,
+  type OmegaDirectiveId,
   type PerimeterLastSubmittedRun,
+  type PerimeterPhase,
   type ProtocolId,
+  type SectorId,
 } from './types';
 
 interface PerimeterDebugBridge {
@@ -54,7 +71,7 @@ interface PerimeterDebugBridge {
     abilityId: CommandAbilityId,
     targetPos?: Vec2
   ) => { ok: boolean; msg: string };
-  pickProtocol: (indexOrId: number | ProtocolId) => { ok: boolean; msg: string };
+  pickProtocol: (indexOrId: number | DraftChoiceId | OmegaDirectiveId) => { ok: boolean; msg: string };
   launchWave: () => { phase: string; waveNumber: number };
   setSpeed: (fast2x: boolean) => { fastForward2x: boolean };
   setPaused: (paused: boolean) => { tacticalPaused: boolean };
@@ -62,7 +79,7 @@ interface PerimeterDebugBridge {
   setBattery: (pct: number) => { reserveBattery: number };
   setSeals: (count: number) => { bulkheadSeals: number };
   jumpToWave: (waveNum: number, autoLaunch?: boolean) => Record<string, unknown>;
-  triggerProtocolDraft: () => { choices: ProtocolId[] };
+  triggerProtocolDraft: () => { choices: DraftChoiceId[] };
   clearHostiles: (triggerWaveComplete?: boolean) => { phase: string; waveNumber: number };
   fastStep: (seconds: number, stepDt?: number) => Record<string, unknown>;
   setAutoCommander: (
@@ -99,10 +116,13 @@ export class PerimeterCartridge implements Cartridge {
     centerY: PERIMETER_CONSTANTS.VIRTUAL_H * 0.5,
     zoom: 1.0,
   };
+  private lastSectorId: SectorId = 'SEC-01';
+  private lastSectorTransitionVersion = -1;
 
   private keysDown = new Set<string>();
   private activeTool: ActiveCursorTool = { kind: 'INSPECT' };
   private selectedTurretId: string | null = null;
+  private hoveredTurretId: string | null = null;
   private selectedDoorId: string | null = null;
   private hoveredButtonId: string | null = null;
 
@@ -130,6 +150,14 @@ export class PerimeterCartridge implements Cartridge {
   private osdMenuOpen = false;
   private manifestOpen = false;
   private wikiOpen = false;
+  private controlsCardOpen = false;
+  private pauseBannerOpen = false;
+  private draftPeekMap = false;
+  private confirmExitPending = false;
+  private confirmExitTimer = 0;
+  private postRunKeylockSec = 0;
+  private callsignEditing = false;
+  private prevPhase: PerimeterPhase = 'BRIEFING';
   private wikiChapterIdx = 0;
   private wikiScrollPx = 0;
   private tutorialDirector = new PerimeterTutorialDirector();
@@ -138,6 +166,7 @@ export class PerimeterCartridge implements Cartridge {
   private scoreSubmitted = false;
   private submittingScore = false;
   private submitResultBanner: string | null = null;
+  private submitResultTone: 'green' | 'amber' | 'red' = 'amber';
   private lastSubmittedRun: PerimeterLastSubmittedRun | null = null;
   private statusToast: string | null = null;
   private statusToastTimer = 0;
@@ -283,6 +312,47 @@ export class PerimeterCartridge implements Cartridge {
         this.glitchIntensity = Math.max(this.glitchIntensity, intensity);
       },
     });
+
+    this.sim.onSectorChanged = (sectorId) => {
+      this.syncCameraForSectorChange(sectorId);
+    };
+  }
+
+  private getWorldDims(): { w: number; h: number } {
+    const bp = this.sim.blueprint;
+    return {
+      w: bp.cols * bp.tileSize,
+      h: bp.rows * bp.tileSize,
+    };
+  }
+
+  private fitCameraToBlueprint(): void {
+    const { w, h } = this.getWorldDims();
+    this.camera = {
+      centerX: w * 0.5,
+      centerY: h * 0.5,
+      zoom: 1.0,
+    };
+  }
+
+  private syncCameraForSectorChange(sectorId: SectorId): void {
+    const prevSector = this.lastSectorId;
+    this.lastSectorId = sectorId;
+    this.lastSectorTransitionVersion = this.sim.sectorTransitionVersion;
+    this.fitCameraToBlueprint();
+    this.selectedTurretId = null;
+    this.selectedDoorId = null;
+    this.dragBuildAnchor = null;
+    this.dragRotateTurretId = null;
+    this.lastBuildHoverTile = null;
+    this.previewAngleLockedByUser = false;
+    this.activeTool = { kind: 'INSPECT' };
+    if (this.sim.waveNumber > 1 && sectorId !== prevSector) {
+      this.showToast(
+        `SECTOR EXTRACTION COMPLETE // DEPLOYED TO ${sectorId} — 100% SCRAP REFUNDED!`,
+        4.2
+      );
+    }
   }
 
   public mount(): void {
@@ -296,6 +366,7 @@ export class PerimeterCartridge implements Cartridge {
     this.keysDown.clear();
     this.activeTool = { kind: 'INSPECT' };
     this.selectedTurretId = null;
+    this.hoveredTurretId = null;
     this.selectedDoorId = null;
     this.hoveredButtonId = null;
     this.dragBuildAnchor = null;
@@ -307,22 +378,29 @@ export class PerimeterCartridge implements Cartridge {
     this.osdMenuOpen = false;
     this.manifestOpen = false;
     this.wikiOpen = false;
+    this.controlsCardOpen = false;
+    this.pauseBannerOpen = false;
+    this.draftPeekMap = false;
+    this.confirmExitPending = false;
+    this.confirmExitTimer = 0;
+    this.postRunKeylockSec = 0;
+    this.callsignEditing = false;
     this.wikiChapterIdx = 0;
     this.wikiScrollPx = 0;
     this.tutorialDirector.stop(this.sim);
-    this.camera = {
-      centerX: PERIMETER_CONSTANTS.VIRTUAL_W * 0.5,
-      centerY: PERIMETER_CONSTANTS.VIRTUAL_H * 0.5,
-      zoom: 1.0,
-    };
 
     // Start fresh Endless Hive Siege briefing on cartridge mount
     this.runPlaytimeSec = 0;
     this.sim.resetRun('ENDLESS_SIEGE', true);
+    this.prevPhase = this.sim.phase;
+    this.lastSectorId = this.sim.blueprint.sectorId;
+    this.lastSectorTransitionVersion = this.sim.sectorTransitionVersion;
+    this.fitCameraToBlueprint();
     this.callsignDraft = this.manifest.getSavedCallsign();
     this.scoreSubmitted = false;
     this.submittingScore = false;
     this.submitResultBanner = null;
+    this.submitResultTone = 'amber';
 
     this.bindListeners(signal);
 
@@ -382,6 +460,9 @@ export class PerimeterCartridge implements Cartridge {
           phase: this.sim.phase,
           waveNumber: this.sim.waveNumber,
           waveTitle: this.sim.currentWaveDef.title,
+          sectorId: this.sim.blueprint.sectorId,
+          pendingBreachIds: [...this.sim.pendingBreachIds],
+          activeBreachIds: [...this.sim.activeBreachIds],
           tacticalPaused: this.sim.tacticalPaused,
           fastForward2x: this.sim.fastForward2x,
           autoCommanderEnabled: this.devAutoCommander?.isEnabled() ?? false,
@@ -427,9 +508,18 @@ export class PerimeterCartridge implements Cartridge {
             scoreMult: mut.scoreMult,
           },
           protocols: {
+            draftMode: this.sim.draftMode,
             active: { ...this.sim.activeProtocols },
+            activeOmegas: [...this.sim.activeOmegas],
+            activeEndgame: { ...this.sim.activeEndgameDirectives },
             draftChoices: [...this.sim.protocolDraftChoices],
-            draftChoiceSpecs: this.sim.protocolDraftChoices.map((id) => TACTICAL_PROTOCOLS[id]),
+            omegaDraftChoices: [...this.sim.omegaDraftChoices],
+            draftChoiceSpecs: this.sim.protocolDraftChoices.map((id) =>
+              id in ENDGAME_DIRECTIVES
+                ? ENDGAME_DIRECTIVES[id as EndgameDirectiveId]
+                : TACTICAL_PROTOCOLS[id as ProtocolId]
+            ),
+            omegaDraftChoiceSpecs: this.sim.omegaDraftChoices.map((id) => OMEGA_DIRECTIVES[id]),
           },
           cooldowns: {
             flare: Number(this.sim.flareCooldown.toFixed(2)),
@@ -448,6 +538,8 @@ export class PerimeterCartridge implements Cartridge {
             mk3Branch: t.mk3Branch ?? null,
             mk3Code:
               t.level === 3 && t.mk3Branch ? MK3_BRANCH_SPECS[t.kind][t.mk3Branch].code : null,
+            mk4Level: t.mk4Level ?? 0,
+            powerUpTimer: Number((t.powerUpTimer ?? 0).toFixed(2)),
             powered: t.powered,
             kw: this.sim.getTurretPowerKw(t),
             ammo: t.ammo,
@@ -597,10 +689,18 @@ export class PerimeterCartridge implements Cartridge {
         },
         pickProtocol: (indexOrId) => {
           this.debugTainted = true;
+          if (this.sim.draftMode === 'OMEGA') {
+            const omegaId =
+              typeof indexOrId === 'number'
+                ? this.sim.omegaDraftChoices[indexOrId]
+                : (indexOrId as OmegaDirectiveId);
+            if (!omegaId) return { ok: false, msg: 'INVALID OMEGA INDEX OR ID' };
+            return this.sim.selectOmegaDirective(omegaId);
+          }
           const protoId =
             typeof indexOrId === 'number'
               ? this.sim.protocolDraftChoices[indexOrId]
-              : indexOrId;
+              : (indexOrId as DraftChoiceId);
           if (!protoId) return { ok: false, msg: 'INVALID PROTOCOL INDEX OR ID' };
           return this.sim.selectProtocolDraft(protoId);
         },
@@ -702,9 +802,17 @@ export class PerimeterCartridge implements Cartridge {
     this.lastToolAutoExitMs = 0;
     this.panDragState = null;
     this.hoveredButtonId = null;
+    this.hoveredTurretId = null;
     this.osdMenuOpen = false;
     this.manifestOpen = false;
     this.wikiOpen = false;
+    this.controlsCardOpen = false;
+    this.pauseBannerOpen = false;
+    this.draftPeekMap = false;
+    this.confirmExitPending = false;
+    this.confirmExitTimer = 0;
+    this.callsignEditing = false;
+    this.host.setModalOpen(false);
     this.tutorialDirector.stop(this.sim);
     document.body.style.cursor = 'default';
     const mobileInput = document.getElementById('mobile-callsign-input') as HTMLInputElement | null;
@@ -738,23 +846,119 @@ export class PerimeterCartridge implements Cartridge {
     this.scoreSubmitted = false;
     this.submittingScore = false;
     this.submitResultBanner = null;
+    this.submitResultTone = 'amber';
     this.lastSubmittedRun = null;
+    this.callsignEditing = false;
     this.callsignDraft = this.manifest.getSavedCallsign();
+  }
+
+  private isActiveRankedRun(): boolean {
+    if (this.sim.trainingMode) return false;
+    if (this.sim.phase === 'WAVE_ACTIVE' || this.sim.phase === 'PROTOCOL_DRAFT') return true;
+    if (
+      this.sim.phase === 'TACTICAL_PREP' &&
+      (this.sim.waveNumber > 1 || this.sim.turrets.length > 0)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  private exitToHubNow(): void {
+    this.osdMenuOpen = false;
+    this.manifestOpen = false;
+    this.wikiOpen = false;
+    this.controlsCardOpen = false;
+    this.pauseBannerOpen = false;
+    this.draftPeekMap = false;
+    this.confirmExitPending = false;
+    this.confirmExitTimer = 0;
+    this.host.setModalOpen(false);
+    this.tutorialDirector.stop(this.sim);
+    this.host.exitToMuthurOs("TERMINATED PROGRAM 02 // HADLEY'S PERIMETER TACTICAL NET.");
+  }
+
+  private requestExitToHub(): void {
+    if (this.isActiveRankedRun() && !this.confirmExitPending) {
+      this.confirmExitPending = true;
+      this.confirmExitTimer = 4.0;
+      this.host.audio.playButtonLatchLock(0.86, 0.85);
+      this.showToast('CLICK [CONFIRM EXIT?] AGAIN TO TERMINATE ACTIVE RANKED SIEGE', 3.5);
+      return;
+    }
+    this.exitToHubNow();
+  }
+
+  /**
+   * Unified Instant Replay: jumps straight into Wave 1 Prep (showBriefing = false) — never re-shows Briefing!
+   */
+  private startFreshReplay(): void {
+    this.osdMenuOpen = false;
+    this.manifestOpen = false;
+    this.wikiOpen = false;
+    this.controlsCardOpen = false;
+    this.pauseBannerOpen = false;
+    this.draftPeekMap = false;
+    this.confirmExitPending = false;
+    this.confirmExitTimer = 0;
+    this.postRunKeylockSec = 0;
+    this.activeTool = { kind: 'INSPECT' };
+    this.selectedTurretId = null;
+    this.selectedDoorId = null;
+    this.tutorialDirector.stop(this.sim);
+    this.resetSubmissionState(true);
+    this.sim.resetRun('ENDLESS_SIEGE', false);
+    this.prevPhase = this.sim.phase;
+    this.fitCameraToBlueprint();
+  }
+
+  private getSystemMenuCallbacks(): SystemMenuActionCallbacks {
+    return {
+      onResume: () => {
+        this.osdMenuOpen = false;
+        this.confirmExitPending = false;
+      },
+      onRestart: () => {
+        this.startFreshReplay();
+      },
+      onOpenLeaderboard: () => {
+        this.osdMenuOpen = false;
+        this.manifestOpen = true;
+      },
+      onExitToHub: () => {
+        this.requestExitToHub();
+      },
+      onExtraAction: (extraId: string) => {
+        if (extraId === 'perim-wiki-open') {
+          this.osdMenuOpen = false;
+          this.manifestOpen = false;
+          this.controlsCardOpen = false;
+          this.wikiOpen = true;
+        } else if (extraId === 'perim-drill-start') {
+          this.handleHudButton('perim-drill-start');
+        } else if (extraId === 'perim-drill-exit') {
+          this.handleHudButton('perim-drill-exit');
+        }
+      },
+    };
   }
 
   private async submitCurrentRunScore(): Promise<void> {
     if (this.scoreSubmitted || this.submittingScore) return;
     if (this.sim.trainingMode) {
       this.submitResultBanner = 'SIMULATION DRILL UNRANKED — SUBMISSION BLOCKED';
+      this.submitResultTone = 'amber';
       return;
     }
     if (import.meta.env.DEV && this.debugTainted) {
-      this.submitResultBanner = 'DEV DEBUG ACTIVE — PERIMETER_SCORES SUBMISSION BLOCKED';
+      this.submitResultBanner = 'DEV DEBUG ACTIVE — ORBITAL UPLINK SUBMISSION BLOCKED';
+      this.submitResultTone = 'red';
       this.host.audio.playMutedAvionicsIndicatorBeep(false);
       return;
     }
     this.submittingScore = true;
-    this.submitResultBanner = 'TRANSMITTING TELEMETRY TO MU-TH-UR...';
+    this.submitResultBanner = 'TRANSMITTING TELEMETRY TO ORBITAL RELAY...';
+    this.submitResultTone = 'amber';
     const finalScore = Math.max(1, this.sim.score);
     const finalWaves = Math.max(1, this.sim.waveNumber);
     const finalKills = Math.max(0, this.sim.totalKills);
@@ -770,25 +974,29 @@ export class PerimeterCartridge implements Cartridge {
     this.submittingScore = false;
     if (res.rejectedReason) {
       this.submitResultBanner = res.rejectedReason;
+      this.submitResultTone = 'red';
       this.host.audio.playMutedAvionicsIndicatorBeep(false);
       return;
     }
     this.scoreSubmitted = true;
+    this.callsignEditing = false;
     this.callsignDraft = this.manifest.getSavedCallsign();
+    const persistedScore = res.submittedScore ?? finalScore;
     this.lastSubmittedRun = {
       docId: res.docId,
       callsign: this.callsignDraft,
-      score: finalScore,
+      score: persistedScore,
       waves: finalWaves,
       kills: finalKills,
       mode: finalMode,
       rank: res.rank,
     };
     this.host.audio.playButtonLatchLock(1.05, 0.9);
+    this.submitResultTone = 'green';
     this.submitResultBanner = res.offlineFallback
-      ? `LOGGED TO LOCAL ARCHIVE — RANK #${res.rank}`
-      : `TRANSMISSION CONFIRMED // GLOBAL PERIMETER_SCORES RANK #${res.rank}!`;
-    // Open Global Manifest immediately with the pulsing ★ JUST ADDED highlight (matching Lunar Lander)
+      ? `LOGGED TO LOCAL TAPE ARCHIVE — RANK #${res.rank}`
+      : `TRANSMISSION CONFIRMED // ORBITAL RELAY RANK #${res.rank}!`;
+    // Auto-open unified Global Manifest immediately with boxed ★ JUST ADDED badge
     this.manifestOpen = true;
   }
 
@@ -813,24 +1021,19 @@ export class PerimeterCartridge implements Cartridge {
   }
 
   private clampCamera(): void {
+    const { w: worldW, h: worldH } = this.getWorldDims();
     this.camera.zoom = Math.max(1.0, Math.min(2.5, this.camera.zoom));
     if (this.camera.zoom <= 1.01) {
-      this.camera.centerX = PERIMETER_CONSTANTS.VIRTUAL_W * 0.5;
-      this.camera.centerY = PERIMETER_CONSTANTS.VIRTUAL_H * 0.5;
+      this.camera.centerX = worldW * 0.5;
+      this.camera.centerY = worldH * 0.5;
       return;
     }
-    const halfSpanX = (PERIMETER_CONSTANTS.VIRTUAL_W * 0.5) / this.camera.zoom;
-    const halfSpanY = (PERIMETER_CONSTANTS.VIRTUAL_H * 0.5) / this.camera.zoom;
-    const minX = Math.min(PERIMETER_CONSTANTS.VIRTUAL_W * 0.5, halfSpanX);
-    const maxX = Math.max(
-      PERIMETER_CONSTANTS.VIRTUAL_W * 0.5,
-      PERIMETER_CONSTANTS.VIRTUAL_W - halfSpanX
-    );
-    const minY = Math.min(PERIMETER_CONSTANTS.VIRTUAL_H * 0.5, halfSpanY);
-    const maxY = Math.max(
-      PERIMETER_CONSTANTS.VIRTUAL_H * 0.5,
-      PERIMETER_CONSTANTS.VIRTUAL_H - halfSpanY
-    );
+    const halfSpanX = (worldW * 0.5) / this.camera.zoom;
+    const halfSpanY = (worldH * 0.5) / this.camera.zoom;
+    const minX = Math.min(worldW * 0.5, halfSpanX);
+    const maxX = Math.max(worldW * 0.5, worldW - halfSpanX);
+    const minY = Math.min(worldH * 0.5, halfSpanY);
+    const maxY = Math.max(worldH * 0.5, worldH - halfSpanY);
     this.camera.centerX = Math.max(minX, Math.min(maxX, this.camera.centerX));
     this.camera.centerY = Math.max(minY, Math.min(maxY, this.camera.centerY));
   }
@@ -883,7 +1086,9 @@ export class PerimeterCartridge implements Cartridge {
       mobileInput.addEventListener(
         'input',
         () => {
-          if (this.sim.phase !== 'CALLSIGN_ENTRY' || this.scoreSubmitted) return;
+          const isPostRun =
+            this.sim.phase === 'CORE_BREACHED' || this.sim.phase === 'CALLSIGN_ENTRY';
+          if (!isPostRun || this.scoreSubmitted) return;
           this.callsignDraft = sanitizeCallsignDraft(mobileInput.value);
           mobileInput.value = this.callsignDraft;
         },
@@ -892,8 +1097,11 @@ export class PerimeterCartridge implements Cartridge {
       mobileInput.addEventListener(
         'keydown',
         (ev) => {
-          if (ev.key === 'Enter' && this.sim.phase === 'CALLSIGN_ENTRY' && !this.scoreSubmitted) {
+          const isPostRun =
+            this.sim.phase === 'CORE_BREACHED' || this.sim.phase === 'CALLSIGN_ENTRY';
+          if (ev.key === 'Enter' && isPostRun && !this.scoreSubmitted) {
             ev.preventDefault();
+            this.callsignEditing = false;
             mobileInput.blur();
             void this.submitCurrentRunScore();
           }
@@ -926,7 +1134,8 @@ export class PerimeterCartridge implements Cartridge {
             this.panDragState.moved = true;
           }
           if (this.panDragState.moved && this.camera.zoom > 1.0) {
-            const tf = this.blueprintRenderer.computeTransform(bpVp, this.camera);
+            const { w: worldW, h: worldH } = this.getWorldDims();
+            const tf = this.blueprintRenderer.computeTransform(bpVp, this.camera, worldW, worldH);
             this.camera.centerX = this.panDragState.camStartX - dxPx / tf.scale;
             this.camera.centerY = this.panDragState.camStartY - dyPx / tf.scale;
             this.clampCamera();
@@ -941,9 +1150,12 @@ export class PerimeterCartridge implements Cartridge {
           !this.osdMenuOpen &&
           !this.manifestOpen &&
           !this.wikiOpen &&
+          !this.controlsCardOpen &&
+          !this.pauseBannerOpen &&
           !this.tutorialDirector.graduated &&
           this.sim.phase !== 'BRIEFING' &&
-          this.sim.phase !== 'PROTOCOL_DRAFT' &&
+          (this.sim.phase !== 'PROTOCOL_DRAFT' || this.draftPeekMap) &&
+          this.sim.phase !== 'CORE_BREACHED' &&
           this.sim.phase !== 'CALLSIGN_ENTRY' &&
           cx >= bpVp.x &&
           cx <= bpVp.x + bpVp.width &&
@@ -951,9 +1163,21 @@ export class PerimeterCartridge implements Cartridge {
           cy <= bpVp.y + bpVp.height;
 
         if (this.cursorInsideBlueprint || this.dragBuildAnchor || this.dragRotateTurretId) {
-          this.cursorVirtual = this.blueprintRenderer.screenToVirtual(bpVp, this.camera, cx, cy);
+          const { w: worldW, h: worldH } = this.getWorldDims();
+          this.cursorVirtual = this.blueprintRenderer.screenToVirtual(
+            bpVp,
+            this.camera,
+            cx,
+            cy,
+            worldW,
+            worldH
+          );
+          this.hoveredTurretId = this.cursorInsideBlueprint
+            ? this.sim.findTurretAt(this.cursorVirtual, 36)?.id ?? null
+            : null;
         } else {
           this.cursorVirtual = null;
+          this.hoveredTurretId = null;
         }
 
         // Update drag-to-aim angle during hardware placement!
@@ -1059,14 +1283,24 @@ export class PerimeterCartridge implements Cartridge {
 
         if (e.pointerType === 'mouse' && e.button !== 0) return;
 
-        // 1. Check HUD / Modal Buttons First
+        // 1. Check HUD / Modal Buttons First (respecting disabled buttons via hitTestChromeButtons)
         const btn = this.hitTestHudButtons(cx, cy);
         if (btn) {
+          if (btn !== TOP_CHROME_IDS.HUB && btn !== 'sys-exit-hub') {
+            this.confirmExitPending = false;
+            this.confirmExitTimer = 0;
+          }
           if (btn !== 'insp-rearm' && !btn.startsWith('rack-rearm-')) {
             this.host.audio.playButtonLatchLock(0.95, 0.92);
           }
           this.handleHudButton(btn);
           return;
+        }
+
+        // Clicking outside confirm-exit button clears the latch
+        if (this.confirmExitPending) {
+          this.confirmExitPending = false;
+          this.confirmExitTimer = 0;
         }
 
         if (this.wikiOpen) {
@@ -1088,6 +1322,8 @@ export class PerimeterCartridge implements Cartridge {
         if (
           this.osdMenuOpen ||
           this.manifestOpen ||
+          this.controlsCardOpen ||
+          this.pauseBannerOpen ||
           this.tutorialDirector.graduated ||
           this.sim.phase === 'BRIEFING' ||
           this.sim.phase === 'PROTOCOL_DRAFT' ||
@@ -1109,7 +1345,15 @@ export class PerimeterCartridge implements Cartridge {
           return;
         }
 
-        const virt = this.blueprintRenderer.screenToVirtual(bpVp, this.camera, cx, cy);
+        const { w: worldW, h: worldH } = this.getWorldDims();
+        const virt = this.blueprintRenderer.screenToVirtual(
+          bpVp,
+          this.camera,
+          cx,
+          cy,
+          worldW,
+          worldH
+        );
         this.cursorVirtual = virt;
         const ts = this.sim.blueprint.tileSize;
 
@@ -1189,7 +1433,7 @@ export class PerimeterCartridge implements Cartridge {
               if (deployed.placedTurret) {
                 const placePan = Math.max(
                   -0.82,
-                  Math.min(0.82, (deployed.placedTurret.pos.x / PERIMETER_CONSTANTS.VIRTUAL_W - 0.5) * 1.5)
+                  Math.min(0.82, (deployed.placedTurret.pos.x / worldW - 0.5) * 1.5)
                 );
                 this.host.audio.playWeaponDeployEmplace(deployed.placedTurret.kind, placePan);
                 this.selectedTurretId = deployed.placedTurret.id;
@@ -1199,12 +1443,13 @@ export class PerimeterCartridge implements Cartridge {
                 this.selectedTurretId = null;
                 this.showToast(
                   this.sim.phase === 'WAVE_ACTIVE'
-                    ? `${deployed.weldedDoor.def.id} ARC-WELDING (2.0S)...`
+                    ? `${deployed.weldedDoor.def.id} ARC-WELDING (${PERIMETER_CONSTANTS.DOOR_MIDWAVE_WELD_SEC.toFixed(1)}S)...`
                     : `${deployed.weldedDoor.def.id} SEALED`
                 );
               } else if (bId === 'CLAYMORE') {
+                this.tutorialDirector.notifyClaymorePlaced();
                 this.showToast(
-                  `M18 CLAYMORE ARMED (${this.sim.claymores.length}/${PERIMETER_CONSTANTS.CLAYMORE_MAX_ACTIVE})`
+                  `M18 CLAYMORE ARMED (${this.sim.claymoresRemainingThisWave}/${this.sim.getClaymoreStockPerWave()} STOCK LEFT)`
                 );
               }
               if (!e.shiftKey) {
@@ -1232,7 +1477,7 @@ export class PerimeterCartridge implements Cartridge {
           // Directional Hardware (UA 571-C, M240, M99 Rail-Lance, M314): Begin drag-to-aim anchor!
           const anchorPan = Math.max(
             -0.82,
-            Math.min(0.82, ((snapCol * ts + ts * 0.5) / PERIMETER_CONSTANTS.VIRTUAL_W - 0.5) * 1.5)
+            Math.min(0.82, ((snapCol * ts + ts * 0.5) / worldW - 0.5) * 1.5)
           );
           this.host.audio.playTurretTripodTouchdown(anchorPan);
           const initAng =
@@ -1322,9 +1567,10 @@ export class PerimeterCartridge implements Cartridge {
           anchor.angle
         );
         if (res.ok && res.placedTurret) {
+          const { w: worldW } = this.getWorldDims();
           const placePan = Math.max(
             -0.82,
-            Math.min(0.82, (res.placedTurret.pos.x / PERIMETER_CONSTANTS.VIRTUAL_W - 0.5) * 1.5)
+            Math.min(0.82, (res.placedTurret.pos.x / worldW - 0.5) * 1.5)
           );
           this.host.audio.playWeaponDeployEmplace(res.placedTurret.kind, placePan);
           this.selectedTurretId = res.placedTurret.id;
@@ -1356,7 +1602,15 @@ export class PerimeterCartridge implements Cartridge {
           );
           return;
         }
-        if (this.osdMenuOpen || this.manifestOpen || this.sim.phase === 'BRIEFING') return;
+        if (
+          this.osdMenuOpen ||
+          this.manifestOpen ||
+          this.controlsCardOpen ||
+          this.pauseBannerOpen ||
+          this.sim.phase === 'BRIEFING'
+        ) {
+          return;
+        }
         const layout = this.getCurrentLayout();
         const bpVp = layout.blueprintViewport;
         if (
@@ -1366,11 +1620,14 @@ export class PerimeterCartridge implements Cartridge {
           this.cursorCrtPx.y <= bpVp.y + bpVp.height
         ) {
           e.preventDefault();
+          const { w: worldW, h: worldH } = this.getWorldDims();
           const beforeVirt = this.blueprintRenderer.screenToVirtual(
             bpVp,
             this.camera,
             this.cursorCrtPx.x,
-            this.cursorCrtPx.y
+            this.cursorCrtPx.y,
+            worldW,
+            worldH
           );
           const delta = e.deltaY < 0 ? 0.18 : -0.18;
           this.camera.zoom = Math.max(1.0, Math.min(2.5, this.camera.zoom + delta));
@@ -1378,7 +1635,9 @@ export class PerimeterCartridge implements Cartridge {
             bpVp,
             this.camera,
             this.cursorCrtPx.x,
-            this.cursorCrtPx.y
+            this.cursorCrtPx.y,
+            worldW,
+            worldH
           );
           this.camera.centerX += beforeVirt.x - afterVirt.x;
           this.camera.centerY += beforeVirt.y - afterVirt.y;
@@ -1390,18 +1649,7 @@ export class PerimeterCartridge implements Cartridge {
   }
 
   private hitTestHudButtons(cx: number, cy: number): string | null {
-    for (let i = this.hudRenderer.buttons.length - 1; i >= 0; i--) {
-      const b = this.hudRenderer.buttons[i];
-      if (
-        cx >= b.rect.x &&
-        cx <= b.rect.x + b.rect.width &&
-        cy >= b.rect.y &&
-        cy <= b.rect.y + b.rect.height
-      ) {
-        return b.id;
-      }
-    }
-    return null;
+    return hitTestChromeButtons(this.hudRenderer.buttons, cx, cy);
   }
 
   private selectBuildTool(buildId: Exclude<BuildToolId, 'NONE'>): void {
@@ -1509,6 +1757,119 @@ export class PerimeterCartridge implements Cartridge {
   }
 
   private handleHudButton(id: string): void {
+    // 1. Unified System Menu Modal dispatch
+    if (this.osdMenuOpen) {
+      const handled = handleSystemMenuAction(id, this.host, this.getSystemMenuCallbacks());
+      if (handled) return;
+    }
+
+    // 2. Shared TopChromeBar / ControlsOverlay / PostRunFlow IDs
+    switch (id) {
+      case TOP_CHROME_IDS.CRT: {
+        const next = this.host.toggle1979Crt();
+        this.showToast(next === 'CLASSIC_1979' ? '1979 CRT MODE: ON' : '1979 CRT MODE: OFF (CLEAN)', 1.4);
+        return;
+      }
+      case TOP_CHROME_IDS.CONTROLS:
+        this.osdMenuOpen = false;
+        this.manifestOpen = false;
+        this.pauseBannerOpen = false;
+        this.wikiOpen = false;
+        this.controlsCardOpen = !this.controlsCardOpen;
+        return;
+      case TOP_CHROME_IDS.AUDIO: {
+        const nextMuted = !this.host.isMuted();
+        this.host.setMuted(nextMuted);
+        this.showToast(nextMuted ? 'AUDIO: MUTED [M]' : 'AUDIO: ON [M]', 1.2);
+        return;
+      }
+      case TOP_CHROME_IDS.MENU:
+        this.manifestOpen = false;
+        this.wikiOpen = false;
+        this.controlsCardOpen = false;
+        this.pauseBannerOpen = false;
+        this.osdMenuOpen = !this.osdMenuOpen;
+        return;
+      case TOP_CHROME_IDS.HUB:
+        this.requestExitToHub();
+        return;
+      case CONTROLS_CARD_IDS.CLOSE:
+        this.controlsCardOpen = false;
+        return;
+      case CONTROLS_CARD_IDS.OPEN_WIKI:
+        this.controlsCardOpen = false;
+        this.osdMenuOpen = false;
+        this.manifestOpen = false;
+        this.pauseBannerOpen = false;
+        this.wikiOpen = true;
+        return;
+      case 'controls-open-quick':
+        this.osdMenuOpen = false;
+        this.manifestOpen = false;
+        this.pauseBannerOpen = false;
+        this.wikiOpen = false;
+        this.controlsCardOpen = true;
+        return;
+      case PAUSE_BANNER_IDS.RESUME:
+        this.pauseBannerOpen = false;
+        return;
+      case PAUSE_BANNER_IDS.CONTROLS:
+        this.pauseBannerOpen = false;
+        this.controlsCardOpen = true;
+        return;
+      case PAUSE_BANNER_IDS.MENU:
+        this.pauseBannerOpen = false;
+        this.osdMenuOpen = true;
+        return;
+      case POST_RUN_IDS.CALLSIGN_BOX:
+        if (!this.scoreSubmitted && !this.submittingScore) {
+          this.callsignEditing = true;
+          this.focusMobileCallsignInput();
+        }
+        return;
+      case POST_RUN_IDS.SUBMIT_SCORE:
+        if (this.postRunKeylockSec <= 0) {
+          this.callsignEditing = false;
+          void this.submitCurrentRunScore();
+        }
+        return;
+      case POST_RUN_IDS.OPEN_MANIFEST:
+        this.manifestOpen = true;
+        return;
+      case POST_RUN_IDS.PLAY_AGAIN:
+      case POST_RUN_IDS.MANIFEST_PLAY_AGAIN:
+        if (this.postRunKeylockSec <= 0 || this.manifestOpen) {
+          this.startFreshReplay();
+        }
+        return;
+      case POST_RUN_IDS.EXIT_HUB:
+        if (this.postRunKeylockSec <= 0) {
+          this.exitToHubNow();
+        }
+        return;
+      case POST_RUN_IDS.MANIFEST_CLOSE:
+        this.manifestOpen = false;
+        return;
+      case 'proto-peek-toggle':
+        if (this.sim.phase === 'PROTOCOL_DRAFT') {
+          this.draftPeekMap = !this.draftPeekMap;
+        }
+        return;
+      case 'perim-drill-advanced':
+        this.osdMenuOpen = false;
+        this.manifestOpen = false;
+        this.wikiOpen = false;
+        this.controlsCardOpen = false;
+        this.pauseBannerOpen = false;
+        this.activeTool = { kind: 'INSPECT' };
+        this.selectedTurretId = null;
+        this.selectedDoorId = null;
+        this.tutorialDirector.startAdvancedLab(this.sim);
+        this.fitCameraToBlueprint();
+        this.showToast('ADVANCED SYSTEMS LAB INITIALIZED (4 MODULES — UNRANKED)');
+        return;
+    }
+
     if (id.startsWith('wiki-tab-')) {
       const idx = parseInt(id.replace('wiki-tab-', ''), 10);
       if (!Number.isNaN(idx)) {
@@ -1525,12 +1886,30 @@ export class PerimeterCartridge implements Cartridge {
       this.wikiScrollPx = Math.min(this.hudRenderer.wikiMaxScrollPx, this.wikiScrollPx + 240);
       return;
     }
+    if (id === 'proto-reroll') {
+      const r = this.sim.rerollProtocolDraft();
+      if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
+      this.showToast(r.msg);
+      return;
+    }
     if (id.startsWith('proto-')) {
       const idx = parseInt(id.replace('proto-', ''), 10);
-      const chosen = this.sim.protocolDraftChoices[idx];
-      if (chosen) {
-        const r = this.sim.selectProtocolDraft(chosen);
-        this.showToast(r.msg);
+      if (this.sim.draftMode === 'OMEGA') {
+        const chosen = this.sim.omegaDraftChoices[idx];
+        if (chosen) {
+          const r = this.sim.selectOmegaDirective(chosen);
+          if (r.ok) this.draftPeekMap = false;
+          if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast(r.msg);
+        }
+      } else {
+        const chosen = this.sim.protocolDraftChoices[idx];
+        if (chosen) {
+          const r = this.sim.selectProtocolDraft(chosen);
+          if (r.ok) this.draftPeekMap = false;
+          if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast(r.msg);
+        }
       }
       return;
     }
@@ -1563,6 +1942,19 @@ export class PerimeterCartridge implements Cartridge {
     }
 
     switch (id) {
+      case 'resupply-purge':
+      case 'resupply-mines': {
+        if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('RESUPPLY LOCKED DURING TRAINING DRILL');
+          break;
+        }
+        const kind = id === 'resupply-purge' ? 'PURGE' : 'CLAYMORES';
+        const r = this.sim.purchaseOrdnanceResupply(kind);
+        if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
+        this.showToast(r.msg);
+        break;
+      }
       case 'briefing-engage':
         this.sim.phase = 'TACTICAL_PREP';
         break;
@@ -1576,7 +1968,8 @@ export class PerimeterCartridge implements Cartridge {
         }
         break;
       case 'perim-pause-toggle':
-        if (this.sim.phase === 'WAVE_ACTIVE' || this.sim.phase === 'TACTICAL_PREP') {
+        // Tactical Pause applies ONLY during WAVE_ACTIVE (never pauses TACTICAL_PREP!)
+        if (this.sim.phase === 'WAVE_ACTIVE') {
           this.sim.tacticalPaused = !this.sim.tacticalPaused;
         }
         break;
@@ -1676,7 +2069,7 @@ export class PerimeterCartridge implements Cartridge {
           !this.tutorialDirector.getSnapshot(this.sim).allowUpgrade
         ) {
           this.host.audio.playMutedAvionicsIndicatorBeep(false);
-          this.showToast('UPGRADES UNLOCK IN DRILL 09/09!');
+          this.showToast('UPGRADES UNLOCK IN CORE 04/04!');
           break;
         }
         if (this.selectedTurretId) {
@@ -1691,7 +2084,7 @@ export class PerimeterCartridge implements Cartridge {
           !this.tutorialDirector.getSnapshot(this.sim).allowUpgrade
         ) {
           this.host.audio.playMutedAvionicsIndicatorBeep(false);
-          this.showToast('UPGRADES UNLOCK IN DRILL 09/09!');
+          this.showToast('UPGRADES UNLOCK IN CORE 04/04!');
           break;
         }
         if (this.selectedTurretId) {
@@ -1707,11 +2100,23 @@ export class PerimeterCartridge implements Cartridge {
           !this.tutorialDirector.getSnapshot(this.sim).allowUpgrade
         ) {
           this.host.audio.playMutedAvionicsIndicatorBeep(false);
-          this.showToast('UPGRADES UNLOCK IN DRILL 09/09!');
+          this.showToast('UPGRADES UNLOCK IN CORE 04/04!');
           break;
         }
         if (this.selectedTurretId) {
           const r = this.sim.upgradeTurret(this.selectedTurretId, 'B');
+          if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast(r.msg);
+        }
+        break;
+      case 'insp-refit-mk4':
+        if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('MK-IV REFITS LOCKED DURING TRAINING DRILL');
+          break;
+        }
+        if (this.selectedTurretId) {
+          const r = this.sim.refitTurretMk4(this.selectedTurretId);
           if (!r.ok) this.host.audio.playMutedAvionicsIndicatorBeep(false);
           this.showToast(r.msg);
         }
@@ -1732,7 +2137,7 @@ export class PerimeterCartridge implements Cartridge {
       case 'door-unseal':
         if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
           this.host.audio.playMutedAvionicsIndicatorBeep(false);
-          this.showToast('USE [7] DOOR SEAL ON D-04 IN DRILL 07/09!');
+          this.showToast('USE [7] DOOR SEAL ON D-04 IN CORE 04/04!');
           break;
         }
         if (this.selectedDoorId) {
@@ -1756,18 +2161,20 @@ export class PerimeterCartridge implements Cartridge {
         this.sim.phase = 'CALLSIGN_ENTRY';
         break;
       case 'perim-callsign-focus':
+        this.callsignEditing = true;
         this.focusMobileCallsignInput();
         break;
       case 'perim-save-callsign':
         void this.submitCurrentRunScore();
         break;
       case 'perim-skip-callsign':
-        this.resetSubmissionState(true);
-        this.sim.resetRun(this.sim.mode, true);
+        this.startFreshReplay();
         break;
       case 'perim-wiki-open':
         this.osdMenuOpen = false;
         this.manifestOpen = false;
+        this.controlsCardOpen = false;
+        this.pauseBannerOpen = false;
         this.wikiOpen = true;
         break;
       case 'perim-wiki-close':
@@ -1779,6 +2186,8 @@ export class PerimeterCartridge implements Cartridge {
         this.wikiScrollPx = 0;
         this.osdMenuOpen = false;
         this.manifestOpen = false;
+        this.controlsCardOpen = false;
+        this.pauseBannerOpen = false;
         this.wikiOpen = true;
         break;
       }
@@ -1786,17 +2195,17 @@ export class PerimeterCartridge implements Cartridge {
         this.osdMenuOpen = false;
         this.manifestOpen = false;
         this.wikiOpen = false;
+        this.controlsCardOpen = false;
+        this.pauseBannerOpen = false;
+        this.draftPeekMap = false;
         this.activeTool = { kind: 'INSPECT' };
         this.selectedTurretId = null;
         this.selectedDoorId = null;
-        this.camera = {
-          centerX: PERIMETER_CONSTANTS.VIRTUAL_W * 0.5,
-          centerY: PERIMETER_CONSTANTS.VIRTUAL_H * 0.5,
-          zoom: 1.0,
-        };
         this.resetSubmissionState(true);
         this.tutorialDirector.start(this.sim);
-        this.showToast('USCM INTERACTIVE TRAINING DRILL INITIALIZED (UNRANKED)');
+        this.prevPhase = this.sim.phase;
+        this.fitCameraToBlueprint();
+        this.showToast('USCM 4-STAGE CORE CERTIFICATION DRILL INITIALIZED (UNRANKED)');
         break;
       case 'perim-drill-next':
       case 'perim-drill-skip':
@@ -1805,58 +2214,64 @@ export class PerimeterCartridge implements Cartridge {
         this.tutorialDirector.advanceStep(this.sim);
         break;
       case 'perim-drill-exit':
-        this.tutorialDirector.stop(this.sim);
+        this.startFreshReplay();
+        this.showToast('RANKED ENDLESS HIVE SIEGE ARMED — DEPLOY DEFENSES!');
+        break;
+      case 'perim-drill-to-menu':
         this.osdMenuOpen = false;
         this.manifestOpen = false;
         this.wikiOpen = false;
+        this.controlsCardOpen = false;
+        this.pauseBannerOpen = false;
+        this.draftPeekMap = false;
         this.activeTool = { kind: 'INSPECT' };
         this.selectedTurretId = null;
         this.selectedDoorId = null;
+        this.tutorialDirector.stop(this.sim);
+        this.sim.resetRun('ENDLESS_SIEGE', true);
         this.resetSubmissionState(true);
-        this.sim.resetRun('ENDLESS_SIEGE', false);
-        this.showToast('RANKED ENDLESS HIVE SIEGE ARMED — DEPLOY DEFENSES!');
+        this.prevPhase = this.sim.phase;
+        this.fitCameraToBlueprint();
+        this.showToast("RETURNED TO HADLEY'S PERIMETER MAIN MENU");
         break;
       case 'perim-manifest':
         this.osdMenuOpen = false;
         this.wikiOpen = false;
+        this.controlsCardOpen = false;
+        this.pauseBannerOpen = false;
         this.manifestOpen = !this.manifestOpen;
         break;
       case 'perim-new-run':
-        this.manifestOpen = false;
-        this.wikiOpen = false;
-        this.tutorialDirector.stop(this.sim);
-        this.resetSubmissionState(true);
-        this.sim.resetRun(this.sim.mode, true);
+        this.startFreshReplay();
         break;
       case 'perim-osd':
         this.manifestOpen = false;
         this.wikiOpen = false;
+        this.controlsCardOpen = false;
+        this.pauseBannerOpen = false;
         this.osdMenuOpen = !this.osdMenuOpen;
         break;
       case 'perim-close-modal':
         this.osdMenuOpen = false;
         this.manifestOpen = false;
         this.wikiOpen = false;
+        this.controlsCardOpen = false;
+        this.pauseBannerOpen = false;
         break;
-      case 'perim-mute':
-        this.host.setMuted(!this.host.isMuted());
+      case 'perim-mute': {
+        const nextMuted = !this.host.isMuted();
+        this.host.setMuted(nextMuted);
+        this.showToast(nextMuted ? 'AUDIO: MUTED [M]' : 'AUDIO: ON [M]', 1.2);
         break;
+      }
       case 'perim-fullscreen':
         this.host.toggleFullscreen();
         break;
       case 'perim-restart-endless':
-        this.osdMenuOpen = false;
-        this.wikiOpen = false;
-        this.tutorialDirector.stop(this.sim);
-        this.resetSubmissionState(true);
-        this.sim.resetRun('ENDLESS_SIEGE', false);
+        this.startFreshReplay();
         break;
       case 'perim-exit-os':
-        this.osdMenuOpen = false;
-        this.manifestOpen = false;
-        this.wikiOpen = false;
-        this.tutorialDirector.stop(this.sim);
-        this.host.exitToMuthurOs("TERMINATED PROGRAM 02 // HADLEY'S PERIMETER TACTICAL NET.");
+        this.requestExitToHub();
         break;
     }
   }
@@ -1923,44 +2338,20 @@ export class PerimeterCartridge implements Cartridge {
       }
     }
 
-    // Callsign Entry Keyboard Input (^[A-Z0-9_-]{1,12}$ with profanity & cooldown enforcement)
-    if (this.sim.phase === 'CALLSIGN_ENTRY' && !this.osdMenuOpen && !this.manifestOpen) {
-      if (e.code === 'Escape') {
-        this.host.audio.playButtonLatchLock();
-        this.handleHudButton('perim-skip-callsign');
-        return;
-      }
-      if (!this.scoreSubmitted) {
-        if (e.code === 'Backspace') {
-          this.callsignDraft = this.callsignDraft.slice(0, -1);
-          this.host.audio.playSfx('ui_keyclick', { pitch: 0.9 });
-        } else if (e.code === 'Enter' || e.code === 'NumpadEnter') {
-          this.host.audio.playSfx('keypress_return', { volume: 0.9 });
-          void this.submitCurrentRunScore();
-        } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-          if (CALLSIGN_CHAR_REGEX.test(e.key) && this.callsignDraft.length < CALLSIGN_MAX_LEN) {
-            this.callsignDraft += e.key.toUpperCase();
-            this.submitResultBanner = null;
-            this.host.audio.playSfx('ui_keyclick', { pitch: 1.05 });
-          }
-        }
-      } else if (e.code === 'Enter' || e.code === 'NumpadEnter') {
-        this.host.audio.playButtonLatchLock();
-        this.handleHudButton('perim-new-run');
-      }
+    const isHelpKey = e.code === 'KeyH' || e.key === '?' || (e.shiftKey && e.code === 'Slash');
+
+    // 1. Universal [M] Mute toggle (outside active Callsign typing!)
+    if (e.code === 'KeyM' && !e.repeat && !this.callsignEditing) {
+      const nextMuted = !this.host.isMuted();
+      this.host.setMuted(nextMuted);
+      if (!nextMuted) this.host.audio.playButtonLatchLock(1.0, 0.85);
+      this.showToast(nextMuted ? 'AUDIO: MUTED [M]' : 'AUDIO: ON [M]', 1.2);
       return;
     }
 
-    if (e.code === 'Tab' && !e.repeat) {
-      this.host.audio.playButtonLatchLock(0.95, 0.9);
-      this.manifestOpen = false;
-      this.wikiOpen = false;
-      this.osdMenuOpen = !this.osdMenuOpen;
-      return;
-    }
-
+    // 2. Full Field Manual Wiki Modal
     if (this.wikiOpen) {
-      if ((e.code === 'Escape' || e.code === 'KeyH' || e.code === 'Backspace') && !e.repeat) {
+      if ((e.code === 'Escape' || isHelpKey) && !e.repeat) {
         this.host.audio.playButtonLatchLock(0.92, 0.9);
         this.wikiOpen = false;
       } else if (e.code === 'ArrowDown') {
@@ -1989,86 +2380,197 @@ export class PerimeterCartridge implements Cartridge {
       return;
     }
 
-    if (this.osdMenuOpen || this.manifestOpen) {
-      if (e.code === 'Escape') {
+    // 3. Shared [H] / [?] 1-Glance Controls Quick-Card (with [W] -> Full Field Manual!)
+    if (this.controlsCardOpen) {
+      if ((e.code === 'Escape' || isHelpKey) && !e.repeat) {
         this.host.audio.playButtonLatchLock(0.92, 0.9);
-        this.osdMenuOpen = false;
-        this.manifestOpen = false;
-      } else if (e.code === 'KeyH' && !e.repeat) {
-        this.host.audio.playButtonLatchLock();
-        this.handleHudButton('perim-wiki-open');
+        this.controlsCardOpen = false;
+      } else if (e.code === 'KeyW' && !e.repeat) {
+        this.host.audio.playButtonLatchLock(1.02, 0.9);
+        this.controlsCardOpen = false;
+        this.wikiOpen = true;
       }
       return;
     }
 
-    if (this.tutorialDirector.graduated) {
-      if ((e.code === 'Enter' || e.code === 'Space') && !e.repeat) {
+    // 4. Shared [ESC] System & Pause Menu ([1-4] Quick Switch, [ESC] Resume, [M] Mute)
+    if (this.osdMenuOpen) {
+      if (isHelpKey && !e.repeat) {
         this.host.audio.playButtonLatchLock();
-        this.handleHudButton('perim-drill-exit');
-      } else if (e.code === 'KeyH' && !e.repeat) {
-        this.host.audio.playButtonLatchLock();
-        this.handleHudButton('perim-wiki-open');
-      } else if (e.code === 'Escape') {
+        this.osdMenuOpen = false;
+        this.controlsCardOpen = true;
+        return;
+      }
+      handleSystemMenuKey(e, this.host, this.getSystemMenuCallbacks());
+      return;
+    }
+
+    // 5. Shared Global Manifest Leaderboard ([R / ENTER] Play Again post-run, [ESC] Close)
+    if (this.manifestOpen) {
+      if (e.code === 'Escape' && !e.repeat) {
+        this.host.audio.playButtonLatchLock(0.92, 0.9);
+        this.manifestOpen = false;
+      } else if (
+        (e.code === 'KeyR' || e.code === 'Enter' || e.code === 'NumpadEnter') &&
+        !e.repeat &&
+        (this.sim.phase === 'CORE_BREACHED' ||
+          this.sim.phase === 'CALLSIGN_ENTRY' ||
+          Boolean(this.lastSubmittedRun))
+      ) {
+        this.host.audio.playButtonLatchLock(1.04, 0.9);
+        this.startFreshReplay();
+      }
+      return;
+    }
+
+    // 6. Shared [P] Amber CRT Pause Banner
+    if (this.pauseBannerOpen) {
+      if (e.code === 'KeyP' && !e.repeat) {
+        this.host.audio.playButtonLatchLock(1.04, 0.85);
+        this.pauseBannerOpen = false;
+      } else if (isHelpKey && !e.repeat) {
+        this.host.audio.playButtonLatchLock(1.02, 0.9);
+        this.pauseBannerOpen = false;
+        this.controlsCardOpen = true;
+      } else if (e.code === 'Escape' && !e.repeat) {
+        this.host.audio.playButtonLatchLock(0.92, 0.9);
+        this.pauseBannerOpen = false;
         this.osdMenuOpen = true;
       }
       return;
     }
 
+    // 7. Training Drill Graduation Modal (Core offers [A] Advanced Systems Lab!)
+    if (this.tutorialDirector.graduated) {
+      const snap = this.tutorialDirector.getSnapshot(this.sim);
+      if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !e.repeat) {
+        this.host.audio.playButtonLatchLock();
+        this.handleHudButton('perim-drill-exit');
+      } else if (e.code === 'KeyA' && !e.repeat && snap.canStartAdvancedLab) {
+        this.host.audio.playButtonLatchLock();
+        this.handleHudButton('perim-drill-advanced');
+      } else if (isHelpKey && !e.repeat) {
+        this.host.audio.playButtonLatchLock();
+        this.handleHudButton('perim-wiki-open');
+      } else if (e.code === 'Escape' && !e.repeat) {
+        this.host.audio.playButtonLatchLock(0.92, 0.9);
+        this.osdMenuOpen = true;
+      }
+      return;
+    }
+
+    // 8. 70% Briefing Modal ([ESC] opens System Menu — never exits to Hub!)
     if (this.sim.phase === 'BRIEFING') {
-      if (e.code === 'Enter' || e.code === 'Space') {
+      if ((e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') && !e.repeat) {
         this.host.audio.playButtonLatchLock();
         this.sim.phase = 'TACTICAL_PREP';
       } else if (e.code === 'KeyT' && !e.repeat) {
         this.host.audio.playButtonLatchLock();
         this.handleHudButton('perim-drill-start');
-      } else if (e.code === 'KeyH' && !e.repeat) {
+      } else if (isHelpKey && !e.repeat) {
         this.host.audio.playButtonLatchLock();
-        this.handleHudButton('perim-wiki-open');
-      } else if (e.code === 'Escape') {
-        this.host.audio.playButtonLatchLock();
-        this.handleHudButton('perim-exit-os');
+        this.controlsCardOpen = true;
+      } else if (e.code === 'Escape' && !e.repeat) {
+        this.host.audio.playButtonLatchLock(0.92, 0.9);
+        this.osdMenuOpen = true;
       }
       return;
     }
 
+    // 9. Protocol / Omega Draft Modal ([H] Controls ALLOWED + [SPACE] PEEK MAP toggle!)
     if (this.sim.phase === 'PROTOCOL_DRAFT') {
-      if (e.code === 'Digit1' && !e.repeat) {
-        this.handleHudButton('proto-0');
-      } else if (e.code === 'Digit2' && !e.repeat) {
-        this.handleHudButton('proto-1');
-      } else if (e.code === 'Digit3' && !e.repeat) {
-        this.handleHudButton('proto-2');
-      } else if (e.code === 'Escape') {
-        this.osdMenuOpen = true;
+      if (e.code === 'Space' && !e.repeat) {
+        this.host.audio.playSfx('ui_keyclick', { pitch: this.draftPeekMap ? 1.05 : 0.92 });
+        this.draftPeekMap = !this.draftPeekMap;
+      } else if (isHelpKey && !e.repeat) {
+        this.host.audio.playButtonLatchLock(1.02, 0.9);
+        this.controlsCardOpen = true;
+      } else if (e.code === 'Escape' && !e.repeat) {
+        if (this.draftPeekMap) {
+          this.draftPeekMap = false;
+        } else {
+          this.host.audio.playButtonLatchLock(0.92, 0.9);
+          this.osdMenuOpen = true;
+        }
+      } else if (!this.draftPeekMap) {
+        if (e.code === 'Digit1' && !e.repeat) {
+          this.handleHudButton('proto-0');
+        } else if (e.code === 'Digit2' && !e.repeat) {
+          this.handleHudButton('proto-1');
+        } else if (e.code === 'Digit3' && !e.repeat) {
+          this.handleHudButton('proto-2');
+        } else if (e.code === 'KeyR' && !e.repeat) {
+          this.handleHudButton('proto-reroll');
+        }
       }
       return;
     }
 
-    if (this.sim.phase === 'CORE_BREACHED') {
-      if (e.code === 'Enter' || e.code === 'Space') {
-        this.host.audio.playButtonLatchLock();
-        this.resetSubmissionState();
-        this.sim.phase = 'CALLSIGN_ENTRY';
-      } else if (e.code === 'Escape') {
+    // 10. Unified 1-Screen GameOverDebriefModal (0.4s keylock, opt-in [C] callsign edit, [ENTER] submit, [R] instant replay!)
+    if (this.sim.phase === 'CORE_BREACHED' || this.sim.phase === 'CALLSIGN_ENTRY') {
+      if (this.callsignEditing && !this.scoreSubmitted) {
+        if (e.code === 'Escape') {
+          this.callsignEditing = false;
+          this.host.audio.playSfx('ui_keyclick', { pitch: 0.9 });
+        } else if (e.code === 'Backspace') {
+          this.callsignDraft = this.callsignDraft.slice(0, -1);
+          this.host.audio.playSfx('ui_keyclick', { pitch: 0.9 });
+        } else if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+          this.callsignEditing = false;
+          if (this.postRunKeylockSec <= 0) {
+            this.host.audio.playSfx('keypress_return', { volume: 0.9 });
+            void this.submitCurrentRunScore();
+          }
+        } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          if (CALLSIGN_CHAR_REGEX.test(e.key) && this.callsignDraft.length < CALLSIGN_MAX_LEN) {
+            this.callsignDraft += e.key.toUpperCase();
+            this.submitResultBanner = null;
+            this.host.audio.playSfx('ui_keyclick', { pitch: 1.05 });
+          }
+        }
+        return;
+      }
+
+      if (e.code === 'Escape' && !e.repeat) {
+        this.host.audio.playButtonLatchLock(0.92, 0.9);
         this.osdMenuOpen = true;
+        return;
+      }
+
+      if (this.postRunKeylockSec > 0) return;
+
+      if (e.code === 'KeyC' && !e.repeat && !this.scoreSubmitted && !this.sim.trainingMode) {
+        this.callsignEditing = true;
+        this.focusMobileCallsignInput();
+        this.host.audio.playSfx('ui_keyclick', { pitch: 1.08 });
+      } else if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !e.repeat) {
+        if (!this.sim.trainingMode && !this.scoreSubmitted) {
+          this.host.audio.playSfx('keypress_return', { volume: 0.9 });
+          void this.submitCurrentRunScore();
+        } else if (this.scoreSubmitted) {
+          this.host.audio.playButtonLatchLock();
+          this.manifestOpen = true;
+        } else {
+          this.host.audio.playButtonLatchLock();
+          this.startFreshReplay();
+        }
+      } else if (e.code === 'KeyR' && !e.repeat) {
+        this.host.audio.playButtonLatchLock(1.04, 0.9);
+        this.startFreshReplay();
       }
       return;
     }
 
-    // Active Tactical Gameplay / Prep Controls
-    if (e.code === 'Escape') {
+    // 11. Active Tactical Gameplay / Prep Controls
+    // [ESC]: cancels active build/ability/rotate tool first; otherwise opens unified SystemMenuModal!
+    if (e.code === 'Escape' && !e.repeat) {
       if (this.activeTool.kind !== 'INSPECT') {
         this.activeTool = { kind: 'INSPECT' };
         this.statusToast = null;
         this.statusToastTimer = 0;
         this.host.audio.playSfx('ui_keyclick', { pitch: 0.85 });
-      } else if (performance.now() - this.lastToolAutoExitMs < 550) {
-        // Absorb reflexive ESC right after auto-tool-exit instead of yanking into OSD menu!
+      } else if (performance.now() - this.lastToolAutoExitMs < 450) {
         this.host.audio.playSfx('ui_keyclick', { pitch: 0.8 });
-      } else if (this.selectedTurretId || this.selectedDoorId) {
-        this.selectedTurretId = null;
-        this.selectedDoorId = null;
-        this.host.audio.playSfx('ui_keyclick', { pitch: 0.85 });
       } else {
         this.host.audio.playButtonLatchLock(0.92, 0.9);
         this.osdMenuOpen = true;
@@ -2076,29 +2578,52 @@ export class PerimeterCartridge implements Cartridge {
       return;
     }
 
-    if (e.code === 'Space' && !e.repeat) {
-      this.sim.tacticalPaused = !this.sim.tacticalPaused;
-      this.host.audio.playButtonLatchLock(this.sim.tacticalPaused ? 0.88 : 1.04, 0.85);
+    // [P]: Universal Amber CRT Pause Banner
+    if (e.code === 'KeyP' && !e.repeat) {
+      this.host.audio.playButtonLatchLock(0.88, 0.85);
+      this.pauseBannerOpen = true;
       return;
     }
 
-    if (e.code === 'KeyH' && !e.repeat) {
-      this.host.audio.playButtonLatchLock(1.02, 0.9);
-      if (this.tutorialDirector.active) {
-        this.handleHudButton('perim-drill-open-wiki');
-      } else {
-        this.handleHudButton('perim-wiki-open');
+    // [SPACE]: Interactive Tactical Pause during WAVE_ACTIVE ONLY (stop pausing TACTICAL_PREP!)
+    if (e.code === 'Space' && !e.repeat) {
+      if (this.sim.phase === 'WAVE_ACTIVE') {
+        this.sim.tacticalPaused = !this.sim.tacticalPaused;
+        this.host.audio.playButtonLatchLock(this.sim.tacticalPaused ? 0.88 : 1.04, 0.85);
       }
       return;
     }
 
-    if (e.code === 'KeyT' && !e.repeat && !this.tutorialDirector.active && this.sim.phase === 'TACTICAL_PREP' && this.sim.waveNumber === 1 && this.sim.turrets.length === 0) {
+    // [H] / [?]: Universal 1-Glance Controls Quick-Card (with [W] -> Full Field Manual)
+    if (isHelpKey && !e.repeat) {
+      this.host.audio.playButtonLatchLock(1.02, 0.9);
+      this.controlsCardOpen = true;
+      return;
+    }
+
+    // [Z]: Toggle 2X Speed
+    if (e.code === 'KeyZ' && !e.repeat) {
+      this.host.audio.playButtonLatchLock(1.02, 0.85);
+      this.handleHudButton('toggle-2x-speed');
+      return;
+    }
+
+    // [T]: Launch 4-Stage Training Drill (only during Wave 1 Prep before placing turrets!)
+    if (
+      e.code === 'KeyT' &&
+      !e.repeat &&
+      !this.tutorialDirector.active &&
+      this.sim.phase === 'TACTICAL_PREP' &&
+      this.sim.waveNumber === 1 &&
+      this.sim.turrets.length === 0
+    ) {
       this.host.audio.playButtonLatchLock();
       this.handleHudButton('perim-drill-start');
       return;
     }
 
-    if (e.code === 'Enter' && !e.repeat && this.sim.phase === 'TACTICAL_PREP') {
+    // [ENTER]: Launch Wave in Tactical Prep
+    if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !e.repeat && this.sim.phase === 'TACTICAL_PREP') {
       this.host.audio.playButtonLatchLock();
       if (this.sim.trainingMode) {
         if (this.tutorialDirector.getSnapshot(this.sim).showContinueBtn) {
@@ -2110,18 +2635,18 @@ export class PerimeterCartridge implements Cartridge {
       return;
     }
 
-    // Command Ability & Station Engineering Hotkeys: [F], [O], [V], [L], [C], [X]
-    if (e.code === 'KeyF' || ((e.shiftKey || e.altKey) && e.code === 'Digit1')) {
+    // Command Ability & Engineering Hotkeys: [F], [O], [V], [L], [C], [X] (Shift+1/2/3 hijack REMOVED!)
+    if (e.code === 'KeyF' && !e.repeat) {
       this.host.audio.playSfx('ui_keyclick');
       this.armCommandAbility('FLARE');
       return;
     }
-    if (e.code === 'KeyO' || ((e.shiftKey || e.altKey) && e.code === 'Digit2')) {
+    if (e.code === 'KeyO' && !e.repeat) {
       this.host.audio.playSfx('ui_keyclick');
       this.armCommandAbility('OVERCLOCK');
       return;
     }
-    if (e.code === 'KeyV' || ((e.shiftKey || e.altKey) && e.code === 'Digit3')) {
+    if (e.code === 'KeyV' && !e.repeat) {
       this.host.audio.playSfx('ui_keyclick');
       this.armCommandAbility('PURGE');
       return;
@@ -2142,7 +2667,7 @@ export class PerimeterCartridge implements Cartridge {
       return;
     }
 
-    // Hardware Build Hotkeys [1-8]
+    // Hardware Build Hotkeys [1-8] (Shift+[1-8] multi-deploy now works cleanly!)
     if (e.code === 'Digit1') {
       this.host.audio.playSfx('ui_keyclick');
       this.selectBuildTool('SENTRY_PULSE');
@@ -2182,38 +2707,59 @@ export class PerimeterCartridge implements Cartridge {
         }
         this.host.audio.playTurretServoStep(0);
       } else if (this.selectedTurretId) {
-        // Cancel non-directional tools (e.g. Arc-Welder) cleanly so [R] rotates selected turret!
-        if (
-          this.activeTool.kind === 'ROTATE_TURRET' &&
-          this.activeTool.turretId === this.selectedTurretId
-        ) {
-          const t = this.sim.turrets.find((u) => u.id === this.selectedTurretId);
-          if (t) {
-            this.sim.setTurretTargetAngle(t.id, t.targetAngle + Math.PI / 4);
+        if (this.tutorialDirector.active && !this.tutorialDirector.graduated) {
+          this.host.audio.playMutedAvionicsIndicatorBeep(false);
+          this.showToast('TURRET AIM LOCKED ON KILLBOX DURING TRAINING DRILL');
+          return;
+        }
+        const t = this.sim.turrets.find((u) => u.id === this.selectedTurretId);
+        if (t && t.kind !== 'CRYO_VALVE' && t.kind !== 'SHOCK_COIL') {
+          // 1-press clean +45° rotation!
+          const nextAng = t.targetAngle + Math.PI / 4;
+          this.sim.setTurretTargetAngle(t.id, nextAng);
+          const deg = Math.round((((nextAng * 180) / Math.PI) + 360) % 360);
+          this.showToast(`${t.callsign} ROTATED +45° (${deg}°)`, 1.5);
+          if (this.activeTool.kind === 'ROTATE_TURRET') {
+            this.activeTool = { kind: 'INSPECT' };
           }
-          this.activeTool = { kind: 'INSPECT' };
-          this.lastToolAutoExitMs = performance.now();
-        } else {
-          this.handleHudButton('insp-rotate');
         }
       }
     } else if (e.code === 'KeyE' && !e.repeat) {
-      if (e.shiftKey || !this.selectedTurretId) {
+      // [E] falls back to rearm-all when no turret or a non-Sentry is selected!
+      const sel = this.selectedTurretId
+        ? this.sim.turrets.find((u) => u.id === this.selectedTurretId)
+        : undefined;
+      if (e.shiftKey || !sel || sel.kind !== 'SENTRY_PULSE') {
         this.handleHudButton('rearm-all');
       } else {
         this.handleHudButton('insp-rearm');
       }
-    } else if (e.code === 'KeyP' && !e.repeat && this.selectedTurretId) {
+    } else if (e.code === 'KeyK' && !e.repeat && this.selectedTurretId) {
+      // Turret Power moved from [P] -> [K] (freeing [P] for universal Pause!)
       this.host.audio.playButtonLatchLock();
       this.handleHudButton('insp-power');
     } else if (e.code === 'KeyU' && !e.repeat && this.selectedTurretId) {
       this.host.audio.playButtonLatchLock();
-      this.handleHudButton('insp-upgrade');
-    } else if (
-      (e.code === 'Delete' || e.code === 'Backspace') &&
-      !e.repeat &&
-      this.selectedTurretId
-    ) {
+      const sel = this.sim.turrets.find((u) => u.id === this.selectedTurretId);
+      if (sel && sel.level === 3) {
+        this.handleHudButton('insp-refit-mk4');
+      } else {
+        this.handleHudButton('insp-upgrade');
+      }
+    } else if (e.code === 'KeyA' && !e.repeat && this.selectedTurretId) {
+      const sel = this.sim.turrets.find((u) => u.id === this.selectedTurretId);
+      if (sel && sel.level === 2) {
+        this.host.audio.playButtonLatchLock();
+        this.handleHudButton('insp-upgrade-a');
+      }
+    } else if (e.code === 'KeyB' && !e.repeat && this.selectedTurretId) {
+      const sel = this.sim.turrets.find((u) => u.id === this.selectedTurretId);
+      if (sel && sel.level === 2) {
+        this.host.audio.playButtonLatchLock();
+        this.handleHudButton('insp-upgrade-b');
+      }
+    } else if (e.code === 'Delete' && !e.repeat && this.selectedTurretId) {
+      // [DEL] ONLY for turret scrap (Backspace removed to prevent accidental scrap!)
       this.host.audio.playButtonLatchLock();
       this.handleHudButton('insp-scrap');
     }
@@ -2232,15 +2778,31 @@ export class PerimeterCartridge implements Cartridge {
         this.statusToast = null;
       }
     }
+    if (this.confirmExitTimer > 0) {
+      this.confirmExitTimer = Math.max(0, this.confirmExitTimer - clampedDt);
+      if (this.confirmExitTimer <= 0) {
+        this.confirmExitPending = false;
+      }
+    }
+    if (this.postRunKeylockSec > 0) {
+      this.postRunKeylockSec = Math.max(0, this.postRunKeylockSec - clampedDt);
+    }
     if (this.glitchIntensity > 0) {
       this.glitchIntensity = Math.max(0, this.glitchIntensity - clampedDt * 1.6);
     }
 
+    const overlayFreezingSim =
+      this.osdMenuOpen ||
+      this.manifestOpen ||
+      this.wikiOpen ||
+      this.controlsCardOpen ||
+      this.pauseBannerOpen;
+
     // Smooth WASD / Arrow Camera Panning when zoomed in
     if (
-      !this.osdMenuOpen &&
-      !this.manifestOpen &&
-      !this.wikiOpen &&
+      !overlayFreezingSim &&
+      !this.callsignEditing &&
+      this.sim.phase !== 'CORE_BREACHED' &&
       this.sim.phase !== 'CALLSIGN_ENTRY' &&
       this.camera.zoom > 1.0
     ) {
@@ -2258,8 +2820,8 @@ export class PerimeterCartridge implements Cartridge {
       }
     }
 
-    // Step Tactical Simulation (freezes automatically if OSD/Manifest/Wiki modal is open)
-    if (!this.osdMenuOpen && !this.manifestOpen && !this.wikiOpen) {
+    // Step Tactical Simulation (freezes automatically if any System/Controls/Pause/Manifest/Wiki modal is open)
+    if (!overlayFreezingSim) {
       if (
         !this.sim.trainingMode &&
         (this.sim.phase === 'TACTICAL_PREP' || this.sim.phase === 'WAVE_ACTIVE')
@@ -2270,6 +2832,31 @@ export class PerimeterCartridge implements Cartridge {
         this.devAutoCommander?.step(this.sim, clampedDt);
       }
       this.sim.step(clampedDt);
+
+      // Phase-transition hooks (0.4s Post-Run Keylock, auto-clear Tactical Pause in Prep, clear Draft Peek)
+      if (this.sim.phase !== this.prevPhase) {
+        if (this.sim.phase === 'CORE_BREACHED') {
+          this.postRunKeylockSec = 0.4;
+          this.callsignEditing = false;
+          this.draftPeekMap = false;
+          this.pauseBannerOpen = false;
+          this.resetSubmissionState(false);
+        }
+        if (this.prevPhase === 'PROTOCOL_DRAFT') {
+          this.draftPeekMap = false;
+        }
+        if (this.sim.phase === 'TACTICAL_PREP') {
+          this.sim.tacticalPaused = false;
+        }
+        this.prevPhase = this.sim.phase;
+      }
+
+      if (
+        this.sim.blueprint.sectorId !== this.lastSectorId ||
+        this.sim.sectorTransitionVersion !== this.lastSectorTransitionVersion
+      ) {
+        this.syncCameraForSectorChange(this.sim.blueprint.sectorId);
+      }
       if (this.tutorialDirector.active && !this.sim.tacticalPaused) {
         const prevStep = this.tutorialDirector.getSnapshot(this.sim).stepIndex;
         this.tutorialDirector.step(this.sim, clampedDt);
@@ -2297,11 +2884,24 @@ export class PerimeterCartridge implements Cartridge {
     const layout = this.getCurrentLayout();
     const tutorialDirective = this.tutorialDirector.getSnapshot(this.sim);
 
+    const anyModalOpen =
+      this.wikiOpen ||
+      this.controlsCardOpen ||
+      this.osdMenuOpen ||
+      this.manifestOpen ||
+      this.pauseBannerOpen ||
+      tutorialDirective.graduated ||
+      this.sim.phase === 'BRIEFING' ||
+      (this.sim.phase === 'PROTOCOL_DRAFT' && !this.draftPeekMap) ||
+      this.sim.phase === 'CORE_BREACHED' ||
+      this.sim.phase === 'CALLSIGN_ENTRY';
+    this.host.setModalOpen(anyModalOpen);
+
     // Clear full offscreen frame
     ctx.fillStyle = '#030805';
     ctx.fillRect(0, 0, this.viewportWidth, this.viewportHeight);
 
-    // 1. Render Central 1920x1080 Colony CAD Blueprint
+    // 1. Render Central Colony CAD Blueprint (with Calm-Mode hover reveal!)
     this.blueprintRenderer.render(ctx, {
       sim: this.sim,
       viewport: layout.blueprintViewport,
@@ -2310,6 +2910,7 @@ export class PerimeterCartridge implements Cartridge {
       activeTool: this.activeTool,
       cursorVirtual: this.cursorVirtual,
       selectedTurretId: this.selectedTurretId,
+      hoveredTurretId: this.hoveredTurretId,
       selectedDoorId: this.selectedDoorId,
       dragBuildAnchor: this.dragBuildAnchor,
       tutorialBeacons: tutorialDirective.beacons,
@@ -2320,7 +2921,7 @@ export class PerimeterCartridge implements Cartridge {
         : undefined,
     });
 
-    // 2. Render Nostromo Left/Right/Top/Bottom Instrumentation & Modals
+    // 2. Render Nostromo Left/Right/Top/Bottom Instrumentation & Shared Chrome Modals
     this.hudRenderer.render(
       ctx,
       {
@@ -2335,16 +2936,26 @@ export class PerimeterCartridge implements Cartridge {
         hoveredButtonId: this.hoveredButtonId,
         audioMuted: this.host.isMuted(),
         isFullscreen: this.host.getViewport().isFullscreen,
+        crtPreset: this.host.getCrtPreset(),
+        phosphorTheme: this.host.getPhosphorTheme(),
+        masterVolume: this.host.getMasterVolume(),
+        confirmExitPending: this.confirmExitPending,
         osdMenuOpen: this.osdMenuOpen,
         manifestOpen: this.manifestOpen,
         wikiOpen: this.wikiOpen,
+        controlsCardOpen: this.controlsCardOpen,
+        pauseBannerOpen: this.pauseBannerOpen,
+        draftPeekMap: this.draftPeekMap,
         wikiChapterIdx: this.wikiChapterIdx,
         wikiScrollPx: this.wikiScrollPx,
         tutorialDirective,
         callsignDraft: this.callsignDraft,
+        callsignEditing: this.callsignEditing,
+        postRunKeylockSec: this.postRunKeylockSec,
         scoreSubmitted: this.scoreSubmitted,
         submittingScore: this.submittingScore,
         submitResultBanner: this.submitResultBanner,
+        submitResultTone: this.submitResultTone,
         lastSubmittedRun: this.lastSubmittedRun,
         statusToast: this.statusToast,
       },
@@ -2385,7 +2996,8 @@ export class PerimeterCartridge implements Cartridge {
       glitch: this.glitchIntensity,
       overdrive: overdriveAmt,
       tubeTurnOn: 0,
-      chromaScale: this.wikiOpen ? 0.08 : 0.28, // Razor-sharp dedicated console readability inside Wiki!
+      modalActive: anyModalOpen,
+      chromaScale: anyModalOpen ? 0.06 : 0.22,
     };
   }
 }

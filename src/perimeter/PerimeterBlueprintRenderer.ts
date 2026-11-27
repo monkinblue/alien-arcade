@@ -1,4 +1,9 @@
-import { COLORS } from '../constants';
+import {
+  drawEllipsizedText,
+  font,
+  SEMIOTIC_ICONS,
+  THEME,
+} from '../render/chrome';
 import type { Vec2, ViewportRect } from '../types';
 import type { PerimeterSimulation } from './PerimeterSimulation';
 import type {
@@ -30,6 +35,7 @@ export interface BlueprintRenderContext {
   activeTool: ActiveCursorTool;
   cursorVirtual: Vec2 | null;
   selectedTurretId: string | null;
+  hoveredTurretId?: string | null;
   selectedDoorId: string | null;
   dragBuildAnchor: { col: number; row: number; angle: number } | null;
   tutorialBeacons?: TutorialMapBeacon[];
@@ -44,16 +50,24 @@ export interface BlueprintRenderContext {
 
 export class PerimeterBlueprintRenderer {
   /**
-   * Computes transform scale & top-left screen origin mapping 1920x1080 virtual space into `viewport`.
+   * Computes a zoom-compensated world-space font size so critical map labels
+   * stay >= 12px effective on screen regardless of blueprint fit scale.
+   */
+  private worldFontPx(minScreenPx: number, tfScale: number, maxWorldPx = 36): number {
+    const safeScale = Math.max(0.32, tfScale);
+    return Math.min(maxWorldPx, Math.max(minScreenPx, Math.ceil(minScreenPx / safeScale)));
+  }
+  /**
+   * Computes transform scale & top-left screen origin mapping blueprint virtual space
+   * (32x18 = 1920x1080 or 36x20 = 2160x1200) cleanly into `viewport`.
    */
   public computeTransform(
     viewport: ViewportRect,
-    camera: BlueprintCamera
+    camera: BlueprintCamera,
+    worldWidth: number = PERIMETER_CONSTANTS.VIRTUAL_W,
+    worldHeight: number = PERIMETER_CONSTANTS.VIRTUAL_H
   ): { scale: number; originX: number; originY: number } {
-    const fitScale = Math.min(
-      viewport.width / PERIMETER_CONSTANTS.VIRTUAL_W,
-      viewport.height / PERIMETER_CONSTANTS.VIRTUAL_H
-    );
+    const fitScale = Math.min(viewport.width / worldWidth, viewport.height / worldHeight);
     const scale = fitScale * camera.zoom;
     const screenCx = viewport.x + viewport.width * 0.5;
     const screenCy = viewport.y + viewport.height * 0.5;
@@ -66,9 +80,11 @@ export class PerimeterBlueprintRenderer {
     viewport: ViewportRect,
     camera: BlueprintCamera,
     screenX: number,
-    screenY: number
+    screenY: number,
+    worldWidth: number = PERIMETER_CONSTANTS.VIRTUAL_W,
+    worldHeight: number = PERIMETER_CONSTANTS.VIRTUAL_H
   ): Vec2 {
-    const tf = this.computeTransform(viewport, camera);
+    const tf = this.computeTransform(viewport, camera, worldWidth, worldHeight);
     return {
       x: (screenX - tf.originX) / tf.scale,
       y: (screenY - tf.originY) / tf.scale,
@@ -78,9 +94,11 @@ export class PerimeterBlueprintRenderer {
   public virtualToScreen(
     viewport: ViewportRect,
     camera: BlueprintCamera,
-    virt: Vec2
+    virt: Vec2,
+    worldWidth: number = PERIMETER_CONSTANTS.VIRTUAL_W,
+    worldHeight: number = PERIMETER_CONSTANTS.VIRTUAL_H
   ): Vec2 {
-    const tf = this.computeTransform(viewport, camera);
+    const tf = this.computeTransform(viewport, camera, worldWidth, worldHeight);
     return {
       x: tf.originX + virt.x * tf.scale,
       y: tf.originY + virt.y * tf.scale,
@@ -89,7 +107,9 @@ export class PerimeterBlueprintRenderer {
 
   public render(ctx: CanvasRenderingContext2D, rc: BlueprintRenderContext): void {
     const { viewport, camera, sim, timeSec } = rc;
-    const tf = this.computeTransform(viewport, camera);
+    const worldW = sim.blueprint.cols * sim.blueprint.tileSize;
+    const worldH = sim.blueprint.rows * sim.blueprint.tileSize;
+    const tf = this.computeTransform(viewport, camera, worldW, worldH);
 
     ctx.save();
     // Clip strictly to the central CAD schematic viewport frame
@@ -106,7 +126,7 @@ export class PerimeterBlueprintRenderer {
     ctx.scale(tf.scale, tf.scale);
 
     // 1. Structural CAD Blueprint Grid, Bulkheads, Shafts, Grates & Rooms
-    this.drawBlueprintArchitecture(ctx, rc);
+    this.drawBlueprintArchitecture(ctx, rc, tf.scale);
 
     // 2. Subtle Tactical Flow-Route Preview Lines (during Prep, Pause, Training, or Arc-Welder tool)
     if (
@@ -118,34 +138,34 @@ export class PerimeterBlueprintRenderer {
       this.drawFlowRouteVectors(ctx, sim, timeSec);
     }
 
-    // 3. Illumination & Firing Cones + Laser Tripwires + Strobe Flares + Overclock Rings
-    this.drawSensorAndIlluminationZones(ctx, rc);
+    // 3. Illumination & Firing Cones (Calm-Mode in WAVE_ACTIVE) + Laser Tripwires + Strobe Flares + Overclock Rings
+    this.drawSensorAndIlluminationZones(ctx, rc, tf.scale);
 
     // 4. Lingering Environmental Hazards (Acid Pools, Cryo Plumes, Napalm Clouds, Airlock Purge)
-    this.drawEnvironmentalZones(ctx, sim, timeSec);
+    this.drawEnvironmentalZones(ctx, sim, timeSec, tf.scale);
 
     // 4B. 5-Second Rattling Floor-Grate Breach Telegraphs (`GRATE-01..04`)!
-    this.drawGrateTelegraphs(ctx, sim, timeSec);
+    this.drawGrateTelegraphs(ctx, sim, timeSec, tf.scale);
 
-    // 5. Weldable Corridor Blast Doors (D-01 .. D-06) + 2.0s Arc-Weld Torch Sequences
-    this.drawBlastDoors(ctx, rc);
+    // 5. Weldable Corridor Blast Doors (D-01 .. D-06) + 1.5s Arc-Weld Torch Sequences
+    this.drawBlastDoors(ctx, rc, tf.scale);
 
     // 6. Central Reactor Core / Med-Lab Objective & 3 Bulkhead Seals
-    this.drawReactorCoreObjective(ctx, sim, timeSec);
+    this.drawReactorCoreObjective(ctx, sim, timeSec, tf.scale);
 
     // 7. Placed Defensive Hardware Units (+ 2.8s Reload Progress Arcs)
-    this.drawPlacedTurrets(ctx, rc);
+    this.drawPlacedTurrets(ctx, rc, tf.scale);
 
     // 8. Expanding Motion-Sensor Sweep Rings
     this.drawMotionSweepWaves(ctx, sim);
 
     // 9. Hostiles: Fuzzy Range-Gated Radar Blips vs. Sharp Illuminated Vector Bio-Silhouettes!
-    this.drawHostilesAndBlips(ctx, sim, timeSec);
+    this.drawHostilesAndBlips(ctx, sim, timeSec, tf.scale);
 
     // 10. Caseless Vector Tracer Bursts, Ricochet Sparks & Floating Callouts
-    this.drawProjectilesAndCallouts(ctx, sim);
+    this.drawProjectilesAndCallouts(ctx, sim, tf.scale);
 
-    // 11. Screen-Legible Diegetic Turret Telemetry Tags (`A-01 // 320 RDS`, `RELOAD 2.1S`, `000 DRY`)
+    // 11. Screen-Legible Diegetic Turret Telemetry Tags (Compact `A1 320` in Wave Calm-Mode, Expanded on Hover/Alert!)
     this.drawDiegeticTurretTags(ctx, rc, tf.scale);
 
     // 11B. Interactive Training Drill Directional Guide Cone & Pulsing Map Beacons
@@ -153,11 +173,11 @@ export class PerimeterBlueprintRenderer {
       this.drawTutorialGuideCone(ctx, sim, rc.tutorialPlacementRule, timeSec);
     }
     if (rc.tutorialBeacons && rc.tutorialBeacons.length > 0) {
-      this.drawTutorialBeacons(ctx, rc.tutorialBeacons, timeSec, tf.scale);
+      this.drawTutorialBeacons(ctx, rc.tutorialBeacons, timeSec, tf.scale, worldW);
     }
 
     // 12. Interactive Build / Cone-Aiming / Command-Ability Cursor Preview
-    this.drawInteractiveCursorPreview(ctx, rc);
+    this.drawInteractiveCursorPreview(ctx, rc, tf.scale);
 
     ctx.restore();
 
@@ -175,12 +195,12 @@ export class PerimeterBlueprintRenderer {
     // Outer CAD Schematic Viewport Border
     ctx.strokeStyle =
       sim.blackoutTimer > 0
-        ? '#FF3318'
+        ? THEME.ALERT_RED_STROKE
         : sim.overloadTimer > 0.25
-          ? '#FFB000'
+          ? THEME.ACCENT_AMBER
           : sim.floodlightTimer > 0
             ? '#B6FFF2'
-            : COLORS.GREEN_MID;
+            : THEME.BORDER_SUBTLE;
     ctx.lineWidth =
       sim.blackoutTimer > 0 || sim.overloadTimer > 0.25 || sim.floodlightTimer > 0 ? 2.6 : 2.0;
     ctx.strokeRect(viewport.x + 1, viewport.y + 1, viewport.width - 2, viewport.height - 2);
@@ -191,10 +211,11 @@ export class PerimeterBlueprintRenderer {
       const blink = Math.sin(timeSec * 18) > -0.25;
       ctx.fillStyle = blink ? 'rgba(130, 18, 12, 0.92)' : 'rgba(42, 8, 6, 0.92)';
       ctx.fillRect(viewport.x + 2, viewport.y + 2, viewport.width - 4, bannerH);
-      ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
+      ctx.font = font('head', 14);
       ctx.fillStyle = '#FFF0CC';
       ctx.textAlign = 'center';
-      ctx.fillText(
+      drawEllipsizedText(
+        ctx,
         `⚡ REACTOR BREAKER TRIPPED — SECTOR BLACKOUT (${sim.blackoutTimer.toFixed(1)}S) ⚡`,
         viewport.x + viewport.width * 0.5,
         viewport.y + 19,
@@ -207,11 +228,12 @@ export class PerimeterBlueprintRenderer {
       ctx.fillRect(viewport.x + 2, viewport.y + 2, viewport.width - 4, bannerH);
       ctx.fillStyle = frac > 0.6 ? 'rgba(255, 51, 24, 0.42)' : 'rgba(255, 176, 0, 0.32)';
       ctx.fillRect(viewport.x + 2, viewport.y + 2, (viewport.width - 4) * frac, bannerH);
-      ctx.font = 'bold 14px "Share Tech Mono", monospace';
-      ctx.fillStyle = frac > 0.6 ? '#FFF0CC' : '#FFB000';
+      ctx.font = font('head', 14);
+      ctx.fillStyle = frac > 0.6 ? '#FFF0CC' : THEME.ACCENT_AMBER;
       ctx.textAlign = 'center';
-      ctx.fillText(
-        `⚠ REACTOR OVERLOAD // BREAKER TRIP IN ${rem.toFixed(1)}S — SHED AUX [X] OR UNIT [P] ⚠`,
+      drawEllipsizedText(
+        ctx,
+        `⚠ REACTOR OVERLOAD // BREAKER TRIP IN ${rem.toFixed(1)}S — SHED AUX [X] OR UNIT [K] ⚠`,
         viewport.x + viewport.width * 0.5,
         viewport.y + 19,
         viewport.width - 20
@@ -222,10 +244,11 @@ export class PerimeterBlueprintRenderer {
       ctx.fillStyle = 'rgba(34, 22, 4, 0.90)';
       ctx.fillRect(viewport.x + 2, viewport.y + 2, viewport.width - 4, bannerH);
       ctx.globalAlpha = pulse;
-      ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-      ctx.fillStyle = '#FFB000';
+      ctx.font = font('head', 14);
+      ctx.fillStyle = THEME.ACCENT_AMBER;
       ctx.textAlign = 'center';
-      ctx.fillText(
+      drawEllipsizedText(
+        ctx,
         '❚❚ TACTICAL PAUSE — BUILD / WELD / AIM / REARM ENABLED [SPACE TO RESUME]',
         viewport.x + viewport.width * 0.5,
         viewport.y + 19,
@@ -233,40 +256,92 @@ export class PerimeterBlueprintRenderer {
       );
       ctx.restore();
     } else {
-      ctx.font = 'bold 12px "JetBrains Mono", monospace';
-      ctx.fillStyle = COLORS.GREEN_MID;
+      ctx.font = font('micro', 12);
+      ctx.fillStyle = THEME.TEXT_SECONDARY;
       ctx.textAlign = 'left';
-      ctx.fillText(
-        `CAD VIEW // ZOOM ${camera.zoom.toFixed(2)}X [SCROLL / WASD]`,
+      const leftCadText = `${sim.blueprint.sectorId} CAD (${sim.blueprint.cols}×${sim.blueprint.rows}) // ZOOM ${camera.zoom.toFixed(2)}X [SCROLL / WASD]`;
+      drawEllipsizedText(
+        ctx,
+        leftCadText,
         viewport.x + 10,
-        viewport.y + 18
+        viewport.y + 18,
+        viewport.width >= 600 ? viewport.width * 0.48 : viewport.width - 20
       );
-      if (viewport.width >= 580) {
+      if (viewport.width >= 600) {
         ctx.textAlign = 'right';
+        const rightMaxW = viewport.width * 0.48;
         if (sim.floodlightTimer > 0) {
           ctx.fillStyle = '#B6FFF2';
-          ctx.fillText(
-            `☀ SECTOR FLOODLIGHT ACTIVE (${sim.floodlightTimer.toFixed(1)}S) — 100% RANGE + CRIT`,
+          drawEllipsizedText(
+            ctx,
+            `☀ SECTOR FLOODLIGHT (${sim.floodlightTimer.toFixed(1)}S) — 100% RNG +25% CRIT`,
             viewport.x + viewport.width - 10,
-            viewport.y + 18
+            viewport.y + 18,
+            rightMaxW
+          );
+        } else if (sim.phase === 'TACTICAL_PREP' && sim.pendingBreachIds.length > 0) {
+          const blink = Math.sin(timeSec * 10) > -0.2;
+          ctx.fillStyle = blink ? THEME.ACCENT_AMBER : THEME.ALERT_RED_TEXT;
+          drawEllipsizedText(
+            ctx,
+            `⚠ HULL FRACTURE — BREACH OPENS ON WAVE ${String(sim.waveNumber).padStart(2, '0')} LAUNCH!`,
+            viewport.x + viewport.width - 10,
+            viewport.y + 18,
+            rightMaxW
           );
         } else if (sim.activeMutator !== 'NONE') {
           const mut = WAVE_MUTATORS[sim.activeMutator];
           ctx.fillStyle = mut.color;
-          ctx.fillText(
+          drawEllipsizedText(
+            ctx,
             `⚡ MUTATOR [${mut.label}]: ${mut.desc}`,
             viewport.x + viewport.width - 10,
-            viewport.y + 18
+            viewport.y + 18,
+            rightMaxW
           );
         } else {
-          ctx.fillStyle = 'rgba(255, 176, 0, 0.78)';
-          ctx.fillText(
+          ctx.fillStyle = THEME.ACCENT_AMBER;
+          drawEllipsizedText(
+            ctx,
             'DARK: 55% RNG · LIT (FLARE/M314/FLOOD): 100% +20% CRIT',
             viewport.x + viewport.width - 10,
-            viewport.y + 18
+            viewport.y + 18,
+            rightMaxW
           );
         }
       }
+    }
+
+    // Wave-1 Frame-1 Diegetic CAD Onboarding Prompt (vanishes as soon as 1st turret is placed!)
+    if (
+      sim.phase === 'TACTICAL_PREP' &&
+      sim.waveNumber === 1 &&
+      sim.turrets.length === 0 &&
+      !sim.trainingMode
+    ) {
+      const pulse = 0.72 + 0.28 * Math.sin(timeSec * 5.0);
+      const promptH = 30;
+      const promptW = Math.min(viewport.width - 24, 660);
+      const px = Math.round(viewport.x + (viewport.width - promptW) * 0.5);
+      const py = viewport.y + viewport.height - promptH - 10;
+      ctx.save();
+      ctx.fillStyle = 'rgba(8, 26, 14, 0.94)';
+      ctx.fillRect(px, py, promptW, promptH);
+      ctx.strokeStyle = pulse > 0.85 ? THEME.ACCENT_AMBER_HI : THEME.ACCENT_AMBER;
+      ctx.lineWidth = 1.8;
+      ctx.strokeRect(px + 0.5, py + 0.5, promptW - 1, promptH - 1);
+      ctx.font = font('data', 12);
+      ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      drawEllipsizedText(
+        ctx,
+        'STEP 1: SELECT [1] SENTRY -> CLICK [+] PAD & DRAG TO AIM -> [ENTER] LAUNCH',
+        px + promptW * 0.5,
+        py + promptH * 0.5 + 0.5,
+        promptW - 18
+      );
+      ctx.restore();
     }
 
     // Active Boss Health Bar (QUEEN or CRUSHER) cleanly below top CAD banner
@@ -288,10 +363,11 @@ export class PerimeterBlueprintRenderer {
       ctx.strokeStyle = isQueen ? '#FF3355' : '#FF9933';
       ctx.lineWidth = 1.8;
       ctx.strokeRect(bx, by, barW, barH);
-      ctx.font = 'bold 12.5px "Share Tech Mono", monospace';
+      ctx.font = font('head', 13);
       ctx.fillStyle = '#FFF4DC';
       ctx.textAlign = 'center';
-      ctx.fillText(
+      drawEllipsizedText(
+        ctx,
         `★ ${bSpec.name} — ${Math.ceil(activeBoss.hp)} / ${activeBoss.maxHp} HP ★`,
         bx + barW * 0.5,
         by + 15.5,
@@ -304,7 +380,8 @@ export class PerimeterBlueprintRenderer {
 
   private drawBlueprintArchitecture(
     ctx: CanvasRenderingContext2D,
-    rc: BlueprintRenderContext
+    rc: BlueprintRenderContext,
+    tfScale: number
   ): void {
     const { sim, activeTool, timeSec } = rc;
     const bp = sim.blueprint;
@@ -422,6 +499,88 @@ export class PerimeterBlueprintRenderer {
             ctx.lineTo(x + ts - 11, y + k);
           }
           ctx.stroke();
+        } else if (kind === 'SPAWN_GRATE') {
+          // Non-buildable sub-floor Skitterer breach hatch: distinct hazard-striped dark steel plating
+          ctx.save();
+          ctx.fillStyle = '#140906';
+          ctx.fillRect(x + 5, y + 5, ts - 10, ts - 10);
+
+          // Clipped diagonal amber/rust hazard chevrons
+          ctx.beginPath();
+          ctx.rect(x + 7, y + 7, ts - 14, ts - 14);
+          ctx.clip();
+          ctx.strokeStyle = 'rgba(255, 118, 28, 0.34)';
+          ctx.lineWidth = 4.5;
+          ctx.beginPath();
+          for (let s = -ts; s <= ts * 2; s += 13) {
+            ctx.moveTo(x + s, y + ts);
+            ctx.lineTo(x + s + ts, y);
+          }
+          ctx.stroke();
+          ctx.restore();
+
+          // Recessed steel hatch double frame + riveted corners + non-build cross bars
+          ctx.strokeStyle = '#B84A1C';
+          ctx.lineWidth = 2.0;
+          ctx.strokeRect(x + 6, y + 6, ts - 12, ts - 12);
+          ctx.strokeStyle = 'rgba(255, 176, 0, 0.45)';
+          ctx.lineWidth = 1.1;
+          ctx.strokeRect(x + 11, y + 11, ts - 22, ts - 22);
+
+          // Corner hatch rivets
+          ctx.fillStyle = '#FFB000';
+          for (const [rx, ry] of [
+            [x + 9, y + 9],
+            [x + ts - 9, y + 9],
+            [x + 9, y + ts - 9],
+            [x + ts - 9, y + ts - 9],
+          ]) {
+            ctx.fillRect(rx - 1.5, ry - 1.5, 3, 3);
+          }
+
+          // Center locked-hatch cross so players never confuse it with buildable green/cyan DUCT_GRATE
+          ctx.strokeStyle = 'rgba(255, 96, 36, 0.55)';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(x + 18, y + 18);
+          ctx.lineTo(x + ts - 18, y + ts - 18);
+          ctx.moveTo(x + ts - 18, y + 18);
+          ctx.lineTo(x + 18, y + ts - 18);
+          ctx.stroke();
+        } else if (kind === 'CORE') {
+          // Opaque Reactor Core Bulkhead Foundation (visually signals solid LOS obstruction!)
+          ctx.fillStyle = '#051A0F';
+          ctx.fillRect(x, y, ts, ts);
+          ctx.strokeStyle = 'rgba(46, 175, 96, 0.35)';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(x + 4, y + 4);
+          ctx.lineTo(x + ts - 4, y + ts - 4);
+          ctx.moveTo(x + ts - 4, y + 4);
+          ctx.lineTo(x + 4, y + ts - 4);
+          ctx.stroke();
+
+          // Thick bright armored wall rim along exterior edges of the 2x2 opaque Core block
+          ctx.strokeStyle = '#3BE078';
+          ctx.lineWidth = 3.4;
+          ctx.beginPath();
+          if (r > 0 && bp.tiles[r - 1][c] !== 'CORE') {
+            ctx.moveTo(x, y + 2);
+            ctx.lineTo(x + ts, y + 2);
+          }
+          if (r < bp.rows - 1 && bp.tiles[r + 1][c] !== 'CORE') {
+            ctx.moveTo(x, y + ts - 2);
+            ctx.lineTo(x + ts, y + ts - 2);
+          }
+          if (c > 0 && bp.tiles[r][c - 1] !== 'CORE') {
+            ctx.moveTo(x + 2, y);
+            ctx.lineTo(x + 2, y + ts);
+          }
+          if (c < bp.cols - 1 && bp.tiles[r][c + 1] !== 'CORE') {
+            ctx.moveTo(x + ts - 2, y);
+            ctx.lineTo(x + ts - 2, y + ts);
+          }
+          ctx.stroke();
         } else if (kind === 'CORRIDOR' && highlightClaymore) {
           const hasMine = sim.claymores.some((m) => m.col === c && m.row === r);
           if (!hasMine) {
@@ -468,7 +627,134 @@ export class PerimeterBlueprintRenderer {
       }
     }
 
+    // Dynamic AIR_SHAFT Hull Breaches: Prep amber fracture telegraphs & collapsed scorched breach edges!
+    if (bp.dynamicBreaches && bp.dynamicBreaches.length > 0) {
+      const breachPulse = 0.55 + 0.45 * Math.sin(timeSec * 8.5);
+      for (const br of bp.dynamicBreaches) {
+        const isPending = sim.pendingBreachIds.includes(br.id);
+        const isActive = sim.activeBreachIds.includes(br.id);
+        if (!isPending && !isActive) continue;
+        if (br.tiles.length === 0) continue;
+
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (const t of br.tiles) {
+          const tx = t.col * ts;
+          const ty = t.row * ts;
+          if (tx < minX) minX = tx;
+          if (ty < minY) minY = ty;
+          if (tx + ts > maxX) maxX = tx + ts;
+          if (ty + ts > maxY) maxY = ty + ts;
+        }
+        const bCx = (minX + maxX) * 0.5;
+        const bCy = (minY + maxY) * 0.5;
+
+        ctx.save();
+        if (isPending) {
+          // Pulsing amber fracture zone during Prep telegraphing W5/15/25 breach!
+          for (const t of br.tiles) {
+            const tx = t.col * ts;
+            const ty = t.row * ts;
+            ctx.fillStyle = `rgba(255, 160, 16, ${(0.12 + breachPulse * 0.14).toFixed(3)})`;
+            ctx.fillRect(tx + 2, ty + 2, ts - 4, ts - 4);
+            ctx.strokeStyle = `rgba(255, 176, 0, ${(0.55 + breachPulse * 0.4).toFixed(2)})`;
+            ctx.lineWidth = 2.0;
+            ctx.setLineDash([7, 5]);
+            ctx.strokeRect(tx + 3, ty + 3, ts - 6, ts - 6);
+          }
+
+          // Amber dashed fracture lines across the weakening bulkhead/air-shaft
+          ctx.strokeStyle = '#FFD25A';
+          ctx.lineWidth = 2.4;
+          ctx.setLineDash([8, 5]);
+          ctx.lineDashOffset = -timeSec * 24;
+          ctx.beginPath();
+          if (br.previewLines && br.previewLines.length > 0) {
+            for (const ln of br.previewLines) {
+              ctx.moveTo(ln.x1, ln.y1);
+              ctx.lineTo(ln.x2, ln.y2);
+            }
+          } else {
+            for (const t of br.tiles) {
+              const tx = t.col * ts;
+              const ty = t.row * ts;
+              ctx.moveTo(tx + 8, ty + 8);
+              ctx.lineTo(tx + ts - 8, ty + ts - 8);
+              ctx.moveTo(tx + ts - 8, ty + 8);
+              ctx.lineTo(tx + 8, ty + ts - 8);
+            }
+          }
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Zoom-compensated warning glyph & CAD fracture badge (>=12px effective)
+          const breachFontPx = this.worldFontPx(12, tfScale, 28);
+          const lbl = `⚠ HULL BREACH W-${String(sim.waveNumber).padStart(2, '0')} // ${br.label}`;
+          ctx.font = font('data', breachFontPx);
+          const tw = ctx.measureText(lbl).width + 18;
+          const bh = Math.round(breachFontPx + 10);
+          ctx.fillStyle = 'rgba(42, 18, 3, 0.94)';
+          ctx.fillRect(bCx - tw * 0.5, minY - bh - 6, tw, bh);
+          ctx.strokeStyle = breachPulse > 0.75 ? '#FFF0B8' : THEME.ACCENT_AMBER;
+          ctx.lineWidth = 1.8;
+          ctx.strokeRect(bCx - tw * 0.5, minY - bh - 6, tw, bh);
+          ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+          ctx.textAlign = 'center';
+          ctx.fillText(lbl, bCx, minY - 12);
+        } else if (isActive) {
+          // Scorched collapsed breach tunnel edges & jagged debris markings
+          const tileSet = new Set(br.tiles.map((t) => `${t.col},${t.row}`));
+          for (const t of br.tiles) {
+            const tx = t.col * ts;
+            const ty = t.row * ts;
+            ctx.fillStyle = 'rgba(46, 20, 8, 0.34)';
+            ctx.fillRect(tx, ty, ts, ts);
+
+            // Scorched rim along outer sides of breached corridor
+            ctx.strokeStyle = 'rgba(255, 118, 32, 0.56)';
+            ctx.lineWidth = 2.6;
+            ctx.beginPath();
+            if (!tileSet.has(`${t.col},${t.row - 1}`)) {
+              ctx.moveTo(tx + 2, ty + 2);
+              ctx.lineTo(tx + ts * 0.35, ty + 6);
+              ctx.lineTo(tx + ts * 0.68, ty + 2);
+              ctx.lineTo(tx + ts - 2, ty + 5);
+            }
+            if (!tileSet.has(`${t.col},${t.row + 1}`)) {
+              ctx.moveTo(tx + 2, ty + ts - 2);
+              ctx.lineTo(tx + ts * 0.32, ty + ts - 6);
+              ctx.lineTo(tx + ts * 0.66, ty + ts - 2);
+              ctx.lineTo(tx + ts - 2, ty + ts - 5);
+            }
+            if (!tileSet.has(`${t.col - 1},${t.row}`)) {
+              ctx.moveTo(tx + 2, ty + 2);
+              ctx.lineTo(tx + 6, ty + ts * 0.38);
+              ctx.lineTo(tx + 2, ty + ts * 0.72);
+              ctx.lineTo(tx + 5, ty + ts - 2);
+            }
+            if (!tileSet.has(`${t.col + 1},${t.row}`)) {
+              ctx.moveTo(tx + ts - 2, ty + 2);
+              ctx.lineTo(tx + ts - 6, ty + ts * 0.35);
+              ctx.lineTo(tx + ts - 2, ty + ts * 0.68);
+              ctx.lineTo(tx + ts - 5, ty + ts - 2);
+            }
+            ctx.stroke();
+          }
+
+          const actBreachPx = this.worldFontPx(12, tfScale, 24);
+          ctx.font = font('data', actBreachPx);
+          ctx.fillStyle = 'rgba(255, 168, 86, 0.72)';
+          ctx.textAlign = 'center';
+          ctx.fillText('BREACHED', bCx, bCy + 6);
+        }
+        ctx.restore();
+      }
+    }
+
     // Airlock Purge Chamber Stencils & Hazard Borders
+    const airlockFontPx = this.worldFontPx(12, tfScale, 26);
     for (const al of bp.airlocks) {
       const b = al.bounds;
       ctx.save();
@@ -477,30 +763,31 @@ export class PerimeterBlueprintRenderer {
         : 'rgba(255, 176, 0, 0.04)';
       ctx.fillRect(b.x + 3, b.y + 3, b.width - 6, b.height - 6);
 
-      ctx.strokeStyle = highlightPurge ? '#FFB000' : 'rgba(255, 176, 0, 0.42)';
+      ctx.strokeStyle = highlightPurge ? THEME.ACCENT_AMBER : 'rgba(255, 176, 0, 0.42)';
       ctx.lineWidth = highlightPurge ? 2.8 : 1.6;
       ctx.setLineDash([8, 6]);
       ctx.strokeRect(b.x + 3, b.y + 3, b.width - 6, b.height - 6);
       ctx.setLineDash([]);
 
-      ctx.font = 'bold 13px "Share Tech Mono", monospace';
-      ctx.fillStyle = highlightPurge ? '#FFD466' : 'rgba(255, 176, 0, 0.58)';
+      ctx.font = font('head', airlockFontPx);
+      ctx.fillStyle = highlightPurge ? THEME.ACCENT_AMBER_HI : 'rgba(255, 176, 0, 0.68)';
       ctx.textAlign = 'center';
-      ctx.fillText(al.label, al.center.x, al.center.y + 4);
+      ctx.fillText(al.label, al.center.x, al.center.y + 6);
       ctx.restore();
     }
 
     // Architectural Room Labels
     ctx.save();
     ctx.textAlign = 'center';
+    const roomPx = this.worldFontPx(12, tfScale, 24);
     for (const lbl of bp.roomLabels) {
-      ctx.font = 'bold 14px "Share Tech Mono", monospace';
-      ctx.fillStyle = 'rgba(59, 224, 104, 0.34)';
+      ctx.font = font('head', roomPx);
+      ctx.fillStyle = 'rgba(82, 184, 114, 0.42)';
       ctx.fillText(lbl.text, lbl.x, lbl.y);
       if (lbl.subText) {
-        ctx.font = 'bold 11px "JetBrains Mono", monospace';
-        ctx.fillStyle = 'rgba(255, 176, 0, 0.32)';
-        ctx.fillText(lbl.subText, lbl.x, lbl.y + 14);
+        ctx.font = font('data', Math.max(14, Math.round(roomPx * 0.85)));
+        ctx.fillStyle = 'rgba(255, 176, 0, 0.36)';
+        ctx.fillText(lbl.subText, lbl.x, lbl.y + Math.round(roomPx * 0.95));
       }
     }
     ctx.restore();
@@ -519,6 +806,8 @@ export class PerimeterBlueprintRenderer {
       }
     }
     const showPrepPreview = sim.phase === 'TACTICAL_PREP';
+    const ventFontPx = this.worldFontPx(12, tfScale, 30);
+    const previewFontPx = this.worldFontPx(12, tfScale, 28);
 
     for (const vent of bp.vents) {
       const summary = ventSummaries.get(vent.id);
@@ -531,14 +820,18 @@ export class PerimeterBlueprintRenderer {
             : 'rgba(255, 176, 0, 0.55)';
           ctx.lineWidth = showPrepPreview ? 2.2 : 1.6;
           ctx.strokeRect(vent.pos.x - 24, vent.pos.y - 24, 48, 48);
-          ctx.font = 'bold 11.5px "Share Tech Mono", monospace';
-          ctx.fillStyle = '#FFB000';
+          ctx.font = font('data', previewFontPx);
+          const gTxt = showPrepPreview && summary ? `${vent.id}: ${summary.text}` : vent.id;
+          const gw = ctx.measureText(gTxt).width + 14;
+          const gh = Math.round(previewFontPx + 8);
+          ctx.fillStyle = 'rgba(26, 16, 4, 0.92)';
+          ctx.fillRect(vent.pos.x - gw * 0.5, vent.pos.y - 28 - gh, gw, gh);
+          ctx.strokeStyle = THEME.ACCENT_AMBER;
+          ctx.lineWidth = 1.4;
+          ctx.strokeRect(vent.pos.x - gw * 0.5, vent.pos.y - 28 - gh, gw, gh);
+          ctx.fillStyle = THEME.ACCENT_AMBER_HI;
           ctx.textAlign = 'center';
-          ctx.fillText(
-            showPrepPreview && summary ? `${vent.id}: ${summary.text}` : vent.id,
-            vent.pos.x,
-            vent.pos.y - 28
-          );
+          ctx.fillText(gTxt, vent.pos.x, vent.pos.y - 34);
           ctx.restore();
         }
         continue;
@@ -563,31 +856,32 @@ export class PerimeterBlueprintRenderer {
       ctx.closePath();
       ctx.stroke();
 
-      ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
+      ctx.font = font('head', ventFontPx);
       ctx.fillStyle = summary?.hasBoss
-        ? '#FF4466'
+        ? THEME.ALERT_RED_TEXT
         : isWaveActive
-          ? '#FFB000'
-          : COLORS.GREEN_PRIMARY;
-      ctx.textAlign = vent.col < 16 ? 'left' : 'right';
-      const labelX = vent.col < 16 ? vent.pos.x - 24 : vent.pos.x + 24;
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_PRIMARY;
+      ctx.textAlign = vent.col < bp.cols * 0.5 ? 'left' : 'right';
+      const labelX = vent.col < bp.cols * 0.5 ? vent.pos.x - 24 : vent.pos.x + 24;
       ctx.fillText(vent.id, labelX, vent.pos.y - 30);
 
-      // Upcoming Wave Composition Preview Badge during Tactical Prep!
+      // Zoom-Compensated Upcoming Wave Composition Preview Badge during Tactical Prep!
       if (showPrepPreview && summary) {
-        ctx.font = 'bold 12px "JetBrains Mono", monospace';
+        ctx.font = font('data', previewFontPx);
         const previewTxt = summary.text;
-        const pw = ctx.measureText(previewTxt).width + 12;
-        const px = vent.col < 16 ? vent.pos.x - 24 : vent.pos.x + 24 - pw;
+        const pw = ctx.measureText(previewTxt).width + 18;
+        const ph = Math.round(previewFontPx + 10);
+        const px = vent.col < bp.cols * 0.5 ? vent.pos.x - 24 : vent.pos.x + 24 - pw;
         const py = vent.pos.y + 28;
-        ctx.fillStyle = summary.hasBoss ? 'rgba(65, 10, 14, 0.94)' : 'rgba(28, 18, 4, 0.92)';
-        ctx.fillRect(px, py, pw, 19);
-        ctx.strokeStyle = summary.hasBoss ? '#FF3355' : '#FFB000';
-        ctx.lineWidth = 1.4;
-        ctx.strokeRect(px, py, pw, 19);
+        ctx.fillStyle = summary.hasBoss ? 'rgba(65, 10, 14, 0.94)' : 'rgba(28, 18, 4, 0.94)';
+        ctx.fillRect(px, py, pw, ph);
+        ctx.strokeStyle = summary.hasBoss ? '#FF3355' : THEME.ACCENT_AMBER;
+        ctx.lineWidth = 1.6;
+        ctx.strokeRect(px, py, pw, ph);
         ctx.textAlign = 'center';
-        ctx.fillStyle = summary.hasBoss ? '#FFE0E6' : '#FFE082';
-        ctx.fillText(previewTxt, px + pw * 0.5, py + 13.5);
+        ctx.fillStyle = summary.hasBoss ? '#FFE0E6' : THEME.ACCENT_AMBER_HI;
+        ctx.fillText(previewTxt, px + pw * 0.5, py + Math.round(ph * 0.72));
       }
       ctx.restore();
     }
@@ -629,9 +923,11 @@ export class PerimeterBlueprintRenderer {
 
   private drawSensorAndIlluminationZones(
     ctx: CanvasRenderingContext2D,
-    rc: BlueprintRenderContext
+    rc: BlueprintRenderContext,
+    tfScale: number
   ): void {
-    const { sim, timeSec, selectedTurretId } = rc;
+    const { sim, timeSec, selectedTurretId, hoveredTurretId } = rc;
+    const flareFontPx = this.worldFontPx(12, tfScale, 26);
 
     // 1. M40 Tactical Strobe Flares (12s wide-area target lock!)
     for (const f of sim.flares) {
@@ -655,16 +951,16 @@ export class PerimeterBlueprintRenderer {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Center flare canister + countdown tag
+      // Center flare canister + zoom-compensated countdown tag
       ctx.fillStyle = '#FFFFFF';
       ctx.beginPath();
       ctx.arc(f.pos.x, f.pos.y, 5, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
-      ctx.fillStyle = '#FFB000';
+      ctx.font = font('data', flareFontPx);
+      ctx.fillStyle = THEME.ACCENT_AMBER_HI;
       ctx.textAlign = 'center';
-      ctx.fillText(`M40 FLARE [${f.remainingSec.toFixed(1)}S]`, f.pos.x, f.pos.y - 12);
+      ctx.fillText(`M40 FLARE [${f.remainingSec.toFixed(1)}S]`, f.pos.x, f.pos.y - 14);
       ctx.restore();
     }
 
@@ -681,15 +977,22 @@ export class PerimeterBlueprintRenderer {
       ctx.restore();
     }
 
-    // 3. Directional Infrared Turret Cones & M314 Laser Tripwires
+    // 3. Directional Infrared Turret Cones (Calm-Mode in WAVE_ACTIVE) & M314 Laser Tripwires
     for (const t of sim.turrets) {
       const isSelected = t.id === selectedTurretId;
+      const isHovered = Boolean(hoveredTurretId && t.id === hoveredTurretId);
       const spec = HARDWARE_SPECS[t.kind];
 
       if (t.kind === 'MOTION_RELAY') {
-        // MK-III Branch A: Permanent 240px Floodlight Illumination Halo!
-        if (t.powered && sim.blackoutTimer <= 0 && t.level === 3 && t.mk3Branch === 'A') {
-          const haloR = 240;
+        // MK-III Branch A: Permanent 280px Jam-Immune Optical Floodlight Halo (+15% crit & Stalker burn)!
+        if (
+          t.powered &&
+          t.powerUpTimer <= 0 &&
+          sim.blackoutTimer <= 0 &&
+          t.level === 3 &&
+          t.mk3Branch === 'A'
+        ) {
+          const haloR = 280;
           const grad = ctx.createRadialGradient(t.pos.x, t.pos.y, 8, t.pos.x, t.pos.y, haloR);
           grad.addColorStop(0, 'rgba(220, 255, 240, 0.24)');
           grad.addColorStop(0.65, 'rgba(110, 255, 190, 0.08)');
@@ -699,8 +1002,8 @@ export class PerimeterBlueprintRenderer {
           ctx.beginPath();
           ctx.arc(t.pos.x, t.pos.y, haloR, 0, Math.PI * 2);
           ctx.fill();
-          ctx.strokeStyle = 'rgba(200, 255, 232, 0.45)';
-          ctx.lineWidth = 1.6;
+          ctx.strokeStyle = 'rgba(200, 255, 232, 0.48)';
+          ctx.lineWidth = 1.7;
           ctx.setLineDash([7, 6]);
           ctx.beginPath();
           ctx.arc(t.pos.x, t.pos.y, haloR, 0, Math.PI * 2);
@@ -709,8 +1012,9 @@ export class PerimeterBlueprintRenderer {
           ctx.restore();
         }
 
-        if (isSelected) {
-          const rPx = spec.rangePx * (t.level === 3 ? 1.38 : t.level === 2 ? 1.2 : 1.0);
+        if (isSelected || isHovered) {
+          const mk4Mult = 1 + (t.mk4Level ?? 0) * PERIMETER_CONSTANTS.MK4_DMG_PER_LEVEL;
+          const rPx = spec.rangePx * (t.level >= 2 ? 1.105 : 1.0) * mk4Mult;
           ctx.save();
           ctx.strokeStyle = 'rgba(68, 255, 119, 0.35)';
           ctx.lineWidth = 1.6;
@@ -722,49 +1026,68 @@ export class PerimeterBlueprintRenderer {
           ctx.restore();
         }
 
-        // Corridor Laser Tripwire Beam!
-        if (t.powered && t.tripwireStart && t.tripwireEnd && t.tripwireIntegrity >= 20) {
+        // Corridor Laser Tripwire Beam (disabled visually when Screamer jams relay!)
+        if (
+          t.powered &&
+          t.powerUpTimer <= 0 &&
+          t.tripwireStart &&
+          t.tripwireEnd &&
+          t.tripwireIntegrity >= 20
+        ) {
           ctx.save();
-          const damaged = t.tripwireIntegrity < 75;
-          const beamAlpha = damaged ? 0.45 + 0.4 * Math.sin(timeSec * 28) : 0.88;
-          ctx.strokeStyle = `rgba(255, 68, 36, ${beamAlpha.toFixed(2)})`;
-          ctx.lineWidth = 2.4;
-          ctx.beginPath();
-          ctx.moveTo(t.tripwireStart.x, t.tripwireStart.y);
-          ctx.lineTo(t.tripwireEnd.x, t.tripwireEnd.y);
-          ctx.stroke();
+          if (t.jammedTimer > 0) {
+            ctx.strokeStyle = 'rgba(224, 102, 255, 0.40)';
+            ctx.lineWidth = 1.8;
+            ctx.setLineDash([5, 6]);
+            ctx.beginPath();
+            ctx.moveTo(t.tripwireStart.x, t.tripwireStart.y);
+            ctx.lineTo(t.tripwireEnd.x, t.tripwireEnd.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          } else {
+            const damaged = t.tripwireIntegrity < 75;
+            const beamAlpha = damaged ? 0.45 + 0.4 * Math.sin(timeSec * 28) : 0.88;
+            ctx.strokeStyle = `rgba(255, 68, 36, ${beamAlpha.toFixed(2)})`;
+            ctx.lineWidth = 2.4;
+            ctx.beginPath();
+            ctx.moveTo(t.tripwireStart.x, t.tripwireStart.y);
+            ctx.lineTo(t.tripwireEnd.x, t.tripwireEnd.y);
+            ctx.stroke();
 
-          ctx.fillStyle = '#FF5533';
-          ctx.fillRect(t.tripwireEnd.x - 3, t.tripwireEnd.y - 3, 6, 6);
+            ctx.fillStyle = '#FF5533';
+            ctx.fillRect(t.tripwireEnd.x - 3, t.tripwireEnd.y - 3, 6, 6);
+          }
           ctx.restore();
         }
         continue;
       }
 
       if (t.kind === 'CRYO_VALVE' || t.kind === 'SHOCK_COIL') {
-        const cryoProto = 1 + sim.getProtocolStacks('CRYO_SHATTER') * 0.2;
+        const cryoProto = 1 + sim.getProtocolStacks('CRYO_SHATTER') * 0.15;
         const lvMult =
           t.kind === 'CRYO_VALVE'
-            ? t.level === 3 && t.mk3Branch === 'B'
-              ? 1.4
-              : t.level >= 2
-                ? 1.22
-                : 1.0
-            : t.level === 3
-              ? 1.28
-              : t.level === 2
-                ? 1.15
-                : 1.0;
+            ? t.level >= 2
+              ? 1.22
+              : 1.0
+            : t.level >= 2
+              ? 1.18
+              : 1.0;
         const rPx = spec.rangePx * lvMult * cryoProto;
-        if (isSelected || (t.kind === 'SHOCK_COIL' && t.powered && sim.blackoutTimer <= 0)) {
+        const isCryoCooler = t.kind === 'CRYO_VALVE' && t.level === 3 && t.mk3Branch === 'B';
+
+        if (
+          isSelected ||
+          isHovered ||
+          (t.kind === 'SHOCK_COIL' && t.powered && t.powerUpTimer <= 0 && sim.blackoutTimer <= 0)
+        ) {
           ctx.save();
           ctx.strokeStyle =
             t.kind === 'SHOCK_COIL'
-              ? isSelected
-                ? 'rgba(0, 240, 255, 0.62)'
-                : 'rgba(0, 240, 255, 0.16)'
-              : 'rgba(142, 245, 171, 0.45)';
-          ctx.lineWidth = isSelected ? 1.9 : 1.2;
+              ? isSelected || isHovered
+                ? 'rgba(76, 238, 255, 0.62)'
+                : 'rgba(76, 238, 255, 0.14)'
+              : 'rgba(142, 245, 171, 0.50)';
+          ctx.lineWidth = isSelected || isHovered ? 1.9 : 1.1;
           ctx.setLineDash([5, 5]);
           ctx.beginPath();
           ctx.arc(t.pos.x, t.pos.y, rPx, 0, Math.PI * 2);
@@ -772,10 +1095,34 @@ export class PerimeterBlueprintRenderer {
           ctx.setLineDash([]);
           ctx.restore();
         }
+
+        // CRYO COOLER MK-III-B: Exact 320px turret cooling & ROF/heat aura ring!
+        if (
+          isCryoCooler &&
+          (isSelected || isHovered || (t.powered && t.powerUpTimer <= 0 && sim.blackoutTimer <= 0))
+        ) {
+          ctx.save();
+          ctx.strokeStyle =
+            isSelected || isHovered ? 'rgba(120, 248, 255, 0.52)' : 'rgba(120, 248, 255, 0.12)';
+          ctx.lineWidth = isSelected || isHovered ? 1.8 : 1.1;
+          ctx.setLineDash([9, 7]);
+          ctx.beginPath();
+          ctx.arc(t.pos.x, t.pos.y, 320, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          if (isSelected || isHovered) {
+            const auraPx = this.worldFontPx(12, tfScale, 24);
+            ctx.font = font('data', auraPx);
+            ctx.fillStyle = THEME.ACCENT_CYAN;
+            ctx.textAlign = 'center';
+            ctx.fillText('320PX CRYO COOLER AURA (-20% HEAT / +15% ROF)', t.pos.x, t.pos.y - 328);
+          }
+          ctx.restore();
+        }
         continue;
       }
 
-      if (!t.powered || sim.blackoutTimer > 0) continue;
+      if (!t.powered || sim.blackoutTimer > 0 || t.powerUpTimer > 0) continue;
 
       const relayMult = t.relayMatrixBoosted ? 1.32 : t.relayBoosted ? 1.24 : 1.0;
       const lvlMult = t.level === 3 ? 1.22 : t.level === 2 ? 1.12 : 1.0;
@@ -785,38 +1132,17 @@ export class PerimeterBlueprintRenderer {
       const a1 = t.angle - halfArc;
       const a2 = t.angle + halfArc;
 
+      // Blueprint Calm-Mode: during WAVE_ACTIVE, draw full shaded cone + IR scan ray ONLY on hovered/selected turret!
+      const showFullCone = sim.phase !== 'WAVE_ACTIVE' || isSelected || isHovered;
+
       ctx.save();
       const isRail = t.kind === 'RAIL_LANCE';
       const isAmber = t.kind === 'INCINERATOR' || t.overclockTimer > 0;
       const isDown =
         t.thermalLocked || t.rearmTimer > 0 || (t.kind === 'SENTRY_PULSE' && t.ammo <= 0);
-      const coneGrad = ctx.createRadialGradient(
-        t.pos.x,
-        t.pos.y,
-        12,
-        t.pos.x,
-        t.pos.y,
-        effRange
-      );
-      if (isDown) {
-        coneGrad.addColorStop(0, 'rgba(255, 51, 24, 0.12)');
-        coneGrad.addColorStop(1, 'rgba(255, 51, 24, 0.01)');
-      } else if (isRail && t.overclockTimer <= 0) {
-        coneGrad.addColorStop(0, 'rgba(0, 240, 255, 0.20)');
-        coneGrad.addColorStop(0.55, 'rgba(0, 220, 255, 0.09)');
-        coneGrad.addColorStop(1, 'rgba(0, 200, 255, 0.015)');
-      } else if (isAmber) {
-        coneGrad.addColorStop(0, 'rgba(255, 176, 0, 0.18)');
-        coneGrad.addColorStop(0.55, 'rgba(255, 176, 0, 0.09)');
-        coneGrad.addColorStop(1, 'rgba(255, 176, 0, 0.015)');
-      } else {
-        coneGrad.addColorStop(0, 'rgba(68, 255, 119, 0.17)');
-        coneGrad.addColorStop(0.55, 'rgba(68, 255, 119, 0.08)');
-        coneGrad.addColorStop(1, 'rgba(68, 255, 119, 0.015)');
-      }
 
       // Raycasted wall-occluded full 100% illuminated cone polygon (exact turret LOS!)
-      const raySamples = 24;
+      const raySamples = showFullCone ? 24 : 16;
       const conePts: Array<{ x: number; y: number }> = [];
       const darkPts: Array<{ x: number; y: number }> = [];
       for (let s = 0; s <= raySamples; s++) {
@@ -825,26 +1151,63 @@ export class PerimeterBlueprintRenderer {
         darkPts.push(sim.castSightRay(t.pos, ra, darkRange));
       }
 
-      ctx.fillStyle = coneGrad;
-      ctx.beginPath();
-      ctx.moveTo(t.pos.x, t.pos.y);
-      for (const pt of conePts) {
-        ctx.lineTo(pt.x, pt.y);
-      }
-      ctx.closePath();
-      ctx.fill();
+      if (showFullCone) {
+        const coneGrad = ctx.createRadialGradient(
+          t.pos.x,
+          t.pos.y,
+          12,
+          t.pos.x,
+          t.pos.y,
+          effRange
+        );
+        if (isDown) {
+          coneGrad.addColorStop(0, 'rgba(255, 51, 24, 0.12)');
+          coneGrad.addColorStop(1, 'rgba(255, 51, 24, 0.01)');
+        } else if (isRail && t.overclockTimer <= 0) {
+          coneGrad.addColorStop(0, 'rgba(76, 238, 255, 0.20)');
+          coneGrad.addColorStop(0.55, 'rgba(76, 220, 255, 0.09)');
+          coneGrad.addColorStop(1, 'rgba(76, 200, 255, 0.015)');
+        } else if (isAmber) {
+          coneGrad.addColorStop(0, 'rgba(255, 176, 0, 0.18)');
+          coneGrad.addColorStop(0.55, 'rgba(255, 176, 0, 0.09)');
+          coneGrad.addColorStop(1, 'rgba(255, 176, 0, 0.015)');
+        } else {
+          coneGrad.addColorStop(0, 'rgba(68, 255, 119, 0.17)');
+          coneGrad.addColorStop(0.55, 'rgba(68, 255, 119, 0.08)');
+          coneGrad.addColorStop(1, 'rgba(68, 255, 119, 0.015)');
+        }
 
-      // Outer 100% illuminated range border (dashed when unselected so 55% unlit arc stands out!)
+        ctx.fillStyle = coneGrad;
+        ctx.beginPath();
+        ctx.moveTo(t.pos.x, t.pos.y);
+        for (const pt of conePts) {
+          ctx.lineTo(pt.x, pt.y);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Outer 100% illuminated range border (crisp low-alpha outline in Calm-Mode!)
       ctx.strokeStyle = isDown
-        ? 'rgba(255, 51, 24, 0.45)'
+        ? showFullCone
+          ? 'rgba(255, 51, 24, 0.45)'
+          : 'rgba(255, 51, 24, 0.24)'
         : isSelected
-          ? '#FFB000'
-          : isRail && t.overclockTimer <= 0
-            ? 'rgba(0, 240, 255, 0.36)'
-            : isAmber
-              ? 'rgba(255, 176, 0, 0.34)'
-              : 'rgba(68, 255, 119, 0.32)';
-      ctx.lineWidth = isSelected ? 2.2 : 1.35;
+          ? THEME.ACCENT_AMBER
+          : isHovered
+            ? THEME.TEXT_BRIGHT
+            : isRail && t.overclockTimer <= 0
+              ? showFullCone
+                ? 'rgba(76, 238, 255, 0.36)'
+                : 'rgba(76, 238, 255, 0.18)'
+              : isAmber
+                ? showFullCone
+                  ? 'rgba(255, 176, 0, 0.34)'
+                  : 'rgba(255, 176, 0, 0.17)'
+                : showFullCone
+                  ? 'rgba(68, 255, 119, 0.32)'
+                  : 'rgba(68, 255, 119, 0.16)';
+      ctx.lineWidth = isSelected ? 2.2 : isHovered ? 1.8 : showFullCone ? 1.35 : 1.05;
       ctx.setLineDash([6, 5]);
       ctx.beginPath();
       ctx.moveTo(t.pos.x, t.pos.y);
@@ -855,15 +1218,23 @@ export class PerimeterBlueprintRenderer {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Inner 55% passive dark-corridor IR engagement range arc (solid crisp inner arc!)
+      // Inner 55% passive dark-corridor IR engagement range arc
       ctx.strokeStyle = isDown
-        ? 'rgba(255, 51, 24, 0.55)'
+        ? showFullCone
+          ? 'rgba(255, 51, 24, 0.55)'
+          : 'rgba(255, 51, 24, 0.28)'
         : isRail && t.overclockTimer <= 0
-          ? 'rgba(0, 240, 255, 0.62)'
+          ? showFullCone
+            ? 'rgba(76, 238, 255, 0.62)'
+            : 'rgba(76, 238, 255, 0.28)'
           : isAmber
-            ? 'rgba(255, 176, 0, 0.62)'
-            : 'rgba(68, 255, 119, 0.58)';
-      ctx.lineWidth = 1.65;
+            ? showFullCone
+              ? 'rgba(255, 176, 0, 0.62)'
+              : 'rgba(255, 176, 0, 0.28)'
+            : showFullCone
+              ? 'rgba(68, 255, 119, 0.58)'
+              : 'rgba(68, 255, 119, 0.26)';
+      ctx.lineWidth = showFullCone ? 1.65 : 1.2;
       ctx.beginPath();
       for (let i = 0; i < darkPts.length; i++) {
         if (i === 0) ctx.moveTo(darkPts[i].x, darkPts[i].y);
@@ -871,8 +1242,8 @@ export class PerimeterBlueprintRenderer {
       }
       ctx.stroke();
 
-      // Sweeping internal IR scan ray inside active cone (clipped at walls!)
-      if (!isDown) {
+      // Sweeping internal IR scan ray ONLY when showFullCone is true (Prep or Hovered/Selected)!
+      if (showFullCone && !isDown) {
         const sweepPhase = Math.sin(timeSec * 3.8 + t.col * 0.7);
         const rayAng = t.angle + sweepPhase * halfArc * 0.92;
         const rayHit = sim.castSightRay(t.pos, rayAng, darkRange);
@@ -893,7 +1264,7 @@ export class PerimeterBlueprintRenderer {
       if (Math.abs(t.targetAngle - t.angle) > 0.04) {
         const ta1 = t.targetAngle - halfArc;
         const ta2 = t.targetAngle + halfArc;
-        ctx.strokeStyle = '#FFB000';
+        ctx.strokeStyle = THEME.ACCENT_AMBER;
         ctx.lineWidth = 1.6;
         ctx.setLineDash([6, 5]);
         ctx.beginPath();
@@ -911,7 +1282,8 @@ export class PerimeterBlueprintRenderer {
   private drawEnvironmentalZones(
     ctx: CanvasRenderingContext2D,
     sim: PerimeterSimulation,
-    timeSec: number
+    timeSec: number,
+    tfScale: number
   ): void {
     // 1. Corrosive Acid Pools (from Acid Bursters)
     for (const pool of sim.acidPools) {
@@ -1040,21 +1412,23 @@ export class PerimeterBlueprintRenderer {
       ctx.arc(0, 0, 3.2, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.font = 'bold 9.5px "Share Tech Mono", monospace';
-      ctx.fillStyle = armed ? '#FFD266' : '#8EF5AB';
+      const mineFontPx = this.worldFontPx(12, tfScale, 22);
+      ctx.font = font('data', mineFontPx);
+      ctx.fillStyle = armed ? THEME.ACCENT_AMBER_HI : THEME.TEXT_BRIGHT;
       ctx.textAlign = 'center';
-      ctx.fillText(armed ? 'M18' : 'ARM', 0, -10);
+      ctx.fillText(armed ? 'M18' : 'ARM', 0, -12);
       ctx.restore();
     }
 
     // 6. Matriarch Queen Hatching Egg Sacs!
+    const eggFontPx = this.worldFontPx(12, tfScale, 26);
     for (const egg of sim.eggSacs) {
       const prog = 1 - egg.hatchTimer / Math.max(0.1, egg.maxHatchTimer);
       const pulse = 1 + 0.12 * Math.sin(timeSec * 14 + egg.id);
       ctx.save();
       ctx.translate(egg.pos.x, egg.pos.y);
 
-      ctx.strokeStyle = prog > 0.7 ? '#FF3344' : '#B8FF3B';
+      ctx.strokeStyle = prog > 0.7 ? THEME.ALERT_RED_STROKE : '#B8FF3B';
       ctx.lineWidth = 2.6;
       ctx.beginPath();
       ctx.arc(0, 0, 17, -Math.PI * 0.5, -Math.PI * 0.5 + prog * Math.PI * 2);
@@ -1073,10 +1447,18 @@ export class PerimeterBlueprintRenderer {
       ctx.arc(0, -3, 3.5, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.font = 'bold 10.5px "Share Tech Mono", monospace';
+      ctx.font = font('data', eggFontPx);
+      const eggLbl = `EGG ${egg.hatchTimer.toFixed(1)}S`;
+      const ew = ctx.measureText(eggLbl).width + 12;
+      const eh = Math.round(eggFontPx + 6);
+      ctx.fillStyle = 'rgba(18, 28, 8, 0.92)';
+      ctx.fillRect(-ew * 0.5, -24 - eh, ew, eh);
+      ctx.strokeStyle = prog > 0.7 ? THEME.ALERT_RED_STROKE : '#B8FF3B';
+      ctx.lineWidth = 1.4;
+      ctx.strokeRect(-ew * 0.5, -24 - eh, ew, eh);
       ctx.fillStyle = '#D4FF66';
       ctx.textAlign = 'center';
-      ctx.fillText(`EGG ${egg.hatchTimer.toFixed(1)}S`, 0, -21);
+      ctx.fillText(eggLbl, 0, -28);
       ctx.restore();
     }
   }
@@ -1087,9 +1469,11 @@ export class PerimeterBlueprintRenderer {
   private drawGrateTelegraphs(
     ctx: CanvasRenderingContext2D,
     sim: PerimeterSimulation,
-    timeSec: number
+    timeSec: number,
+    tfScale: number
   ): void {
     if (sim.grateTelegraphs.length === 0) return;
+    const grateFontPx = this.worldFontPx(12, tfScale, 30);
     for (const gt of sim.grateTelegraphs) {
       const blink = Math.sin(timeSec * 18) > -0.2;
       const ringProg = (timeSec * 1.4) % 1;
@@ -1108,29 +1492,35 @@ export class PerimeterBlueprintRenderer {
       const jy = (Math.random() - 0.5) * 4;
       ctx.fillStyle = blink ? 'rgba(255, 110, 20, 0.32)' : 'rgba(60, 22, 4, 0.5)';
       ctx.fillRect(-28 + jx, -28 + jy, 56, 56);
-      ctx.strokeStyle = blink ? '#FFF0B8' : '#FF3318';
+      ctx.strokeStyle = blink ? '#FFF0B8' : THEME.ALERT_RED_STROKE;
       ctx.lineWidth = 3.0;
       ctx.strokeRect(-28 + jx, -28 + jy, 56, 56);
 
-      // High-contrast countdown banner above grate
+      // Zoom-compensated high-contrast countdown banner above grate
       const lbl = `⚠ ${gt.ventId} BREACH ${gt.remainingSec.toFixed(1)}S`;
-      ctx.font = 'bold 15px "Share Tech Mono", monospace';
-      const tw = ctx.measureText(lbl).width + 14;
-      ctx.fillStyle = blink ? '#FFB000' : 'rgba(42, 12, 4, 0.94)';
-      ctx.fillRect(-tw * 0.5, -54, tw, 22);
-      ctx.strokeStyle = '#FF3318';
+      ctx.font = font('head', grateFontPx);
+      const tw = ctx.measureText(lbl).width + 18;
+      const bh = Math.round(grateFontPx + 10);
+      ctx.fillStyle = blink ? THEME.ACCENT_AMBER : 'rgba(42, 12, 4, 0.94)';
+      ctx.fillRect(-tw * 0.5, -36 - bh, tw, bh);
+      ctx.strokeStyle = THEME.ALERT_RED_STROKE;
       ctx.lineWidth = 1.8;
-      ctx.strokeRect(-tw * 0.5, -54, tw, 22);
-      ctx.fillStyle = blink ? '#040805' : '#FFB000';
+      ctx.strokeRect(-tw * 0.5, -36 - bh, tw, bh);
+      ctx.fillStyle = blink ? THEME.INK_INVERSE : THEME.ACCENT_AMBER_HI;
       ctx.textAlign = 'center';
-      ctx.fillText(lbl, 0, -38);
+      ctx.fillText(lbl, 0, -42);
       ctx.restore();
     }
   }
 
-  private drawBlastDoors(ctx: CanvasRenderingContext2D, rc: BlueprintRenderContext): void {
+  private drawBlastDoors(
+    ctx: CanvasRenderingContext2D,
+    rc: BlueprintRenderContext,
+    tfScale: number
+  ): void {
     const { sim, activeTool, selectedDoorId, timeSec } = rc;
     const ts = sim.blueprint.tileSize;
+    const doorFontPx = this.worldFontPx(12, tfScale, 28);
     const highlightWeld =
       activeTool.kind === 'BUILD' && activeTool.buildId === 'ARC_WELDER';
 
@@ -1169,17 +1559,17 @@ export class PerimeterBlueprintRenderer {
         ctx.arc(tx, ty, flash ? 6.5 : 4.5, 0, Math.PI * 2);
         ctx.fill();
 
-        const barW = 68;
+        const barW = 74;
         const barY = -h * 0.5 - 16;
         ctx.fillStyle = '#050D08';
         ctx.fillRect(-barW * 0.5, barY, barW, 8);
-        ctx.fillStyle = '#FFB000';
+        ctx.fillStyle = THEME.ACCENT_AMBER;
         ctx.fillRect(-barW * 0.5 + 1, barY + 1, (barW - 2) * prog, 6);
 
-        ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
-        ctx.fillStyle = '#FFF0B8';
+        ctx.font = font('data', doorFontPx);
+        ctx.fillStyle = THEME.ACCENT_AMBER_HI;
         ctx.textAlign = 'center';
-        ctx.fillText(`WELDING ${ds.weldingTimer.toFixed(1)}S`, 0, barY - 4);
+        ctx.fillText(`WELDING ${ds.weldingTimer.toFixed(1)}S`, 0, barY - 6);
       } else if (ds.welded && ds.hp > 0) {
         const hpRatio = Math.max(0, ds.hp / ds.maxHp);
         const doorCol =
@@ -1208,18 +1598,51 @@ export class PerimeterBlueprintRenderer {
         }
         ctx.stroke();
 
-        // Live Door HP Bar
-        const barW = 62;
-        const barY = -h * 0.5 - 15;
+        // Electrified Bulkhead Plating sparks when BULKHEAD_ARMOR Protocol is active!
+        if (sim.getProtocolStacks('BULKHEAD_ARMOR') > 0) {
+          const elecAlpha = 0.65 + 0.35 * Math.sin(timeSec * 22 + cx * 0.05);
+          ctx.save();
+          ctx.strokeStyle = `rgba(0, 240, 255, ${elecAlpha.toFixed(2)})`;
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          const steps = 6;
+          for (let s = 0; s <= steps; s++) {
+            const frac = -0.44 + (s / steps) * 0.88;
+            const jitter =
+              s === 0 || s === steps
+                ? 0
+                : Math.sin(timeSec * 42 + s * 3.7 + cy) * 6.5;
+            const ex = isVert ? jitter : w * frac;
+            const ey = isVert ? h * frac : jitter;
+            if (s === 0) ctx.moveTo(ex, ey);
+            else ctx.lineTo(ex, ey);
+          }
+          ctx.stroke();
+
+          // Bright insulator arc nodes on ends
+          ctx.fillStyle = '#B8FFFF';
+          if (isVert) {
+            ctx.fillRect(-3, -h * 0.5 + 2, 6, 4);
+            ctx.fillRect(-3, h * 0.5 - 6, 6, 4);
+          } else {
+            ctx.fillRect(-w * 0.5 + 2, -3, 4, 6);
+            ctx.fillRect(w * 0.5 - 6, -3, 4, 6);
+          }
+          ctx.restore();
+        }
+
+        // Live Door HP Bar + Zoom-Compensated Label
+        const barW = 70;
+        const barY = -h * 0.5 - 16;
         ctx.fillStyle = '#050D08';
         ctx.fillRect(-barW * 0.5, barY, barW, 8);
         ctx.fillStyle = doorCol;
         ctx.fillRect(-barW * 0.5 + 1, barY + 1, (barW - 2) * hpRatio, 6);
 
-        ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
-        ctx.fillStyle = doorCol;
+        ctx.font = font('data', doorFontPx);
+        ctx.fillStyle = doorCol === '#FF3318' ? THEME.ALERT_RED_TEXT : doorCol;
         ctx.textAlign = 'center';
-        ctx.fillText(`${ds.def.id} [${Math.round(hpRatio * 100)}%]`, 0, barY - 4);
+        ctx.fillText(`${ds.def.id} [${Math.round(hpRatio * 100)}%]`, 0, barY - 6);
       } else {
         // Open Doorway Pocket Threshold
         const pulse = highlightWeld ? 0.55 + 0.45 * Math.sin(timeSec * 8) : 0.45;
@@ -1233,10 +1656,10 @@ export class PerimeterBlueprintRenderer {
         ctx.strokeRect(-w * 0.5, -h * 0.5, w, h);
         ctx.setLineDash([]);
 
-        ctx.font = 'bold 13px "Share Tech Mono", monospace';
-        ctx.fillStyle = highlightWeld ? '#FFB000' : 'rgba(68, 255, 119, 0.72)';
+        ctx.font = font('data', doorFontPx);
+        ctx.fillStyle = highlightWeld ? THEME.ACCENT_AMBER : THEME.TEXT_SECONDARY;
         ctx.textAlign = 'center';
-        ctx.fillText(highlightWeld ? `WELD ${ds.def.id}` : ds.def.id, 0, -h * 0.5 - 6);
+        ctx.fillText(highlightWeld ? `WELD ${ds.def.id}` : ds.def.id, 0, -h * 0.5 - 8);
       }
       ctx.restore();
     }
@@ -1245,7 +1668,8 @@ export class PerimeterBlueprintRenderer {
   private drawReactorCoreObjective(
     ctx: CanvasRenderingContext2D,
     sim: PerimeterSimulation,
-    timeSec: number
+    timeSec: number,
+    tfScale: number
   ): void {
     const c = sim.blueprint.coreCenter;
     ctx.save();
@@ -1262,6 +1686,60 @@ export class PerimeterBlueprintRenderer {
     ctx.beginPath();
     ctx.arc(c.x, c.y, coreLitR, 0, Math.PI * 2);
     ctx.fill();
+
+    // Opaque Reactor Core Armored Bulkhead Ring (clearly signals solid LOS obstruction!)
+    ctx.save();
+    ctx.fillStyle = 'rgba(4, 22, 12, 0.92)';
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 55, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#2FD668';
+    ctx.lineWidth = 3.2;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 55, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255, 176, 0, 0.62)';
+    ctx.lineWidth = 2.0;
+    for (let k = 0; k < 4; k++) {
+      const ba = k * (Math.PI * 0.5) + Math.PI * 0.25;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 58, ba - 0.18, ba + 0.18);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Aegis Core Energy Barrier Ring (when AEGIS_SHIELD barrier is charged & ready!)
+    if (sim.aegisBarrierReady) {
+      const aegisPulse = 0.72 + 0.28 * Math.sin(timeSec * 6.5);
+      ctx.save();
+      const aGrad = ctx.createRadialGradient(c.x, c.y, 54, c.x, c.y, 70);
+      aGrad.addColorStop(0, 'rgba(0, 240, 255, 0.04)');
+      aGrad.addColorStop(0.75, `rgba(0, 240, 255, ${(0.22 * aegisPulse).toFixed(3)})`);
+      aGrad.addColorStop(1, 'rgba(0, 240, 255, 0)');
+      ctx.fillStyle = aGrad;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 70, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = `rgba(0, 240, 255, ${(0.82 * aegisPulse).toFixed(2)})`;
+      ctx.lineWidth = 2.8;
+      ctx.setLineDash([14, 7]);
+      ctx.lineDashOffset = -timeSec * 26;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 64, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.font = font('data', this.worldFontPx(12, tfScale, 24));
+      ctx.fillStyle = THEME.ACCENT_CYAN;
+      ctx.textAlign = 'center';
+      const aegisLbl =
+        sim.aegisBarrierCharges > 1
+          ? `${SEMIOTIC_ICONS.SHIELD} AEGIS ×${sim.aegisBarrierCharges}`
+          : `${SEMIOTIC_ICONS.SHIELD} AEGIS READY`;
+      ctx.fillText(aegisLbl, c.x, c.y + 84);
+      ctx.restore();
+    }
 
     // 3 Concentric Bulkhead Seal Rings (visualizing the 3 Core Seals / Lives!)
     for (let s = 0; s < PERIMETER_CONSTANTS.MAX_BULKHEAD_SEALS; s++) {
@@ -1300,8 +1778,13 @@ export class PerimeterBlueprintRenderer {
     ctx.restore();
   }
 
-  private drawPlacedTurrets(ctx: CanvasRenderingContext2D, rc: BlueprintRenderContext): void {
+  private drawPlacedTurrets(
+    ctx: CanvasRenderingContext2D,
+    rc: BlueprintRenderContext,
+    tfScale: number
+  ): void {
     const { sim, selectedTurretId, timeSec } = rc;
+    const tierFontPx = this.worldFontPx(12, tfScale, 22);
 
     for (const t of sim.turrets) {
       const isSelected = t.id === selectedTurretId;
@@ -1317,8 +1800,25 @@ export class PerimeterBlueprintRenderer {
         ctx.strokeRect(-25, -25, 50, 50);
       }
 
-      // Sweeping Radial Reload Progress Arc when Sentry is running its 2.8s belt-feed cycle!
-      if (t.rearmTimer > 0) {
+      // Sweeping Radial Capacitor Spin-Up Arc when toggled ON mid-wave (2.5s powerUpTimer)!
+      if (t.powered && t.powerUpTimer > 0) {
+        const spinProg = Math.max(
+          0,
+          Math.min(1, 1 - t.powerUpTimer / PERIMETER_CONSTANTS.TURRET_POWER_SPINUP_SEC)
+        );
+        ctx.strokeStyle = 'rgba(0, 240, 255, 0.25)';
+        ctx.lineWidth = 4.0;
+        ctx.beginPath();
+        ctx.arc(0, 0, 27, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = '#00F0FF';
+        ctx.lineWidth = 4.0;
+        ctx.beginPath();
+        ctx.arc(0, 0, 27, -Math.PI * 0.5, -Math.PI * 0.5 + spinProg * Math.PI * 2);
+        ctx.stroke();
+      } else if (t.rearmTimer > 0) {
+        // Sweeping Radial Reload Progress Arc when Sentry is running its belt-feed cycle!
         const prog = Math.max(
           0,
           Math.min(1, 1 - t.rearmTimer / Math.max(0.1, t.rearmDuration))
@@ -1334,9 +1834,20 @@ export class PerimeterBlueprintRenderer {
         ctx.beginPath();
         ctx.arc(0, 0, 27, -Math.PI * 0.5, -Math.PI * 0.5 + prog * Math.PI * 2);
         ctx.stroke();
-      } else if ((isLowAmmo || isDry) && Math.sin(timeSec * (isDry ? 16 : 10)) > -0.1) {
-        ctx.strokeStyle = isDry ? '#FF3318' : '#FFB000';
+      } else if (isDry && Math.sin(timeSec * 16) > -0.1) {
+        // Only critical DRY state strobes red; LOW AMMO uses steady amber diamond!
+        ctx.strokeStyle = THEME.ALERT_RED_STROKE;
         ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.moveTo(0, -28);
+        ctx.lineTo(28, 0);
+        ctx.lineTo(0, 28);
+        ctx.lineTo(-28, 0);
+        ctx.closePath();
+        ctx.stroke();
+      } else if (isLowAmmo) {
+        ctx.strokeStyle = THEME.ACCENT_AMBER;
+        ctx.lineWidth = 1.7;
         ctx.beginPath();
         ctx.moveTo(0, -28);
         ctx.lineTo(28, 0);
@@ -1435,7 +1946,7 @@ export class PerimeterBlueprintRenderer {
         ctx.stroke();
       } else {
         // UA 571-C Sentry, M240 Incinerator, or M99 Rail-Lance Tripod Base + Rotating Receiver/Barrel!
-        ctx.strokeStyle = COLORS.GREEN_MID;
+        ctx.strokeStyle = THEME.TEXT_SECONDARY;
         ctx.lineWidth = 2.0;
         ctx.beginPath();
         ctx.moveTo(-14, -12);
@@ -1518,10 +2029,29 @@ export class PerimeterBlueprintRenderer {
         ctx.restore();
         ctx.save();
         ctx.translate(t.pos.x, t.pos.y);
-        ctx.fillStyle = t.level === 3 ? '#00F0FF' : '#FFB000';
-        ctx.font = 'bold 10.5px "Share Tech Mono", monospace';
+        const mk4 = t.mk4Level ?? 0;
+        ctx.fillStyle = mk4 > 0 ? THEME.ACCENT_AMBER_HI : t.level === 3 ? THEME.ACCENT_CYAN : THEME.ACCENT_AMBER;
+        ctx.font = font('data', tierFontPx);
         ctx.textAlign = 'right';
-        ctx.fillText(t.level === 3 ? `III${t.mk3Branch ?? ''}` : 'II', 23, 22);
+        ctx.fillText(
+          t.level === 3 ? (mk4 > 0 ? `IV+${mk4}` : `III${t.mk3Branch ?? ''}`) : 'II',
+          26,
+          24
+        );
+
+        // MK-IV Refit stacked chevron pips along upper-right mount corner (1..3)
+        if (mk4 > 0) {
+          ctx.strokeStyle = '#FFE066';
+          ctx.lineWidth = 2.0;
+          for (let p = 0; p < Math.min(3, mk4); p++) {
+            const py = -12 - p * 5;
+            ctx.beginPath();
+            ctx.moveTo(13, py + 3);
+            ctx.lineTo(18, py - 2);
+            ctx.lineTo(23, py + 3);
+            ctx.stroke();
+          }
+        }
       }
 
       ctx.restore();
@@ -1553,8 +2083,10 @@ export class PerimeterBlueprintRenderer {
   private drawHostilesAndBlips(
     ctx: CanvasRenderingContext2D,
     sim: PerimeterSimulation,
-    timeSec: number
+    timeSec: number,
+    tfScale: number
   ): void {
+    const blipFontPx = this.worldFontPx(12, tfScale, 24);
     // Screamer radar-jamming phantom decoys
     for (const pb of sim.phantomBlips) {
       const alpha = Math.max(0, Math.min(1, pb.life / Math.max(0.1, pb.maxLife)));
@@ -1566,9 +2098,9 @@ export class PerimeterBlueprintRenderer {
       ctx.beginPath();
       ctx.arc(jx, jy, 8, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.font = 'bold 10px "JetBrains Mono", monospace';
+      ctx.font = font('data', blipFontPx);
       ctx.fillStyle = `rgba(224, 102, 255, ${(0.85 * alpha).toFixed(2)})`;
-      ctx.fillText('ERR?', jx + 10, jy + 3);
+      ctx.fillText('ERR?', jx + 12, jy + 5);
       ctx.restore();
     }
 
@@ -1576,12 +2108,16 @@ export class PerimeterBlueprintRenderer {
       if (h.verified) {
         this.drawVerifiedBioSilhouette(ctx, h, timeSec);
       } else if (h.blipTimer > 0) {
-        this.drawFuzzyRadarBlip(ctx, h);
+        this.drawFuzzyRadarBlip(ctx, h, blipFontPx);
       }
     }
   }
 
-  private drawFuzzyRadarBlip(ctx: CanvasRenderingContext2D, h: HostileEntity): void {
+  private drawFuzzyRadarBlip(
+    ctx: CanvasRenderingContext2D,
+    h: HostileEntity,
+    blipFontPx: number
+  ): void {
     const alpha = Math.min(1, h.blipTimer / 0.85);
     const jx = h.blipPos.x + (Math.random() - 0.5) * 4.5;
     const jy = h.blipPos.y + (Math.random() - 0.5) * 4.5;
@@ -1606,11 +2142,11 @@ export class PerimeterBlueprintRenderer {
     ctx.lineTo(jx + 5, jy);
     ctx.stroke();
 
-    // Live Distance Tag (`14.2m`)
-    ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = `rgba(180, 255, 200, ${(0.9 * alpha).toFixed(2)})`;
+    // Zoom-Compensated Live Distance Tag (`14.2m`)
+    ctx.font = font('data', blipFontPx);
+    ctx.fillStyle = `rgba(180, 255, 200, ${(0.92 * alpha).toFixed(2)})`;
     ctx.textAlign = 'left';
-    ctx.fillText(`${h.blipDistM.toFixed(1).padStart(4, '0')}m`, jx + 11, jy + 4);
+    ctx.fillText(`${h.blipDistM.toFixed(1).padStart(4, '0')}m`, jx + 12, jy + 5);
     ctx.restore();
   }
 
@@ -1628,6 +2164,30 @@ export class PerimeterBlueprintRenderer {
       ctx.strokeStyle = h.kind === 'STALKER' ? '#8EF5AB' : '#FFB000';
       ctx.lineWidth = 1.4;
       ctx.strokeRect(-br, -br, br * 2, br * 2);
+    }
+
+    // Crackling Electric Stagger / Stun Halo Ring so Capacitor Rail, Arc Coil & Purge stuns pop clearly!
+    if (h.stunTimer > 0) {
+      const sr = h.radiusPx + 7 + Math.sin(timeSec * 36 + h.id) * 2;
+      ctx.save();
+      ctx.strokeStyle = '#00F0FF';
+      ctx.lineWidth = h.isBoss ? 2.4 : 1.7;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.arc(0, 0, sr, timeSec * 7, timeSec * 7 + Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // 4 crisp crackling shock ticks around stunned silhouette
+      ctx.strokeStyle = '#B8FFFF';
+      ctx.lineWidth = 1.6;
+      for (let k = 0; k < 4; k++) {
+        const a = timeSec * 9 + k * (Math.PI * 0.5) + h.id;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * (sr - 3), Math.sin(a) * (sr - 3));
+        ctx.lineTo(Math.cos(a + 0.14) * (sr + 5), Math.sin(a + 0.14) * (sr + 5));
+        ctx.stroke();
+      }
+      ctx.restore();
     }
 
     ctx.rotate(h.heading);
@@ -1905,7 +2465,8 @@ export class PerimeterBlueprintRenderer {
 
   private drawProjectilesAndCallouts(
     ctx: CanvasRenderingContext2D,
-    sim: PerimeterSimulation
+    sim: PerimeterSimulation,
+    tfScale: number
   ): void {
     // M99 Rail-Lance Piercing Electromagnetic Plasma Beams
     for (const rb of sim.railBeams) {
@@ -1993,12 +2554,13 @@ export class PerimeterBlueprintRenderer {
       ctx.restore();
     }
 
-    // Floating Micro-Callouts (`RICOCHET`, `PURGE FLUSH`, `BREACHED!`)
+    // Zoom-Compensated Floating Micro-Callouts (`RICOCHET`, `PURGE FLUSH`, `BREACHED!`)
+    const calloutPx = this.worldFontPx(12, tfScale, 28);
     for (const c of sim.callouts) {
       const alpha = Math.min(1, (c.life / c.maxLife) * 1.4);
       ctx.save();
       ctx.globalAlpha = alpha;
-      ctx.font = 'bold 12.5px "Share Tech Mono", monospace';
+      ctx.font = font('head', calloutPx);
       ctx.fillStyle = c.color;
       ctx.textAlign = 'center';
       ctx.fillText(c.text, c.pos.x, c.pos.y);
@@ -2007,69 +2569,124 @@ export class PerimeterBlueprintRenderer {
   }
 
   /**
-   * Zoom-Compensated Screen-Legible Diegetic Ammo, Reload & Thermal Tags above every placed turret!
-   * Scales inversely with `tfScale` so tags remain razor-sharp (~11 screen px tall) even at 1.0x zoom!
+   * Zoom-Compensated Screen-Legible Diegetic Turret Tags:
+   * - `tagScale` cap raised 1.65 -> 2.2 guaranteeing >=12px effective screen text at 1.0x zoom!
+   * - Calm-Mode: during WAVE_ACTIVE, nominal unselected/unhovered turrets compact to `A1 320`
+   *   and expand to full informative pills on hover, selection, Prep, or ANY alert!
+   * - LOW AMMO uses steady amber (only DRY / THERM LOCK / BLACKOUT strobe red).
    */
   private drawDiegeticTurretTags(
     ctx: CanvasRenderingContext2D,
     rc: BlueprintRenderContext,
     tfScale: number
   ): void {
-    const { sim, timeSec } = rc;
+    const { sim, timeSec, selectedTurretId, hoveredTurretId } = rc;
     const blinkFast = Math.sin(timeSec * 14) > -0.15;
-    const blinkCaution = Math.sin(timeSec * 9.5) > 0;
-    const tagScale = Math.max(1.0, Math.min(1.65, 0.85 / Math.max(0.32, tfScale)));
+    const tagScale = Math.max(1.0, Math.min(2.2, 0.98 / Math.max(0.32, tfScale)));
 
     for (const t of sim.turrets) {
+      const isSelected = t.id === selectedTurretId;
+      const isHovered = Boolean(hoveredTurretId && t.id === hoveredTurretId);
+      const lowThresh = Math.ceil(t.maxAmmo * 0.25);
+      const isLowAmmo = t.powered && t.kind === 'SENTRY_PULSE' && t.rearmTimer <= 0 && t.ammo > 0 && t.ammo <= lowThresh;
+      const isDry = t.powered && t.kind === 'SENTRY_PULSE' && t.rearmTimer <= 0 && t.ammo <= 0;
+
+      const hasAlert =
+        (sim.blackoutTimer > 0 && t.powered) ||
+        !t.powered ||
+        t.powerUpTimer > 0 ||
+        t.rearmTimer > 0 ||
+        t.thermalLocked ||
+        isDry ||
+        isLowAmmo ||
+        t.acidDebuffTimer > 0 ||
+        t.jammedTimer > 0 ||
+        (t.kind === 'MOTION_RELAY' && t.tripwireIntegrity < 50);
+
+      const useCompact = sim.phase === 'WAVE_ACTIVE' && !hasAlert && !isSelected && !isHovered;
+
       let label = '';
-      let textCol = '#44FF77';
-      let borderCol = 'rgba(59, 224, 104, 0.65)';
+      let textCol: string = THEME.TEXT_PRIMARY;
+      let borderCol = 'rgba(68, 255, 119, 0.65)';
       let bgFill = 'rgba(3, 10, 6, 0.92)';
 
       if (sim.blackoutTimer > 0 && t.powered) {
         label = `⚡ ${t.callsign} // BLACKOUT`;
-        textCol = '#FF3318';
-        borderCol = '#FF3318';
+        textCol = THEME.ALERT_RED_TEXT;
+        borderCol = THEME.ALERT_RED_STROKE;
         bgFill = 'rgba(42, 8, 6, 0.94)';
       } else if (!t.powered) {
         label = `${t.callsign} // OFFLINE`;
-        textCol = COLORS.GREEN_MID;
-        borderCol = COLORS.GREEN_DIM;
+        textCol = THEME.TEXT_SECONDARY;
+        borderCol = THEME.BORDER_SUBTLE;
+      } else if (t.powerUpTimer > 0) {
+        label = `⚡ ${t.callsign} // SPINUP ${t.powerUpTimer.toFixed(1)}S`;
+        textCol = THEME.ACCENT_CYAN;
+        borderCol = THEME.ACCENT_CYAN;
+        bgFill = 'rgba(4, 28, 34, 0.94)';
       } else if (t.rearmTimer > 0) {
         label = `⟳ ${t.callsign} // RELOAD ${t.rearmTimer.toFixed(1)}S`;
-        textCol = '#040805';
-        borderCol = '#FFF0B8';
-        bgFill = '#FFB000';
+        textCol = THEME.INK_INVERSE;
+        borderCol = THEME.ACCENT_AMBER_HI;
+        bgFill = THEME.ACCENT_AMBER;
       } else if (t.thermalLocked) {
         label = blinkFast ? `⚠ ${t.callsign} // THERM LOCK` : `${t.callsign} // COOLING`;
-        textCol = blinkFast ? '#050906' : '#FF3318';
-        borderCol = '#FF3318';
-        bgFill = blinkFast ? '#FF3318' : 'rgba(42, 8, 6, 0.92)';
+        textCol = blinkFast ? THEME.INK_INVERSE : THEME.ALERT_RED_TEXT;
+        borderCol = THEME.ALERT_RED_STROKE;
+        bgFill = blinkFast ? THEME.ALERT_RED_STROKE : 'rgba(42, 8, 6, 0.92)';
+      } else if (useCompact) {
+        const shortId = t.callsign.replace('-0', '');
+        if (t.kind === 'SENTRY_PULSE') {
+          label = `${shortId} ${String(t.ammo).padStart(3, '0')}`;
+          textCol = t.firingFlashTimer > 0 ? THEME.ACCENT_AMBER_HI : THEME.TEXT_BRIGHT;
+          borderCol = t.firingFlashTimer > 0 ? THEME.ACCENT_AMBER : 'rgba(68, 255, 119, 0.45)';
+        } else if (t.kind === 'INCINERATOR') {
+          label = `${shortId} ${Math.round(t.heat)}%`;
+          textCol = THEME.ACCENT_AMBER_HI;
+          borderCol = 'rgba(255, 176, 0, 0.48)';
+        } else if (t.kind === 'RAIL_LANCE') {
+          label = `${SEMIOTIC_ICONS.DIAMOND} ${shortId}`;
+          textCol = THEME.ACCENT_CYAN;
+          borderCol = 'rgba(76, 238, 255, 0.48)';
+        } else if (t.kind === 'CRYO_VALVE') {
+          label = `${shortId} LN2`;
+          textCol = THEME.TEXT_BRIGHT;
+          borderCol = 'rgba(68, 255, 119, 0.42)';
+        } else if (t.kind === 'SHOCK_COIL') {
+          label = `${SEMIOTIC_ICONS.HEX} ${shortId}`;
+          textCol = THEME.ACCENT_CYAN;
+          borderCol = 'rgba(76, 238, 255, 0.48)';
+        } else {
+          label = shortId;
+          textCol = THEME.TEXT_PRIMARY;
+          borderCol = 'rgba(68, 255, 119, 0.42)';
+        }
+        bgFill = 'rgba(3, 10, 6, 0.84)';
       } else if (t.kind === 'SENTRY_PULSE') {
-        const lowThresh = Math.ceil(t.maxAmmo * 0.25);
-        if (t.ammo <= 0) {
+        if (isDry) {
           label = `⚠ ${t.callsign} // 000 DRY`;
-          textCol = blinkFast ? '#050906' : '#FF3318';
-          borderCol = '#FF3318';
-          bgFill = blinkFast ? '#FF3318' : 'rgba(45, 8, 6, 0.94)';
-        } else if (t.ammo <= lowThresh) {
+          textCol = blinkFast ? THEME.INK_INVERSE : THEME.ALERT_RED_TEXT;
+          borderCol = THEME.ALERT_RED_STROKE;
+          bgFill = blinkFast ? THEME.ALERT_RED_STROKE : 'rgba(45, 8, 6, 0.94)';
+        } else if (isLowAmmo) {
+          // Steady Amber for LOW AMMO (never strobes red!)
           const rdsStr = String(t.ammo).padStart(3, '0');
-          label = blinkCaution ? `⚠ ${t.callsign} // LOW ${rdsStr}` : `${t.callsign} // ${rdsStr} RDS`;
-          textCol = blinkCaution ? '#050906' : '#FFB000';
-          borderCol = blinkCaution ? '#FF3318' : '#FFB000';
-          bgFill = blinkCaution ? '#FFB000' : 'rgba(38, 22, 4, 0.94)';
+          label = `▲ ${t.callsign} // LOW ${rdsStr}`;
+          textCol = THEME.ACCENT_AMBER_HI;
+          borderCol = THEME.ACCENT_AMBER;
+          bgFill = 'rgba(48, 28, 4, 0.94)';
         } else {
           const rdsStr = String(t.ammo).padStart(3, '0');
           label = `${t.callsign} // ${rdsStr} RDS`;
-          textCol = t.firingFlashTimer > 0 ? '#FFB000' : '#44FF77';
-          borderCol = t.firingFlashTimer > 0 ? '#FFB000' : 'rgba(59, 224, 104, 0.65)';
+          textCol = t.firingFlashTimer > 0 ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY;
+          borderCol = t.firingFlashTimer > 0 ? THEME.ACCENT_AMBER : 'rgba(68, 255, 119, 0.65)';
         }
       } else if (t.kind === 'INCINERATOR') {
         label =
           t.acidDebuffTimer > 0
             ? `⚠ ${t.callsign} // ACID`
             : `${t.callsign} // NAPALM ${Math.round(t.heat)}%`;
-        textCol = t.acidDebuffTimer > 0 ? '#B8FF3B' : t.heat > 75 ? '#FF5522' : '#FFB000';
+        textCol = t.acidDebuffTimer > 0 ? '#B8FF3B' : t.heat > 75 ? THEME.ALERT_RED_TEXT : THEME.ACCENT_AMBER;
         borderCol = t.acidDebuffTimer > 0 ? '#B8FF3B' : 'rgba(255, 176, 0, 0.72)';
       } else if (t.kind === 'RAIL_LANCE') {
         const branchTag =
@@ -2077,16 +2694,16 @@ export class PerimeterBlueprintRenderer {
         label =
           t.acidDebuffTimer > 0
             ? `⚠ ${t.callsign} // ACID`
-            : `${t.callsign} // RAIL${branchTag}`;
-        textCol = t.acidDebuffTimer > 0 ? '#B8FF3B' : '#00F0FF';
-        borderCol = t.acidDebuffTimer > 0 ? '#B8FF3B' : 'rgba(0, 240, 255, 0.72)';
+            : `${SEMIOTIC_ICONS.DIAMOND} ${t.callsign} // RAIL${branchTag}`;
+        textCol = t.acidDebuffTimer > 0 ? '#B8FF3B' : THEME.ACCENT_CYAN;
+        borderCol = t.acidDebuffTimer > 0 ? '#B8FF3B' : 'rgba(76, 238, 255, 0.72)';
       } else if (t.kind === 'CRYO_VALVE') {
         label = `${t.callsign} // CRYO`;
-        textCol = '#8EF5AB';
+        textCol = THEME.TEXT_BRIGHT;
       } else if (t.kind === 'SHOCK_COIL') {
-        label = `${t.callsign} // COIL`;
-        textCol = '#00F0FF';
-        borderCol = 'rgba(0, 240, 255, 0.65)';
+        label = `${SEMIOTIC_ICONS.HEX} ${t.callsign} // COIL`;
+        textCol = THEME.ACCENT_CYAN;
+        borderCol = 'rgba(76, 238, 255, 0.65)';
       } else {
         label =
           t.jammedTimer > 0
@@ -2095,26 +2712,27 @@ export class PerimeterBlueprintRenderer {
               ? `${t.callsign} // WIRE DMG`
               : `${t.callsign} // M314`;
         textCol =
-          t.jammedTimer > 0 ? '#E066FF' : t.tripwireIntegrity < 50 ? '#FFB000' : '#44FF77';
+          t.jammedTimer > 0 ? '#E066FF' : t.tripwireIntegrity < 50 ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY;
       }
 
       ctx.save();
       ctx.translate(t.pos.x, t.pos.y - 34);
       ctx.scale(tagScale, tagScale);
-      ctx.font = 'bold 12px "JetBrains Mono", monospace';
-      const tw = ctx.measureText(label).width + 12;
+      ctx.font = font('data', 13);
+      const tw = ctx.measureText(label).width + (useCompact ? 10 : 12);
+      const th = 19;
       const bx = -tw * 0.5;
-      const by = -18;
+      const by = -th;
 
       ctx.fillStyle = bgFill;
-      ctx.fillRect(bx, by, tw, 18);
-      ctx.strokeStyle = borderCol;
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(bx, by, tw, 18);
+      ctx.fillRect(bx, by, tw, th);
+      ctx.strokeStyle = isSelected ? THEME.ACCENT_AMBER_HI : borderCol;
+      ctx.lineWidth = isSelected ? 1.8 : 1.4;
+      ctx.strokeRect(bx, by, tw, th);
 
       ctx.fillStyle = textCol;
       ctx.textAlign = 'center';
-      ctx.fillText(label, 0, by + 13);
+      ctx.fillText(label, 0, by + 13.5);
 
       // Barrel Thermal Micro-Bar for combat turrets
       if (
@@ -2123,9 +2741,9 @@ export class PerimeterBlueprintRenderer {
         t.heat > 2
       ) {
         ctx.fillStyle = '#102418';
-        ctx.fillRect(bx, by + 19, tw, 3.5);
-        ctx.fillStyle = t.heat > 80 ? '#FF3318' : '#FFB000';
-        ctx.fillRect(bx, by + 19, (tw * t.heat) / 100, 3.5);
+        ctx.fillRect(bx, by + th + 1, tw, 3.5);
+        ctx.fillStyle = t.heat > 80 ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER;
+        ctx.fillRect(bx, by + th + 1, (tw * t.heat) / 100, 3.5);
       }
       ctx.restore();
     }
@@ -2133,7 +2751,8 @@ export class PerimeterBlueprintRenderer {
 
   private drawInteractiveCursorPreview(
     ctx: CanvasRenderingContext2D,
-    rc: BlueprintRenderContext
+    rc: BlueprintRenderContext,
+    tfScale: number
   ): void {
     const { sim, activeTool, cursorVirtual, dragBuildAnchor } = rc;
     if (!cursorVirtual && !dragBuildAnchor) return;
@@ -2258,10 +2877,11 @@ export class PerimeterBlueprintRenderer {
       ctx.strokeRect(col * ts + 6, row * ts + 6, ts - 12, ts - 12);
 
       if (resolved.snapped && placementValid && !dragBuildAnchor) {
-        ctx.font = 'bold 11px "Share Tech Mono", monospace';
-        ctx.fillStyle = '#00F0FF';
+        const snapPx = this.worldFontPx(12, tfScale, 24);
+        ctx.font = font('data', snapPx);
+        ctx.fillStyle = THEME.ACCENT_CYAN;
         ctx.textAlign = 'center';
-        ctx.fillText('SNAP LOCK', cx, cy - 32);
+        ctx.fillText(`${SEMIOTIC_ICONS.DIAMOND} SNAP LOCK`, cx, cy - 34);
       }
 
       if (check.ok && spec.rangePx > 0) {
@@ -2315,22 +2935,34 @@ export class PerimeterBlueprintRenderer {
 
         if (dragBuildAnchor) {
           const deg = Math.round((((ang * 180) / Math.PI) + 360) % 360);
-          ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
+          const dragPx = this.worldFontPx(13, tfScale, 30);
+          ctx.font = font('data', dragPx);
           ctx.textAlign = 'center';
-          if (angleGate.enforced && !angleGate.valid) {
-            ctx.fillStyle = '#FF4422';
-            ctx.fillText(
-              `⚠ AIM ${angleGate.hint ?? 'ALONG GUIDE CONE'}!`,
-              cx,
-              cy - 34
-            );
-          } else if (angleGate.enforced) {
-            ctx.fillStyle = '#44FF77';
-            ctx.fillText(`✓ GOOD AIM (${deg}°) — RELEASE TO DEPLOY!`, cx, cy - 34);
-          } else {
-            ctx.fillStyle = '#FFB000';
-            ctx.fillText(`DRAG AIM: ${deg}° (RELEASE TO LOCK)`, cx, cy - 34);
-          }
+          const dragMsg =
+            angleGate.enforced && !angleGate.valid
+              ? `⚠ AIM ${angleGate.hint ?? 'ALONG GUIDE CONE'}!`
+              : angleGate.enforced
+                ? `✓ GOOD AIM (${deg}°) — RELEASE TO DEPLOY!`
+                : `DRAG AIM: ${deg}° (RELEASE TO LOCK)`;
+          const dw = ctx.measureText(dragMsg).width + 18;
+          const dh = Math.round(dragPx + 10);
+          ctx.fillStyle = 'rgba(3, 10, 6, 0.92)';
+          ctx.fillRect(cx - dw * 0.5, cy - 36 - dh, dw, dh);
+          ctx.strokeStyle =
+            angleGate.enforced && !angleGate.valid
+              ? THEME.ALERT_RED_STROKE
+              : angleGate.enforced
+                ? THEME.TEXT_PRIMARY
+                : THEME.ACCENT_AMBER;
+          ctx.lineWidth = 1.6;
+          ctx.strokeRect(cx - dw * 0.5, cy - 36 - dh, dw, dh);
+          ctx.fillStyle =
+            angleGate.enforced && !angleGate.valid
+              ? THEME.ALERT_RED_TEXT
+              : angleGate.enforced
+                ? THEME.TEXT_PRIMARY
+                : THEME.ACCENT_AMBER_HI;
+          ctx.fillText(dragMsg, cx, cy - 42);
         }
       }
       ctx.restore();
@@ -2415,7 +3047,8 @@ export class PerimeterBlueprintRenderer {
     ctx: CanvasRenderingContext2D,
     beacons: TutorialMapBeacon[],
     timeSec: number,
-    scale: number
+    scale: number,
+    worldWidth: number = PERIMETER_CONSTANTS.VIRTUAL_W
   ): void {
     const invScale = 1 / Math.max(0.35, scale);
     const pulse = 0.5 + 0.5 * Math.sin(timeSec * 6.5);
@@ -2459,15 +3092,15 @@ export class PerimeterBlueprintRenderer {
       ctx.closePath();
       ctx.fill();
 
-      const fontPx = Math.round(12.5 * invScale);
-      ctx.font = `bold ${fontPx}px "Share Tech Mono", monospace`;
+      const fontPx = Math.max(12, Math.round(13 * invScale));
+      ctx.font = font('head', fontPx);
       const tw = ctx.measureText(b.label).width;
       const padX = 9 * invScale;
       const pillH = Math.round(21 * invScale);
       const pillW = tw + padX * 2;
       const pillX = Math.max(
         18,
-        Math.min(PERIMETER_CONSTANTS.VIRTUAL_W - pillW - 18, b.pos.x - pillW * 0.5)
+        Math.min(worldWidth - pillW - 18, b.pos.x - pillW * 0.5)
       );
       const pillY = Math.max(24, tipY - 18 - pillH);
 

@@ -6,6 +6,8 @@ export type CartridgeProgramId = 'lander' | 'perimeter' | 'flak' | 'trench';
 
 export type PhosphorTheme = 'GREEN' | 'AMBER' | 'CYAN';
 
+export type CrtPreset = 'CLASSIC_1979' | 'CRISP';
+
 export interface CrtShockwaveUniform {
   /** Normalized CRT screen X in [0..1] (0 = left, 1 = right) */
   uvX: number;
@@ -22,8 +24,10 @@ export interface CrtShaderFrameParams {
   glitch: number;
   overdrive: number;
   tubeTurnOn: number;
-  /** Optional chromatic aberration scale [0..1] (defaults to 1.0; lowered in text-dense CAD views) */
+  /** Optional chromatic aberration scale [0..1] (defaults to active CRT preset default; drops to 0.06 when modals are open) */
   chromaScale?: number;
+  /** When true, host automatically drops chromatic aberration to 0.06 for crystal-clear modal typography */
+  modalActive?: boolean;
   shockwaves?: readonly CrtShockwaveUniform[];
 }
 
@@ -43,13 +47,22 @@ export interface HostEnvironment {
     mobileMode: boolean;
   };
   getCrtIntensity(): number;
+  getCrtPreset(): CrtPreset;
+  setCrtPreset(preset: CrtPreset): void;
+  toggle1979Crt(): CrtPreset;
   getPhosphorTheme(): PhosphorTheme;
   setPhosphorTheme(theme: PhosphorTheme): void;
+  getMasterVolume(): number;
+  setMasterVolume(vol: number): void;
   isMuted(): boolean;
   setMuted(muted: boolean): void;
+  isTouchDevice(): boolean;
+  getActiveProgramId(): CartridgeProgramId | 'hub';
+  setModalOpen(open: boolean): void;
   toggleFullscreen(): void;
   triggerSyncGlitch(intensity?: number): void;
   launchProgram(program: CartridgeProgramId): void;
+  quickSwitchProgram(program: CartridgeProgramId): void;
   exitToMuthurOs(reasonLog?: string): void;
   coldRebootMuthur(): void;
 }

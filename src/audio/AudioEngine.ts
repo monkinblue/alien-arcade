@@ -133,7 +133,10 @@ export class AudioEngine {
   private bootStartupSource: AudioBufferSourceNode | null = null;
   private bootStartupGain: GainNode | null = null;
 
+  private static readonly MASTER_VOLUME_STORAGE_KEY = 'muthur_master_volume_v1';
+
   private muted = false;
+  private masterVolume = 0.9;
   private unlocked = false;
   private activeVoiceSource: AudioBufferSourceNode | null = null;
   private lastVoiceTime = 0;
@@ -154,6 +157,17 @@ export class AudioEngine {
   private lastLowAmmoChimeTime = 0;
 
   constructor() {
+    try {
+      const savedVol = window.localStorage.getItem(AudioEngine.MASTER_VOLUME_STORAGE_KEY);
+      if (savedVol !== null) {
+        const parsed = Number.parseFloat(savedVol);
+        if (Number.isFinite(parsed)) {
+          this.masterVolume = Math.max(0, Math.min(1, Math.round(parsed * 100) / 100));
+        }
+      }
+    } catch {
+      // Ignore storage restrictions
+    }
     this.bootStartPromise = this.prefetchBootStartAudio();
     this.prefetchPromise = this.prefetchManifestAndMp3s();
   }
@@ -322,8 +336,13 @@ export class AudioEngine {
 
           if (id === 'sentry_rearm_belt') {
             this.normalizeAudioBufferPeak(finalBuf, 0.95);
+          } else if (id === 'core_breach_alert') {
+            // Keep clean headroom before low-shelf EQ, hallway reverb & sub reinforcement
+            this.normalizeAudioBufferPeak(finalBuf, 0.78);
+          } else if (id === 'perim_wave_clear') {
+            // Keep clean headroom before station PA hall reverb & 4-tap corridor echo cascade
+            this.normalizeAudioBufferPeak(finalBuf, 0.74);
           } else if (
-            id === 'core_breach_alert' ||
             id === 'perim_queen_roar' ||
             id === 'perim_breaker_blackout' ||
             id === 'perim_airlock_purge' ||
@@ -410,7 +429,7 @@ export class AudioEngine {
   private setupGraph(): void {
     const ctx = this.ctx!;
     this.masterGain = ctx.createGain();
-    this.masterGain.gain.value = this.muted ? 0 : 0.88;
+    this.masterGain.gain.value = this.muted ? 0 : this.masterVolume * 0.92;
 
     // Transparent slow-envelope safety ceiling (-1.5 dBFS, 6ms attack so it never rides
     // bass cycles into audio-rate static fuzz, while preventing any 0 dBFS DAC clip)
@@ -1778,12 +1797,125 @@ export class AudioEngine {
   public setMuted(muted: boolean): void {
     this.muted = muted;
     if (this.ctx && this.masterGain) {
-      this.masterGain.gain.setTargetAtTime(muted ? 0 : 0.9, this.ctx.currentTime, 0.02);
+      this.masterGain.gain.setTargetAtTime(
+        muted ? 0 : this.masterVolume * 0.92,
+        this.ctx.currentTime,
+        0.02
+      );
     }
   }
 
   public isMuted(): boolean {
     return this.muted;
+  }
+
+  public getMasterVolume(): number {
+    return this.masterVolume;
+  }
+
+  public setMasterVolume(vol: number): void {
+    const clamped = Math.max(0, Math.min(1, Math.round(vol * 100) / 100));
+    this.masterVolume = clamped;
+    try {
+      window.localStorage.setItem(AudioEngine.MASTER_VOLUME_STORAGE_KEY, String(clamped));
+    } catch {
+      // Ignore storage restrictions
+    }
+    if (this.ctx && this.masterGain && !this.muted) {
+      this.masterGain.gain.setTargetAtTime(clamped * 0.92, this.ctx.currentTime, 0.02);
+    }
+  }
+
+  /**
+   * Subtle 0.18s 1979 CRT degauss coil thump + decaying 60Hz/120Hz magnetic hum
+   * triggered when cycling CRT presets (safe headroom below masterLimiter).
+   */
+  public playDegaussRelay(): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 460;
+    lp.Q.value = 0.7;
+    lp.connect(this.masterGain);
+
+    // 60Hz + 120Hz damped degauss coil hum
+    for (const [hz, peak] of [
+      [60, 0.18],
+      [120, 0.11],
+    ] as const) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(hz * 1.12, now);
+      osc.frequency.exponentialRampToValueAtTime(hz, now + 0.045);
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.linearRampToValueAtTime(peak, now + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.19);
+      osc.connect(g);
+      g.connect(lp);
+      osc.start(now);
+      osc.stop(now + 0.21);
+    }
+
+    // Crisp mechanical relay contact click
+    const click = ctx.createOscillator();
+    const clickG = ctx.createGain();
+    click.type = 'triangle';
+    click.frequency.setValueAtTime(420, now);
+    click.frequency.exponentialRampToValueAtTime(115, now + 0.022);
+    clickG.gain.setValueAtTime(0.0001, now);
+    clickG.gain.linearRampToValueAtTime(0.14, now + 0.004);
+    clickG.gain.exponentialRampToValueAtTime(0.0001, now + 0.028);
+    click.connect(clickG);
+    clickG.connect(this.masterGain);
+    click.start(now);
+    click.stop(now + 0.032);
+  }
+
+  /**
+   * Snappy 0.09s electromechanical tape-bay relay snap for fast cartridge switching.
+   */
+  public playRelaySnap(): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 1450;
+    lp.Q.value = 0.65;
+    lp.connect(this.masterGain);
+
+    // Solenoid latch thump
+    const thump = ctx.createOscillator();
+    const thumpG = ctx.createGain();
+    thump.type = 'triangle';
+    thump.frequency.setValueAtTime(210, now);
+    thump.frequency.exponentialRampToValueAtTime(76, now + 0.055);
+    thumpG.gain.setValueAtTime(0.0001, now);
+    thumpG.gain.linearRampToValueAtTime(0.20, now + 0.006);
+    thumpG.gain.exponentialRampToValueAtTime(0.0001, now + 0.075);
+    thump.connect(thumpG);
+    thumpG.connect(lp);
+    thump.start(now);
+    thump.stop(now + 0.085);
+
+    // Secondary tape lock confirm tick (+34ms)
+    const tick = ctx.createOscillator();
+    const tickG = ctx.createGain();
+    tick.type = 'sine';
+    tick.frequency.setValueAtTime(780, now + 0.034);
+    tick.frequency.exponentialRampToValueAtTime(520, now + 0.085);
+    tickG.gain.setValueAtTime(0.0001, now + 0.034);
+    tickG.gain.linearRampToValueAtTime(0.11, now + 0.04);
+    tickG.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+    tick.connect(tickG);
+    tickG.connect(lp);
+    tick.start(now + 0.034);
+    tick.stop(now + 0.096);
   }
 
   public suspendForBackground(paused: boolean): void {
@@ -3733,28 +3865,44 @@ export class AudioEngine {
     if (!this.ctx || !this.masterGain || this.muted) return;
     const now = this.ctx.currentTime;
     const ctx = this.ctx;
+    const safeVol = Math.max(0, Math.min(1.0, volume));
 
-    // Warm low-shelf + resonant chamber bus so the system alert sits deep and authoritative
+    // Clean infrasonic cut + gentle low-shelf + slow-attack bus headroom limiter
+    // (prevents 64-160Hz bass cycles from pumping the master limiter into static fuzz)
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 36;
+    hp.Q.value = 0.65;
+
     const lowShelf = ctx.createBiquadFilter();
     lowShelf.type = 'lowshelf';
-    lowShelf.frequency.value = 160;
-    lowShelf.gain.value = 4.5;
+    lowShelf.frequency.value = 140;
+    lowShelf.gain.value = 1.5;
 
     const lp = ctx.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.frequency.value = 3400;
-    lp.Q.value = 0.85;
+    lp.frequency.value = 2600;
+    lp.Q.value = 0.62;
+
+    const breachComp = ctx.createDynamicsCompressor();
+    breachComp.threshold.value = -7.0;
+    breachComp.knee.value = 8.0;
+    breachComp.ratio.value = 4.0;
+    breachComp.attack.value = 0.018;
+    breachComp.release.value = 0.22;
 
     const outGain = ctx.createGain();
-    outGain.gain.value = 1.08 * volume;
+    outGain.gain.value = 0.66 * safeVol;
 
+    hp.connect(lowShelf);
     lowShelf.connect(lp);
-    lp.connect(outGain);
+    lp.connect(breachComp);
+    breachComp.connect(outGain);
     outGain.connect(this.masterGain);
 
     if (this.sentryWarehouseWetInput) {
       const hallSend = ctx.createGain();
-      hallSend.gain.value = 0.44;
+      hallSend.gain.value = 0.26;
       outGain.connect(hallSend);
       hallSend.connect(this.sentryWarehouseWetInput);
     }
@@ -3762,22 +3910,32 @@ export class AudioEngine {
     if (this.buffers.has('core_breach_alert')) {
       const buf = this.buffers.get('core_breach_alert')!;
       const onset = this.bufferOnsets.get('core_breach_alert') ?? 0;
+      const remDur = Math.max(0.18, buf.duration - onset);
       const src = ctx.createBufferSource();
       src.buffer = buf;
-      src.connect(lowShelf);
+
+      // Smooth 14ms attack & 60ms release envelope prevents onset step-clicks at any cut point
+      const srcEnv = ctx.createGain();
+      srcEnv.gain.setValueAtTime(0.0001, now);
+      srcEnv.gain.linearRampToValueAtTime(1.0, now + 0.014);
+      srcEnv.gain.setValueAtTime(1.0, now + Math.max(0.02, remDur - 0.06));
+      srcEnv.gain.linearRampToValueAtTime(0.0001, now + remDur);
+
+      src.connect(srcEnv);
+      srcEnv.connect(hp);
       src.start(now, onset);
 
-      // Subtle sub-bass hull resonance reinforcement under the ElevenLabs alert
+      // Subtle sub-bass hull resonance reinforcement summed cleanly into the breach bus limiter
       const sub = ctx.createOscillator();
       const subGain = ctx.createGain();
       sub.type = 'sine';
       sub.frequency.setValueAtTime(76, now);
       sub.frequency.exponentialRampToValueAtTime(64, now + 1.8);
       subGain.gain.setValueAtTime(0.0001, now);
-      subGain.gain.linearRampToValueAtTime(0.18 * volume, now + 0.08);
+      subGain.gain.linearRampToValueAtTime(0.14 * safeVol, now + 0.06);
       subGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.9);
       sub.connect(subGain);
-      subGain.connect(this.masterGain);
+      subGain.connect(breachComp);
       sub.start(now);
       sub.stop(now + 1.95);
       return;
@@ -3788,7 +3946,7 @@ export class AudioEngine {
     for (const off of pulseStarts) {
       const t0 = now + off;
       const freqs = [110, 165, 220];
-      const amps = [0.34, 0.22, 0.12];
+      const amps = [0.28, 0.17, 0.09];
       freqs.forEach((f, idx) => {
         const osc = ctx.createOscillator();
         const filt = ctx.createBiquadFilter();
@@ -3798,14 +3956,14 @@ export class AudioEngine {
         osc.frequency.exponentialRampToValueAtTime(f * 0.94, t0 + 0.92);
         filt.type = 'lowpass';
         filt.frequency.value = 540;
-        filt.Q.value = 2.2;
+        filt.Q.value = 0.85;
         env.gain.setValueAtTime(0.0001, t0);
         env.gain.linearRampToValueAtTime(amps[idx], t0 + 0.045);
         env.gain.setValueAtTime(amps[idx] * 0.85, t0 + 0.36);
         env.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.96);
         osc.connect(filt);
         filt.connect(env);
-        env.connect(lowShelf);
+        env.connect(hp);
         osc.start(t0);
         osc.stop(t0 + 1.0);
       });
@@ -4215,10 +4373,11 @@ export class AudioEngine {
   public playReactorBreakerEvent(tripped: boolean): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
     const asset = tripped ? 'perim_breaker_blackout' : 'perim_breaker_restore';
-    if (this.playCorridorBuffer(asset, 0, tripped ? 0.92 : 0.78, 1.0, 0.48, 3800)) {
+    // Keep clean headroom so simultaneous breaker trip + breach klaxon never clips master limiter
+    if (this.playCorridorBuffer(asset, 0, 0.68, 1.0, 0.4, 3400)) {
       return;
     }
-    this.playButtonLatchLock(tripped ? 0.55 : 1.15, 0.95);
+    this.playButtonLatchLock(tripped ? 0.55 : 1.15, 0.78);
   }
 
   /**
@@ -4465,28 +4624,44 @@ export class AudioEngine {
 
     const hp = ctx.createBiquadFilter();
     hp.type = 'highpass';
-    hp.frequency.value = 170;
-    hp.Q.value = 0.7;
+    hp.frequency.value = 180;
+    hp.Q.value = 0.65;
 
     const hallBody = ctx.createBiquadFilter();
     hallBody.type = 'peaking';
     hallBody.frequency.value = 660;
-    hallBody.Q.value = 0.9;
-    hallBody.gain.value = 2.0;
+    hallBody.Q.value = 0.85;
+    hallBody.gain.value = 1.0;
 
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.frequency.value = 2900;
-    lp.Q.value = 0.65;
+    // 2-stage smooth anti-fizz lowpass strips high-frequency convolution grit cleanly
+    const lp1 = ctx.createBiquadFilter();
+    lp1.type = 'lowpass';
+    lp1.frequency.value = 2350;
+    lp1.Q.value = 0.6;
+
+    const lp2 = ctx.createBiquadFilter();
+    lp2.type = 'lowpass';
+    lp2.frequency.value = 3100;
+    lp2.Q.value = 0.55;
+
+    // Transparent slow-attack headroom glue so stacked corridor echo sends stay static-free
+    const hallComp = ctx.createDynamicsCompressor();
+    hallComp.threshold.value = -10.0;
+    hallComp.knee.value = 10.0;
+    hallComp.ratio.value = 3.0;
+    hallComp.attack.value = 0.018;
+    hallComp.release.value = 0.22;
 
     const wetOut = ctx.createGain();
-    wetOut.gain.value = 0.68;
+    wetOut.gain.value = 0.46;
 
     input.connect(convolver);
     convolver.connect(hp);
     hp.connect(hallBody);
-    hallBody.connect(lp);
-    lp.connect(wetOut);
+    hallBody.connect(lp1);
+    lp1.connect(lp2);
+    lp2.connect(hallComp);
+    hallComp.connect(wetOut);
     wetOut.connect(this.masterGain);
 
     this.stationAlarmHallInput = input;
@@ -4495,9 +4670,9 @@ export class AudioEngine {
 
   /**
    * Synthesizes a stereo 3.50s cavernous metallic station-corridor Impulse Response
-   * (smooth brown/pink diffusion, alternating bulkhead early reflections, progressive
-   * high-frequency distance damping, cosine fadeout, and L2 unit-energy normalization)
-   * so the wave-clear alarm leaves a haunting ~3-second trailing echo down the halls.
+   * (smooth warm brown/pink diffusion, alternating bulkhead early reflections, progressive
+   * high-frequency distance damping, cosine fadeout, and attenuated L2 unit-energy scaling)
+   * so the wave-clear alarm leaves a clean, haunting ~3-second trailing echo with zero fizz.
    */
   private buildStationAlarmHallIr(ctx: AudioContext): AudioBuffer {
     const sr = ctx.sampleRate;
@@ -4531,10 +4706,10 @@ export class AudioEngine {
       for (let k = 0; k < smearLen && idx + k < len; k++) {
         const u = k / Math.max(1, smearLen - 1);
         const w = Math.sin(u * Math.PI) * Math.exp(-u * 1.4);
-        tapL = (tapL + 0.2 * rand()) / 1.2;
-        tapR = (tapR + 0.2 * rand()) / 1.2;
-        chL[idx + k] += tap.ampL * w * tapL * 2.2;
-        chR[idx + k] += tap.ampR * w * tapR * 2.2;
+        tapL = (tapL + 0.1 * rand()) / 1.1;
+        tapR = (tapR + 0.1 * rand()) / 1.1;
+        chL[idx + k] += tap.ampL * w * tapL * 1.6;
+        chR[idx + k] += tap.ampR * w * tapR * 1.6;
       }
     }
 
@@ -4543,7 +4718,7 @@ export class AudioEngine {
     let b0R = 0, b1R = 0, b2R = 0, brownR = 0;
     let lpLowL = 0, lpLowR = 0;
     let lpMidL = 0, lpMidR = 0;
-    const alphaLow = 1 - Math.exp((-2 * Math.PI * 1050) / sr);
+    const alphaLow = 1 - Math.exp((-2 * Math.PI * 950) / sr);
     const preDelaySamp = Math.floor(sr * 0.032);
     const fadeSamples = Math.floor(sr * 0.52);
 
@@ -4570,32 +4745,32 @@ export class AudioEngine {
       const pinkR = (b0R + b1R + b2R) * 0.17;
       brownR = (brownR + 0.07 * wR) / 1.07;
 
-      // Time-darkening air-absorption cutoff: 2700Hz early -> 460Hz deep corridor!
-      const dynCut = 460 + 2240 * Math.exp(-t / 0.85);
+      // Time-darkening air-absorption cutoff: 1950Hz early -> 380Hz deep corridor (zero fizz!)
+      const dynCut = 380 + 1570 * Math.exp(-t / 0.72);
       const alphaDyn = 1 - Math.exp((-2 * Math.PI * dynCut) / sr);
 
-      const srcL = brownL * 1.35 + pinkL * 1.15;
-      const srcR = brownR * 1.35 + pinkR * 1.15;
+      const srcL = brownL * 1.45 + pinkL * 0.55;
+      const srcR = brownR * 1.45 + pinkR * 0.55;
 
       lpLowL += alphaLow * (srcL - lpLowL);
       lpLowR += alphaLow * (srcR - lpLowR);
       lpMidL += alphaDyn * (srcL - lpMidL);
       lpMidR += alphaDyn * (srcR - lpMidR);
 
-      const midBandL = lpMidL - lpLowL * 0.65;
-      const midBandR = lpMidR - lpLowR * 0.65;
+      const midBandL = lpMidL - lpLowL * 0.5;
+      const midBandR = lpMidR - lpLowR * 0.5;
 
-      // Long 1.05s low-mid corridor sustain + 0.68s metallic shimmer -> audible 3+ sec tail!
+      // Long 1.05s low-mid corridor sustain + gentle 0.62s metallic body -> clean 3+ sec tail!
       const envLow = Math.exp(-t / 1.05) * buildUp * endFade;
-      const envMid = Math.exp(-t / 0.68) * buildUp * endFade;
+      const envMid = Math.exp(-t / 0.62) * buildUp * endFade;
 
-      chL[i] += lpLowL * envLow * 1.05 + midBandL * envMid * 0.92;
-      chR[i] += lpLowR * envLow * 1.05 + midBandR * envMid * 0.92;
+      chL[i] += lpLowL * envLow * 1.05 + midBandL * envMid * 0.62;
+      chR[i] += lpLowR * envLow * 1.05 + midBandR * envMid * 0.62;
     }
 
-    // Smooth 2-pole anti-fizz rolloff at 2850Hz + True L2 unit-energy normalization
+    // Smooth 2-pole anti-fizz rolloff at 2100Hz + attenuated L2 unit-energy scaling (-2.2 dB headroom)
     let s1L = 0, s1R = 0, s2L = 0, s2R = 0;
-    const alphaLp = 1 - Math.exp((-2 * Math.PI * 2850) / sr);
+    const alphaLp = 1 - Math.exp((-2 * Math.PI * 2100) / sr);
     let sumSq = 0;
     for (let i = 0; i < len; i++) {
       s1L += alphaLp * (chL[i] - s1L);
@@ -4608,7 +4783,7 @@ export class AudioEngine {
     }
 
     const l2Norm = Math.sqrt(Math.max(1e-12, sumSq * 0.5));
-    const gainScale = 1.05 / l2Norm;
+    const gainScale = 0.78 / l2Norm;
     for (let i = 0; i < len; i++) {
       chL[i] *= gainScale;
       chR[i] *= gainScale;
@@ -4623,7 +4798,7 @@ export class AudioEngine {
 
   /**
    * Satisfying Nostromo console / station wave-clear siren & lock chime with a
-   * haunting ~3-second trailing metallic corridor echo and darkening stereo hall bounces!
+   * clean, static-free ~3-second trailing metallic corridor echo and darkening stereo bounces!
    */
   public playWaveClearedChime(): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
@@ -4631,32 +4806,56 @@ export class AudioEngine {
     const now = ctx.currentTime;
     const buf = this.buffers.get('perim_wave_clear');
     if (!buf) {
-      this.playButtonLatchLock(1.12, 0.85);
+      this.playButtonLatchLock(1.12, 0.72);
       return;
     }
 
     const onset = this.bufferOnsets.get('perim_wave_clear') ?? 0;
+    const remDur = Math.max(0.16, buf.duration - onset);
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.playbackRate.value = 1.0;
 
-    // Warm station-speaker lowpass + main dry send (keeps core alarm tone crisp & punchy)
+    // Smooth 12ms attack / 55ms release envelope prevents onset step-clicks into reverb & delays
+    const srcEnv = ctx.createGain();
+    srcEnv.gain.setValueAtTime(0.0001, now);
+    srcEnv.gain.linearRampToValueAtTime(1.0, now + 0.012);
+    srcEnv.gain.setValueAtTime(1.0, now + Math.max(0.02, remDur - 0.055));
+    srcEnv.gain.linearRampToValueAtTime(0.0001, now + remDur);
+
+    // DC-blocking highpass + warm station-speaker lowpass removes top-end compression static
+    const mainHp = ctx.createBiquadFilter();
+    mainHp.type = 'highpass';
+    mainHp.frequency.value = 48;
+    mainHp.Q.value = 0.6;
+
     const mainLp = ctx.createBiquadFilter();
     mainLp.type = 'lowpass';
-    mainLp.frequency.value = 4400;
-    mainLp.Q.value = 0.7;
+    mainLp.frequency.value = 3400;
+    mainLp.Q.value = 0.62;
+
+    // Local soft-knee headroom limiter sums dry + echo taps cleanly below master limiter threshold
+    const alarmLimiter = ctx.createDynamicsCompressor();
+    alarmLimiter.threshold.value = -6.0;
+    alarmLimiter.knee.value = 8.0;
+    alarmLimiter.ratio.value = 4.0;
+    alarmLimiter.attack.value = 0.014;
+    alarmLimiter.release.value = 0.18;
+    alarmLimiter.connect(this.masterGain);
 
     const dryGain = ctx.createGain();
-    dryGain.gain.value = 0.74;
+    dryGain.gain.value = 0.58;
 
-    src.connect(mainLp);
+    src.connect(srcEnv);
+    srcEnv.connect(mainHp);
+    mainHp.connect(mainLp);
     mainLp.connect(dryGain);
-    dryGain.connect(this.masterGain);
+    dryGain.connect(alarmLimiter);
 
-    // Tight metallic room body send
+    // Subtle tight metallic room body send
     if (this.sentryWarehouseWetInput) {
       const nearRoomSend = ctx.createGain();
-      nearRoomSend.gain.value = 0.28;
+      nearRoomSend.gain.value = 0.16;
       mainLp.connect(nearRoomSend);
       nearRoomSend.connect(this.sentryWarehouseWetInput);
     }
@@ -4665,27 +4864,26 @@ export class AudioEngine {
     const alarmHallBus = this.getOrInitStationAlarmHallBus(ctx);
     if (alarmHallBus) {
       const directHallSend = ctx.createGain();
-      directHallSend.gain.value = 0.72;
+      directHallSend.gain.value = 0.44;
       mainLp.connect(directHallSend);
       directHallSend.connect(alarmHallBus);
     }
 
-    // 4-tap darkening stereo corridor echo cascade (+0.36s..+2.02s), each feeding the 3.5s
-    // cavernous hall bus so distant steel-corridor echoes trail cleanly for ~3 full seconds after!
+    // 4-tap darkening stereo corridor echo cascade (+0.46s..+2.18s) staged after primary transient
     const taps = [
-      { delaySec: 0.36, gain: 0.26, pan: -0.34, cutoffHz: 2650, hallSend: 0.45 },
-      { delaySec: 0.82, gain: 0.15, pan: 0.38, cutoffHz: 1950, hallSend: 0.55 },
-      { delaySec: 1.38, gain: 0.085, pan: -0.42, cutoffHz: 1400, hallSend: 0.62 },
-      { delaySec: 2.02, gain: 0.045, pan: 0.44, cutoffHz: 980, hallSend: 0.68 },
+      { delaySec: 0.46, gain: 0.16, pan: -0.34, cutoffHz: 2200, hallSend: 0.26 },
+      { delaySec: 0.98, gain: 0.095, pan: 0.36, cutoffHz: 1600, hallSend: 0.32 },
+      { delaySec: 1.56, gain: 0.052, pan: -0.38, cutoffHz: 1150, hallSend: 0.36 },
+      { delaySec: 2.18, gain: 0.028, pan: 0.4, cutoffHz: 850, hallSend: 0.38 },
     ];
     for (const tap of taps) {
-      const delay = ctx.createDelay(2.5);
+      const delay = ctx.createDelay(2.6);
       delay.delayTime.value = tap.delaySec;
 
       const tapLp = ctx.createBiquadFilter();
       tapLp.type = 'lowpass';
       tapLp.frequency.value = tap.cutoffHz;
-      tapLp.Q.value = 0.65;
+      tapLp.Q.value = 0.6;
 
       const g = ctx.createGain();
       g.gain.value = tap.gain;
@@ -4697,7 +4895,7 @@ export class AudioEngine {
       delay.connect(tapLp);
       tapLp.connect(g);
       g.connect(p);
-      p.connect(this.masterGain);
+      p.connect(alarmLimiter);
 
       if (alarmHallBus) {
         const tapWet = ctx.createGain();

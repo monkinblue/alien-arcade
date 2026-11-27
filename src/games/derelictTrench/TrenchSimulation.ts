@@ -115,6 +115,7 @@ export class TrenchSimulation {
   public cameraFovDeg: number = TRENCH_CONSTANTS.BASE_FOV_DEG;
 
   public invertPitch = false;
+  public freeFlightDrill = false;
 
   // 6km Sector Strike Progression Loop (`SEC-01`, `SEC-02`, `SEC-03`...)
   public sectorNumber = 1;
@@ -203,6 +204,8 @@ export class TrenchSimulation {
   private cmdsBurstBeatTimer = 0;
   private cmdsBurstBeatIndex = 0;
   private cmdsBurstDecoyedTotal = 0;
+  private drillBounceCooldown = 0;
+  private timeSinceDamageSec = 0;
 
   constructor(audioCb: TrenchAudioCallbacks) {
     this.audioCb = audioCb;
@@ -212,6 +215,9 @@ export class TrenchSimulation {
   public resetToTitle(): void {
     this.phase = 'TITLE';
     this.paused = false;
+    this.freeFlightDrill = false;
+    this.drillBounceCooldown = 0;
+    this.timeSinceDamageSec = 0;
     this.z = 0;
     this.x = this.terrain.getCanyonCenterX(0);
     const groundY = this.terrain.sampleHeight(this.x, this.z);
@@ -323,8 +329,9 @@ export class TrenchSimulation {
     this.refreshSectorObjectiveCounts();
   }
 
-  public startNewFlight(): void {
+  public startNewFlight(options?: { freeFlightDrill?: boolean }): void {
     this.resetToTitle();
+    this.freeFlightDrill = Boolean(options?.freeFlightDrill);
     this.phase = 'FLYING';
   }
 
@@ -920,6 +927,17 @@ export class TrenchSimulation {
     if (this.gunCooldown > 0) this.gunCooldown = Math.max(0, this.gunCooldown - dt);
     if (this.cmdsCooldown > 0) this.cmdsCooldown = Math.max(0, this.cmdsCooldown - dt);
     if (this.cmdsActiveTimer > 0) this.cmdsActiveTimer = Math.max(0, this.cmdsActiveTimer - dt);
+    if (this.drillBounceCooldown > 0) {
+      this.drillBounceCooldown = Math.max(0, this.drillBounceCooldown - dt);
+    }
+    this.timeSinceDamageSec += dt;
+    if (
+      this.freeFlightDrill &&
+      this.timeSinceDamageSec >= 3.5 &&
+      this.hull < TRENCH_CONSTANTS.HULL_MAX
+    ) {
+      this.hull = Math.min(TRENCH_CONSTANTS.HULL_MAX, this.hull + 5.0 * dt);
+    }
     if (this.purgeDamageSoundTimer > 0) {
       this.purgeDamageSoundTimer = Math.max(0, this.purgeDamageSoundTimer - dt);
     }
@@ -1122,16 +1140,46 @@ export class TrenchSimulation {
       this.audioCb.onPullUpWarning();
     }
 
-    // 5. Terrain & Valley-Arch Instant Airframe Collision
+    // 5. Terrain & Valley-Arch Collision (Instant Loss in Ranked; Forgiving Bounce in Free-Flight Drill!)
     const hitGround = this.y <= groundY + TRENCH_CONSTANTS.COCKPIT_CLEARANCE_M;
     const hitArch = this.terrain.checkArchCollision(this.x, this.y, this.z, 4.0);
     if (hitGround || hitArch) {
-      this.triggerAirframeLoss(hitArch ? 'VALLEY ARCH IMPACT' : 'TERRAIN IMPACT');
-      return;
+      if (!this.freeFlightDrill) {
+        this.triggerAirframeLoss(hitArch ? 'VALLEY ARCH IMPACT' : 'TERRAIN IMPACT');
+        return;
+      }
+
+      // Forgiving Free-Flight Drill bounce: lift safely clear, level wings, keep new pilots flying!
+      if (hitGround) {
+        this.y = groundY + TRENCH_CONSTANTS.COCKPIT_CLEARANCE_M + 20;
+        this.pitch = Math.max(0.18, Math.min(0.42, this.pitch + 0.24));
+        this.vy = Math.max(28, Math.abs(this.vy) * 0.45);
+      } else {
+        this.y = Math.max(groundY + 28, this.y - 18);
+        this.pitch = Math.max(-0.1, Math.min(0.2, this.pitch * 0.5));
+        this.vy = Math.max(-10, this.vy * 0.35);
+      }
+      this.roll *= 0.38;
+      this.rollRateRadS *= 0.25;
+      this.pitchRateRadS *= 0.25;
+      this.airspeedMps = Math.max(this.airspeedMps, 195);
+      this.basis = this.computeBasis(this.yaw, this.pitch, this.roll);
+      this.raltM = Math.max(0, this.y - groundY);
+
+      if (this.drillBounceCooldown <= 0) {
+        this.drillBounceCooldown = 0.95;
+        this.spawnSparks(this.x, Math.max(groundY + 2, this.y - 4), this.z, '#FFB000', 14);
+        this.applyHullDamage(
+          12,
+          hitArch ? 'DRILL ARCH SCRAPE' : 'DRILL TERRAIN BOUNCE',
+          0
+        );
+        if (this.hull <= 0) return;
+      }
     }
 
     // 6. Advancing Atmospheric Purge Wave (Tail Pressure)
-    const purgeSpeedMps = this.purgeMach * 340;
+    const purgeSpeedMps = this.purgeMach * (this.freeFlightDrill ? 0.72 : 1.0) * 340;
     this.purgeWaveZ += purgeSpeedMps * dt;
     this.purgeWaveZ = Math.max(this.purgeWaveZ, this.z - 2200);
     this.purgeDistanceM = Math.max(0, this.z - this.purgeWaveZ);
@@ -1144,7 +1192,9 @@ export class TrenchSimulation {
         this.purgeDamageSoundTimer = 0.48;
         this.audioCb.onHullImpactThud(0);
       }
-      this.hull = Math.max(0, this.hull - 40 * dt);
+      this.timeSinceDamageSec = 0;
+      const purgeDps = this.freeFlightDrill ? 14 : 40;
+      this.hull = Math.max(0, this.hull - purgeDps * dt);
       if (this.hull <= 0) {
         this.triggerAirframeLoss('PURGE WAVE ENGULFMENT');
         return;
@@ -1157,8 +1207,10 @@ export class TrenchSimulation {
     }
     this.stepCmdsDispenser(dt);
 
-    // 8. Dynamic Sector Radar Ceiling & Fair 3.5-Second SAM Lock Warning
+    // 8. Dynamic Sector Radar Ceiling & Fair SAM Lock Warning (3.5s Ranked / 5.5s Drill)
     //    (100% authentic: launches strictly from real intact SAM_SITE towers — zero phantom spawns!)
+    const samLockWarningSec =
+      TRENCH_CONSTANTS.SAM_LOCK_WARNING_SEC + (this.freeFlightDrill ? 2.0 : 0);
     this.ceilingBreached = this.raltM > this.sectorRadarCeilingM;
     const ceilingSite = this.ceilingBreached ? this.findNearestIntactSamSite(3800, true) : null;
     if (this.cmdsActiveTimer > 0) {
@@ -1166,10 +1218,11 @@ export class TrenchSimulation {
       this.ceilingSamTimer = Math.max(0, this.ceilingSamTimer - dt * 3.5);
     } else if (this.ceilingBreached && ceilingSite) {
       this.ceilingSamTimer += dt;
-      if (this.ceilingSamTimer >= TRENCH_CONSTANTS.SAM_LOCK_WARNING_SEC) {
+      if (this.ceilingSamTimer >= samLockWarningSec) {
         ceilingSite.samLockTimer = 0;
         ceilingSite.samWasLocking = false;
-        ceilingSite.fireCooldown = Math.max(4.4, 6.4 - this.sectorNumber * 0.45);
+        ceilingSite.fireCooldown =
+          Math.max(4.4, 6.4 - this.sectorNumber * 0.45) + (this.freeFlightDrill ? 3.5 : 0);
         ceilingSite.muzzleFlashTimer = 0.55;
         this.spawnEnemySamFrom(ceilingSite.x, ceilingSite.y + 18, ceilingSite.z, ceilingSite.id);
         this.ceilingSamTimer = 0;
@@ -1187,7 +1240,7 @@ export class TrenchSimulation {
     this.stepTargets(dt);
     this.stepMissileSeeker(dt);
 
-    // Track highest active SAM lock countdown for crisp fair 3.5s RWR/HUD countdown
+    // Track highest active SAM lock countdown for crisp fair RWR/HUD countdown
     let maxSamLock = this.ceilingBreached && ceilingSite ? this.ceilingSamTimer : 0;
     for (const t of this.targets) {
       if (!t.destroyed && t.kind === 'SAM_SITE' && (t.samLockTimer ?? 0) > maxSamLock) {
@@ -1196,7 +1249,7 @@ export class TrenchSimulation {
     }
     this.samLockTimerMax = maxSamLock;
     this.samLockActive = maxSamLock > 0.12;
-    this.samLockCountdownSec = Math.max(0, TRENCH_CONSTANTS.SAM_LOCK_WARNING_SEC - maxSamLock);
+    this.samLockCountdownSec = Math.max(0, samLockWarningSec - maxSamLock);
     if (this.samLockActive) {
       this.audioCb.onRwrSpikeChirp(this.samLockCountdownSec < 1.6);
     }
@@ -1721,10 +1774,13 @@ export class TrenchSimulation {
             if (t.samLockTimer >= 1.1) {
               t.samWasLocking = true;
             }
-            if (t.samLockTimer >= TRENCH_CONSTANTS.SAM_LOCK_WARNING_SEC) {
+            const siteLockSec =
+              TRENCH_CONSTANTS.SAM_LOCK_WARNING_SEC + (this.freeFlightDrill ? 2.0 : 0);
+            if (t.samLockTimer >= siteLockSec) {
               t.samLockTimer = 0;
               t.samWasLocking = false;
-              t.fireCooldown = Math.max(4.4, 6.4 - this.sectorNumber * 0.45);
+              t.fireCooldown =
+                Math.max(4.4, 6.4 - this.sectorNumber * 0.45) + (this.freeFlightDrill ? 3.5 : 0);
               t.muzzleFlashTimer = 0.55;
               this.ceilingSamTimer = Math.max(0, this.ceilingSamTimer - 1.5);
               this.spawnEnemySamFrom(t.x, t.y + 18, t.z, t.id);
@@ -1890,6 +1946,7 @@ export class TrenchSimulation {
   }
 
   private applyHullDamage(amount: number, cause: string, pan = 0): void {
+    this.timeSinceDamageSec = 0;
     this.hull = Math.max(0, this.hull - amount);
     this.hitFlashTimer = Math.max(this.hitFlashTimer, amount >= 40 ? 0.55 : 0.32);
     this.screenShake = Math.max(this.screenShake, amount >= 40 ? 14 : 7.5);
@@ -2278,7 +2335,7 @@ export class TrenchSimulation {
         });
         this.audioCb.onMuffledExplosion(0, true);
         this.enemySams.splice(i, 1);
-        this.applyHullDamage(50, 'SAM WARHEAD IMPACT', 0);
+        this.applyHullDamage(this.freeFlightDrill ? 18 : 50, 'SAM WARHEAD IMPACT', 0);
         if (this.phase === 'GAME_OVER') return;
         continue;
       }
@@ -2340,7 +2397,7 @@ export class TrenchSimulation {
 
         if (dist <= f.radius + 9.5 && !f.hitPlayer) {
           f.hitPlayer = true;
-          this.applyHullDamage(16, 'AAA FLAK SHRAPNEL', pan);
+          this.applyHullDamage(this.freeFlightDrill ? 6 : 16, 'AAA FLAK SHRAPNEL', pan);
           if (this.phase === 'GAME_OVER') return;
         }
       }

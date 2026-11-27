@@ -1,10 +1,11 @@
 import type { PerimeterSimulation } from './PerimeterSimulation';
-import { Sector01Blueprint } from './Sector01Blueprint';
+import { getSectorIdForWave, getWaveDefinition } from './SectorCatalog';
 import {
   HARDWARE_SPECS,
   MK3_BRANCH_SPECS,
   PERIMETER_CONSTANTS,
   type BuildToolId,
+  type DraftChoiceId,
   type Mk3BranchId,
   type ProtocolId,
   type TurretKind,
@@ -72,7 +73,11 @@ export class PerimeterDevAutoCommander {
   public jumpToWave(sim: PerimeterSimulation, targetWave: number, autoLaunch = false): void {
     const clamped = Math.max(1, Math.min(99, Math.floor(targetWave)));
     sim.waveNumber = clamped;
-    sim.currentWaveDef = Sector01Blueprint.getWaveDefinition(clamped);
+    const wantSector = getSectorIdForWave(clamped);
+    if (wantSector !== sim.blueprint.sectorId) {
+      sim.performSectorExtraction(wantSector);
+    }
+    sim.currentWaveDef = getWaveDefinition(clamped, sim.blueprint.sectorId);
     sim.activeMutator = sim.currentWaveDef.mutator ?? 'NONE';
     sim.hostiles = [];
     sim.clearPendingSpawns();
@@ -83,18 +88,19 @@ export class PerimeterDevAutoCommander {
     sim.grateTelegraphs = [];
     sim.overloadTimer = 0;
     sim.blackoutTimer = 0;
-    sim.purgeAvailableThisWave = true;
+    sim.purgeChargesRemaining = Math.max(1, sim.purgeChargesRemaining);
+    sim.purgeAvailableThisWave = sim.purgeChargesRemaining > 0;
 
-    const autoUnlockedKw = Math.min(
-      PERIMETER_CONSTANTS.AUTO_REACTOR_KW_CAP,
-      PERIMETER_CONSTANTS.BASE_REACTOR_KW + Math.floor((clamped - 1) / 2) * 15
-    );
-    if (sim.maxReactorKw < autoUnlockedKw) {
-      sim.maxReactorKw = autoUnlockedKw;
+    const autoCount = Math.min(6, Math.floor((clamped - 1) / 2));
+    if (sim.autoReactorUnlocks < autoCount) {
+      const delta = (autoCount - sim.autoReactorUnlocks) * 15;
+      sim.autoReactorUnlocks = autoCount;
+      sim.maxReactorKw = Math.min(sim.getEffectiveMaxReactorCap(), sim.maxReactorKw + delta);
     }
 
     sim.phase = 'TACTICAL_PREP';
     sim.tacticalPaused = false;
+    sim.refreshPendingBreaches();
     sim.pushLog(
       `[DEV] JUMPED TO WAVE ${String(clamped).padStart(2, '0')} // ${sim.currentWaveDef.title} (BUS ${sim.maxReactorKw} kW)`
     );
@@ -114,8 +120,10 @@ export class PerimeterDevAutoCommander {
     }
   }
 
-  public openProtocolDraft(sim: PerimeterSimulation): ProtocolId[] {
+  public openProtocolDraft(sim: PerimeterSimulation): DraftChoiceId[] {
+    sim.draftMode = 'PROTOCOL';
     sim.protocolDraftChoices = sim.rollProtocolDraftChoices();
+    sim.omegaDraftChoices = [];
     sim.phase = 'PROTOCOL_DRAFT';
     sim.audioCb.onIntercomVoice('protocol');
     sim.pushLog('[DEV] PROTOCOL DRAFT OPENED — SELECT 1 DIRECTIVE [1 / 2 / 3]');
@@ -165,24 +173,32 @@ export class PerimeterDevAutoCommander {
     }
 
     if (sim.phase === 'PROTOCOL_DRAFT') {
-      if (this.opts.autoPickProtocol && sim.protocolDraftChoices.length > 0) {
-        const preferred: ProtocolId[] = [
-          'DU_ROUNDS',
-          'AUX_BUS',
-          'AUTOLOADER',
-          'CRYO_SHATTER',
-          'CAPACITOR_DRIVE',
-          'OPTICS_GAIN',
-          'SALVAGE_BONUS',
-          'THERMITE_CATALYST',
-          'BULKHEAD_ARMOR',
-          'SEAL_FABRICATION',
-        ];
-        const pick =
-          preferred.find((p) => sim.protocolDraftChoices.includes(p)) ??
-          sim.protocolDraftChoices[0];
-        const r = sim.selectProtocolDraft(pick);
-        if (r.ok) this.note(`W${sim.waveNumber} PICKED PROTOCOL ${pick}`);
+      if (this.opts.autoPickProtocol) {
+        if (sim.draftMode === 'OMEGA' && sim.omegaDraftChoices.length > 0) {
+          const pick = sim.omegaDraftChoices[0];
+          const r = sim.selectOmegaDirective(pick);
+          if (r.ok) this.note(`W${sim.waveNumber} PICKED OMEGA ${pick}`);
+          return;
+        }
+        if (sim.protocolDraftChoices.length > 0) {
+          const preferred: ProtocolId[] = [
+            'DU_ROUNDS',
+            'AUX_BUS',
+            'AUTOLOADER',
+            'CRYO_SHATTER',
+            'CAPACITOR_DRIVE',
+            'OPTICS_GAIN',
+            'SALVAGE_BONUS',
+            'THERMITE_CATALYST',
+            'BULKHEAD_ARMOR',
+            'AEGIS_SHIELD',
+          ];
+          const pick =
+            preferred.find((p) => sim.protocolDraftChoices.includes(p)) ??
+            sim.protocolDraftChoices[0];
+          const r = sim.selectProtocolDraft(pick);
+          if (r.ok) this.note(`W${sim.waveNumber} PICKED PROTOCOL ${pick}`);
+        }
       }
       return;
     }
@@ -289,7 +305,7 @@ export class PerimeterDevAutoCommander {
     // Expand reactor bus whenever free headroom drops below 28 kW and we can afford it
     if (
       freeKw < 28 &&
-      sim.maxReactorKw < PERIMETER_CONSTANTS.MAX_REACTOR_KW_HARD_CAP &&
+      sim.maxReactorKw < sim.getEffectiveMaxReactorCap() &&
       sim.scrap >= sim.getReactorExpandCost()
     ) {
       const r = sim.expandReactorBus();
@@ -351,6 +367,20 @@ export class PerimeterDevAutoCommander {
         const bSpec = MK3_BRANCH_SPECS[t.kind][branch];
         if (sim.scrap >= bSpec.costScrap && freeKw >= bSpec.extraKw) {
           const r = sim.upgradeTurret(t.id, branch);
+          if (r.ok) {
+            this.note(r.msg);
+            return;
+          }
+        }
+      }
+    }
+
+    // MK-IV Overhaul Refits on MK-III combat turrets once Scrap surplus builds
+    for (const t of sim.turrets) {
+      if (t.level === 3 && t.mk4Level < 3) {
+        const refitCost = sim.getMk4RefitCost(t);
+        if (refitCost !== null && sim.scrap >= refitCost && freeKw >= PERIMETER_CONSTANTS.MK4_KW_PER_LEVEL) {
+          const r = sim.refitTurretMk4(t.id);
           if (r.ok) {
             this.note(r.msg);
             return;

@@ -1,11 +1,20 @@
 import type { PerimeterVoiceId } from '../audio/AudioEngine';
 import type { Vec2 } from '../types';
 import { FlowFieldPathfinder } from './FlowFieldPathfinder';
-import { Sector01Blueprint, type ColonyBlueprint } from './Sector01Blueprint';
 import {
+  applyDynamicBreach,
+  createSectorBlueprint,
+  getDynamicBreachesForWave,
+  getSectorIdForWave,
+  getWaveDefinition,
+  getWaveHpScale,
+} from './SectorCatalog';
+import {
+  ENDGAME_DIRECTIVES,
   HARDWARE_SPECS,
   HOSTILE_SPECS,
   MK3_BRANCH_SPECS,
+  OMEGA_DIRECTIVES,
   PERIMETER_CONSTANTS,
   TACTICAL_PROTOCOLS,
   WAVE_MUTATORS,
@@ -15,8 +24,12 @@ import {
   type AirlockPurgeWave,
   type BlastDoorState,
   type BuildToolId,
+  type ColonyBlueprint,
   type CommandAbilityId,
   type CryoPlume,
+  type DraftChoiceId,
+  type DraftMode,
+  type EndgameDirectiveId,
   type FloatingCallout,
   type GrateBreachTelegraph,
   type HostileEntity,
@@ -24,6 +37,7 @@ import {
   type Mk3BranchId,
   type MotionSweepWave,
   type NapalmCloud,
+  type OmegaDirectiveId,
   type OverclockZone,
   type PerimeterMode,
   type PerimeterPhase,
@@ -33,6 +47,7 @@ import {
   type ProximityClaymore,
   type QueenEggSac,
   type RailBeamBolt,
+  type SectorId,
   type ShockArcBolt,
   type StrobeFlareZone,
   type TracerBolt,
@@ -88,7 +103,10 @@ interface PendingSpawnCursor {
   intervalSec: number;
   timerSec: number;
   telegraphSent: boolean;
+  hpOverride?: number;
 }
+
+const MAX_AUTO_REACTOR_UNLOCKS = 6; // W2, W4, W6, W8, W10, W12 (+15 kW each = +90 kW)
 
 export class PerimeterSimulation {
   public blueprint: ColonyBlueprint;
@@ -101,18 +119,28 @@ export class PerimeterSimulation {
   public tacticalPaused = false;
   public fastForward2x = false;
 
+  // Sector Evolution & Dynamic Hull Breach State
+  public pendingBreachIds: string[] = [];
+  public activeBreachIds: string[] = [];
+  public sectorTransitionVersion = 0;
+  public onSectorChanged?: (sectorId: SectorId, blueprint: ColonyBlueprint) => void;
+
   // Economy & Core Health
   public scrap: number = PERIMETER_CONSTANTS.INITIAL_SCRAP;
   public maxReactorKw: number = PERIMETER_CONSTANTS.BASE_REACTOR_KW;
+  public autoReactorUnlocks = 0;
   public bulkheadSeals: number = PERIMETER_CONSTANTS.MAX_BULKHEAD_SEALS;
   public sealLostFlashTimer = 0;
+  public aegisBarrierReady = false;
+  public aegisBarrierCharges = 0;
+  public aegisRechargeWavesRemaining = 0;
 
   // Score & Wave Progression
   public waveNumber = 1;
   public currentWaveDef: WaveDefinition;
   public totalKills = 0;
   public score = 0;
-  public prepCountdownSec = 0; // Optional auto-wave or manual trigger
+  public prepCountdownSec = 0;
 
   // Entities & Tactical Objects
   public turrets: PlacedTurret[] = [];
@@ -141,30 +169,42 @@ export class PerimeterSimulation {
   public overclockCooldown = 0;
   public coolantFlushCooldown = 0;
   public floodlightCooldown = 0;
+  public purgeChargesRemaining = 1;
   public purgeAvailableThisWave = true;
+  public claymoresRemainingThisWave: number = PERIMETER_CONSTANTS.CLAYMORE_STOCK_PER_WAVE;
+  public resupplyPurchasesThisWave = 0;
   public activeFlareSurgeTimer = 0;
   public activeOverclockSurgeTimer = 0;
   public activeCoolantSurgeTimer = 0;
   public floodlightTimer = 0;
-  public reserveBattery = 25; // 0..100%: absorbs overloads OR triggers [L] Floodlight!
+  public reserveBattery = 25;
   public auxShedActive = false;
   public auxShedTurretIds: string[] = [];
   public reactorExpansionsBought = 0;
   public overloadTimer = 0;
   public blackoutTimer = 0;
 
-  // Roguelike Protocol Drafts, Wave Mutators & Perfect-Wave Streak
+  // Roguelike Protocol Drafts, Omega Directives, Endgame Directives & Mutators
+  public draftMode: DraftMode = 'PROTOCOL';
   public activeProtocols: Partial<Record<ProtocolId, number>> = {};
-  public protocolDraftChoices: ProtocolId[] = [];
+  public activeOmegas: OmegaDirectiveId[] = [];
+  public activeEndgameDirectives: Partial<Record<EndgameDirectiveId, number>> = {};
+  public protocolDraftChoices: DraftChoiceId[] = [];
+  public omegaDraftChoices: OmegaDirectiveId[] = [];
+  public draftRerollsUsedThisDraft = 0;
+  public paidRerollsUsedThisDraft = 0;
+  public freeDraftRerollsRemaining = 0;
   public activeMutator: WaveMutatorId = 'NONE';
   public perfectWaveStreak = 0;
   private sealLostThisWave = false;
+  private pendingProtocolDraftAfterOmega = false;
 
   // Event Log Stream
   public eventLogs: string[] = [];
 
-  // Internal counters
+  // Internal counters & transient per-tick caches
   private nextHostileId = 1;
+  private scrapFraction = 0;
   private callsignCounters: Record<TurretKind, number> = {
     SENTRY_PULSE: 0,
     INCINERATOR: 0,
@@ -174,6 +214,12 @@ export class PerimeterSimulation {
     MOTION_RELAY: 0,
   };
   private spawnQueue: PendingSpawnCursor[] = [];
+  private congestionGrid: Float32Array;
+  private hazardMask: Uint8Array;
+  private congestionRecomputeTimer = 1.0;
+  private cryoCoolerBuffedTurretIds = new Set<string>();
+  private relayFloodHostileIds = new Set<number>();
+  private acidSpitOwners = new Map<number, number>();
   private coreSweepTimer = 0.6;
   private trackerAudioTimer = 0.5;
   private swarmScreechTimer = 1.3;
@@ -190,9 +236,12 @@ export class PerimeterSimulation {
 
   constructor(audioCb: SimulationAudioCallbacks) {
     this.audioCb = audioCb;
-    this.blueprint = Sector01Blueprint.createSector01();
+    this.blueprint = createSectorBlueprint('SEC-01');
     this.pathfinder = new FlowFieldPathfinder(this.blueprint);
-    this.currentWaveDef = Sector01Blueprint.getWaveDefinition(1);
+    const totalCells = this.blueprint.cols * this.blueprint.rows;
+    this.congestionGrid = new Float32Array(totalCells);
+    this.hazardMask = new Uint8Array(totalCells);
+    this.currentWaveDef = getWaveDefinition(1, 'SEC-01');
     this.resetRun('ENDLESS_SIEGE', true);
   }
 
@@ -203,13 +252,29 @@ export class PerimeterSimulation {
     this.tacticalPaused = false;
     this.fastForward2x = false;
 
+    // Fresh mutable SEC-01 blueprint so dynamic breaches never bleed across runs
+    this.blueprint = createSectorBlueprint('SEC-01');
+    this.pathfinder = new FlowFieldPathfinder(this.blueprint);
+    const totalCells = this.blueprint.cols * this.blueprint.rows;
+    this.congestionGrid = new Float32Array(totalCells);
+    this.hazardMask = new Uint8Array(totalCells);
+    this.congestionRecomputeTimer = 1.0;
+    this.pendingBreachIds = [];
+    this.activeBreachIds = [];
+    this.sectorTransitionVersion += 1;
+
     this.scrap = PERIMETER_CONSTANTS.INITIAL_SCRAP;
+    this.scrapFraction = 0;
     this.maxReactorKw = PERIMETER_CONSTANTS.BASE_REACTOR_KW;
+    this.autoReactorUnlocks = 0;
     this.bulkheadSeals = PERIMETER_CONSTANTS.MAX_BULKHEAD_SEALS;
     this.sealLostFlashTimer = 0;
+    this.aegisBarrierReady = false;
+    this.aegisBarrierCharges = 0;
+    this.aegisRechargeWavesRemaining = 0;
 
     this.waveNumber = 1;
-    this.currentWaveDef = Sector01Blueprint.getWaveDefinition(1);
+    this.currentWaveDef = getWaveDefinition(1, this.blueprint.sectorId);
     this.totalKills = 0;
     this.score = 0;
 
@@ -233,12 +298,18 @@ export class PerimeterSimulation {
     this.callouts = [];
     this.grateTelegraphs = [];
     this.spawnQueue = [];
+    this.cryoCoolerBuffedTurretIds.clear();
+    this.relayFloodHostileIds.clear();
+    this.acidSpitOwners.clear();
 
     this.flareCooldown = 0;
     this.overclockCooldown = 0;
     this.coolantFlushCooldown = 0;
     this.floodlightCooldown = 0;
+    this.purgeChargesRemaining = 1;
     this.purgeAvailableThisWave = true;
+    this.claymoresRemainingThisWave = PERIMETER_CONSTANTS.CLAYMORE_STOCK_PER_WAVE;
+    this.resupplyPurchasesThisWave = 0;
     this.activeFlareSurgeTimer = 0;
     this.activeOverclockSurgeTimer = 0;
     this.activeCoolantSurgeTimer = 0;
@@ -252,11 +323,19 @@ export class PerimeterSimulation {
     this.overloadWarnCooldown = 0;
     this.grateRattleCooldown = 0;
 
+    this.draftMode = 'PROTOCOL';
     this.activeProtocols = {};
+    this.activeOmegas = [];
+    this.activeEndgameDirectives = {};
     this.protocolDraftChoices = [];
+    this.omegaDraftChoices = [];
+    this.draftRerollsUsedThisDraft = 0;
+    this.paidRerollsUsedThisDraft = 0;
+    this.freeDraftRerollsRemaining = 0;
     this.activeMutator = 'NONE';
     this.perfectWaveStreak = 0;
     this.sealLostThisWave = false;
+    this.pendingProtocolDraftAfterOmega = false;
 
     this.callsignCounters = {
       SENTRY_PULSE: 0,
@@ -270,27 +349,35 @@ export class PerimeterSimulation {
     this.warnedDryIds.clear();
     this.warnedAcidDoorIds.clear();
 
+    this.initDoorsFromBlueprint();
+    this.pathfinder.recompute(this.blueprint, this.doors);
+    this.refreshPendingBreaches();
+    this.onSectorChanged?.(this.blueprint.sectorId, this.blueprint);
+
+    this.eventLogs = [
+      `LOG> ENDLESS HIVE SIEGE ONLINE // ${this.blueprint.sectorId}: ${this.blueprint.sectorName}`,
+      `LOG> REACTOR BUS: ${this.maxReactorKw} kW // ORDNANCE SCRAP: ${this.scrap} // CORE SEALS: 3/3`,
+      'LOG> HOLD REACTOR CORE AGAINST ENDLESS WAVES — DEPLOY [1-8] & ENGAGE WAVE 01.',
+    ];
+  }
+
+  private initDoorsFromBlueprint(): void {
     this.doors.clear();
+    const maxHp = this.getDoorMaxHp();
     for (const def of this.blueprint.blastDoors) {
       this.doors.set(def.id, {
         def,
         welded: false,
         hp: 0,
-        maxHp: PERIMETER_CONSTANTS.DOOR_MAX_HP,
+        maxHp,
         underAttackTimer: 0,
         acidCorrodingTimer: 0,
         weldingTimer: 0,
-        weldingDuration: PERIMETER_CONSTANTS.WELD_DURATION_SEC,
+        weldingDuration: PERIMETER_CONSTANTS.DOOR_MIDWAVE_WELD_SEC,
         repairCooldown: 0,
+        lastPathHpBand: 4,
       });
     }
-    this.pathfinder.recompute(this.blueprint, this.doors);
-
-    this.eventLogs = [
-      `LOG> ENDLESS HIVE SIEGE ONLINE // ${this.blueprint.code}: ${this.blueprint.name}`,
-      `LOG> REACTOR BUS: ${this.maxReactorKw} kW // ORDNANCE SCRAP: ${this.scrap} // CORE SEALS: 3/3`,
-      'LOG> HOLD REACTOR CORE AGAINST ENDLESS WAVES — DEPLOY [1-8] & ENGAGE WAVE 01.',
-    ];
   }
 
   public pushLog(msg: string, playClick = true): void {
@@ -309,14 +396,37 @@ export class PerimeterSimulation {
     return this.activeProtocols[id] ?? 0;
   }
 
+  public hasOmega(id: OmegaDirectiveId): boolean {
+    return this.activeOmegas.includes(id);
+  }
+
+  public getEndgameStacks(id: EndgameDirectiveId): number {
+    return this.activeEndgameDirectives[id] ?? 0;
+  }
+
   public getMaxDoorSeals(): number {
     return PERIMETER_CONSTANTS.MAX_ACTIVE_DOOR_SEALS + this.getProtocolStacks('BULKHEAD_ARMOR');
   }
 
   public getDoorMaxHp(): number {
     return Math.round(
-      PERIMETER_CONSTANTS.DOOR_MAX_HP * (1 + this.getProtocolStacks('BULKHEAD_ARMOR') * 0.45)
+      PERIMETER_CONSTANTS.DOOR_MAX_HP * (1 + this.getProtocolStacks('BULKHEAD_ARMOR') * 0.5)
     );
+  }
+
+  public getClaymoreStockPerWave(): number {
+    return PERIMETER_CONSTANTS.CLAYMORE_STOCK_PER_WAVE + (this.hasOmega('BREACH_SAPPER') ? 4 : 0);
+  }
+
+  public getClaymoreMaxActive(): number {
+    return PERIMETER_CONSTANTS.CLAYMORE_MAX_ACTIVE + (this.hasOmega('BREACH_SAPPER') ? 4 : 0);
+  }
+
+  public getSentryMaxAmmo(t: PlacedTurret): number {
+    const base =
+      t.level === 3 && t.mk3Branch === 'B' ? 640 : t.level >= 2 ? 440 : HARDWARE_SPECS.SENTRY_PULSE.maxAmmo;
+    const autoStacks = this.getProtocolStacks('AUTOLOADER');
+    return Math.round(base * (1 + autoStacks * 0.2));
   }
 
   public getStreakMultiplier(): number {
@@ -325,7 +435,15 @@ export class PerimeterSimulation {
 
   public getActiveScoreMultiplier(): number {
     const mut = WAVE_MUTATORS[this.activeMutator]?.scoreMult ?? 1.0;
-    return this.getStreakMultiplier() * mut;
+    const telemetryMult = 1 + this.getEndgameStacks('COMBAT_TELEMETRY') * 0.15;
+    return this.getStreakMultiplier() * mut * telemetryMult;
+  }
+
+  public getEffectiveMaxReactorCap(): number {
+    return Math.min(
+      PERIMETER_CONSTANTS.MAX_REACTOR_KW_HARD_CAP,
+      PERIMETER_CONSTANTS.SCRAP_REACTOR_KW_HARD_CAP + this.getProtocolStacks('AUX_BUS') * 20
+    );
   }
 
   public getReactorExpandCost(): number {
@@ -335,12 +453,35 @@ export class PerimeterSimulation {
     );
   }
 
-  public getTurretPowerKw(t: PlacedTurret): number {
-    const base = HARDWARE_SPECS[t.kind].powerKw;
-    if (t.level === 3 && t.mk3Branch) {
-      return base + MK3_BRANCH_SPECS[t.kind][t.mk3Branch].extraKw;
+  public getMk4RefitCost(t: PlacedTurret): number | null {
+    if (t.level < 3 || t.mk4Level >= PERIMETER_CONSTANTS.MK4_REFIT_COSTS.length) {
+      return null;
     }
-    return base;
+    return PERIMETER_CONSTANTS.MK4_REFIT_COSTS[t.mk4Level];
+  }
+
+  public getOrdnanceResupplyCost(): number {
+    return (
+      PERIMETER_CONSTANTS.RESUPPLY_BASE_COST +
+      this.resupplyPurchasesThisWave * PERIMETER_CONSTANTS.RESUPPLY_STEP_COST
+    );
+  }
+
+  public getProtocolRerollCost(): number {
+    if (this.freeDraftRerollsRemaining > 0) return 0;
+    return (
+      PERIMETER_CONSTANTS.PROTOCOL_REROLL_BASE_COST +
+      this.paidRerollsUsedThisDraft * PERIMETER_CONSTANTS.PROTOCOL_REROLL_STEP_COST
+    );
+  }
+
+  public getTurretPowerKw(t: PlacedTurret): number {
+    let kw = HARDWARE_SPECS[t.kind].powerKw;
+    if (t.level === 3 && t.mk3Branch) {
+      kw += MK3_BRANCH_SPECS[t.kind][t.mk3Branch].extraKw;
+    }
+    kw += (t.mk4Level ?? 0) * PERIMETER_CONSTANTS.MK4_KW_PER_LEVEL;
+    return kw;
   }
 
   public getStaticAllocatedKw(): number {
@@ -353,11 +494,16 @@ export class PerimeterSimulation {
     return sum;
   }
 
+  public getOverclockSurgeKw(): number {
+    const capStacks = this.getProtocolStacks('CAPACITOR_DRIVE');
+    return Math.round(PERIMETER_CONSTANTS.OVERCLOCK_SURGE_KW * Math.max(0.4, 1 - capStacks * 0.2));
+  }
+
   public getTotalLoadKw(): number {
     if (this.blackoutTimer > 0) return 0;
     let kw = this.getStaticAllocatedKw();
     if (this.activeFlareSurgeTimer > 0) kw += PERIMETER_CONSTANTS.FLARE_SURGE_KW;
-    if (this.activeOverclockSurgeTimer > 0) kw += PERIMETER_CONSTANTS.OVERCLOCK_SURGE_KW;
+    if (this.activeOverclockSurgeTimer > 0) kw += this.getOverclockSurgeKw();
     if (this.activeCoolantSurgeTimer > 0) kw += PERIMETER_CONSTANTS.COOLANT_FLUSH_SURGE_KW;
     return kw;
   }
@@ -383,9 +529,20 @@ export class PerimeterSimulation {
   }
 
   /**
-   * Magnetic hardpoint snap helper: snapping within ~48px of an open valid MOUNT_PAD,
-   * DUCT_GRATE, or BLAST_DOOR eliminates off-center click misses during fast combat!
+   * Awards Scrap with SALVAGE_BONUS (+25%/stack) using a fractional accumulator so small
+   * rewards (Skitterers, Eggs, Acid Sterilize) never lose value to rounding.
    */
+  private addSalvageScrap(baseAmount: number, applySalvageBonus = true): number {
+    const mult = applySalvageBonus ? 1 + this.getProtocolStacks('SALVAGE_BONUS') * 0.25 : 1.0;
+    const total = baseAmount * mult + this.scrapFraction;
+    const whole = Math.floor(total);
+    this.scrapFraction = total - whole;
+    if (whole > 0) {
+      this.scrap += whole;
+    }
+    return whole;
+  }
+
   public resolveMagneticBuildCell(
     buildId: Exclude<BuildToolId, 'NONE'>,
     virtPos: Vec2,
@@ -421,6 +578,7 @@ export class PerimeterSimulation {
       for (let c = Math.max(0, rawCol - 1); c <= Math.min(this.blueprint.cols - 1, rawCol + 1); c++) {
         if (this.blueprint.tiles[r][c] !== wantTile) continue;
         if (this.turrets.some((t) => t.col === c && t.row === r)) continue;
+        if (!this.canPlaceHardwareAt(buildId, c, r).ok) continue;
         const cx = c * ts + ts * 0.5;
         const cy = r * ts + ts * 0.5;
         const d = Math.hypot(virtPos.x - cx, virtPos.y - cy);
@@ -443,8 +601,16 @@ export class PerimeterSimulation {
     return count;
   }
 
+  private getMapWidthPx(): number {
+    return this.blueprint.cols * this.blueprint.tileSize;
+  }
+
+  private getMapHeightPx(): number {
+    return this.blueprint.rows * this.blueprint.tileSize;
+  }
+
   private panFromVirtualX(x: number): number {
-    return Math.max(-0.85, Math.min(0.85, (x / PERIMETER_CONSTANTS.VIRTUAL_W - 0.5) * 1.5));
+    return Math.max(-0.85, Math.min(0.85, (x / Math.max(1, this.getMapWidthPx()) - 0.5) * 1.5));
   }
 
   private distNormFromCore(pos: Vec2): number {
@@ -470,8 +636,175 @@ export class PerimeterSimulation {
   }
 
   // ===========================================================================
+  // PATHFINDING, CONGESTION & DYNAMIC BREACH MANAGEMENT
+  // ===========================================================================
+
+  public recomputePathfinder(withCongestion = false): void {
+    if (
+      withCongestion &&
+      this.phase === 'WAVE_ACTIVE' &&
+      this.getActiveSealedDoorCount() > 0 &&
+      this.hostiles.length >= 10
+    ) {
+      const cols = this.blueprint.cols;
+      const rows = this.blueprint.rows;
+      const total = cols * rows;
+      const ts = this.blueprint.tileSize;
+      this.congestionGrid.fill(0);
+      this.hazardMask.fill(0);
+
+      // Count hostiles per cell first, penalizing only genuine crowding (>= 3 hostiles/cell)
+      for (const h of this.hostiles) {
+        if (h.hp <= 0) continue;
+        const c = Math.max(0, Math.min(cols - 1, Math.floor(h.pos.x / ts)));
+        const r = Math.max(0, Math.min(rows - 1, Math.floor(h.pos.y / ts)));
+        this.congestionGrid[r * cols + c] += 1;
+      }
+      for (let idx = 0; idx < total; idx++) {
+        const count = this.congestionGrid[idx];
+        this.congestionGrid[idx] = count >= 3 ? Math.min(2.5, (count - 2) * 0.55) : 0;
+      }
+
+      if (this.waveNumber >= 5) {
+        const markHazardRadius = (pos: Vec2, radius: number) => {
+          const minC = Math.max(0, Math.floor((pos.x - radius) / ts));
+          const maxC = Math.min(cols - 1, Math.floor((pos.x + radius) / ts));
+          const minR = Math.max(0, Math.floor((pos.y - radius) / ts));
+          const maxR = Math.min(rows - 1, Math.floor((pos.y + radius) / ts));
+          const r2 = radius * radius;
+          for (let r = minR; r <= maxR; r++) {
+            const cy = r * ts + ts * 0.5;
+            for (let c = minC; c <= maxC; c++) {
+              const idx = r * cols + c;
+              if (this.hazardMask[idx]) continue;
+              const cx = c * ts + ts * 0.5;
+              const dx = cx - pos.x;
+              const dy = cy - pos.y;
+              if (dx * dx + dy * dy <= r2) {
+                this.hazardMask[idx] = 1;
+                this.congestionGrid[idx] += 0.65;
+              }
+            }
+          }
+        };
+
+        for (const p of this.cryoPlumes) {
+          markHazardRadius(p.pos, p.radius);
+        }
+        for (const n of this.napalmClouds) {
+          markHazardRadius(n.pos, n.radius);
+        }
+      }
+
+      this.pathfinder.recompute(this.blueprint, this.doors, this.congestionGrid);
+    } else {
+      this.pathfinder.recompute(this.blueprint, this.doors);
+    }
+  }
+
+  public refreshPendingBreaches(): void {
+    const opened = new Set(this.activeBreachIds);
+    const upcoming = getDynamicBreachesForWave(this.blueprint, this.waveNumber, opened);
+    this.pendingBreachIds = upcoming.map((b) => b.id);
+    if (upcoming.length > 0 && this.phase !== 'BRIEFING') {
+      const labels = upcoming.map((b) => b.label).join(', ');
+      this.pushLog(
+        `⚠ STRUCTURAL FRACTURE DETECTED [${labels}] — COLLAPSES ON WAVE ${String(this.waveNumber).padStart(2, '0')}!`,
+        false
+      );
+    }
+  }
+
+  private getDoorHpBand(ds: BlastDoorState): number {
+    const ratio = ds.hp / Math.max(1, ds.maxHp);
+    if (ratio > 0.75) return 4;
+    if (ratio > 0.5) return 3;
+    if (ratio > 0.25) return 2;
+    return 1;
+  }
+
+  private applyDoorDamage(ds: BlastDoorState, dmg: number, cause: string): void {
+    if (!ds.welded || ds.hp <= 0) return;
+    ds.hp -= dmg;
+    if (ds.hp <= 0) {
+      this.breachWeldedDoor(ds, cause);
+      return;
+    }
+    const band = this.getDoorHpBand(ds);
+    if (ds.lastPathHpBand === undefined || band < ds.lastPathHpBand) {
+      ds.lastPathHpBand = band;
+      this.recomputePathfinder(this.phase === 'WAVE_ACTIVE');
+    }
+  }
+
+  /**
+   * P0 #1 Softlock Guard: ejects any hostile occupying a newly welded door's tiles
+   * to the nearest passable outer cell (furthest from Core), preventing permanent entombment.
+   */
+  private ejectHostilesFromDoor(ds: BlastDoorState): void {
+    const ts = this.blueprint.tileSize;
+    const doorTileSet = new Set(ds.def.tiles.map((t) => t.row * this.blueprint.cols + t.col));
+    for (const h of this.hostiles) {
+      const hc = Math.floor(h.pos.x / ts);
+      const hr = Math.floor(h.pos.y / ts);
+      const inDoorTile = doorTileSet.has(hr * this.blueprint.cols + hc);
+      const touchingDoor = ds.def.tiles.some((t) => {
+        const cx = t.col * ts + ts * 0.5;
+        const cy = t.row * ts + ts * 0.5;
+        return Math.hypot(h.pos.x - cx, h.pos.y - cy) < ts * 0.52;
+      });
+      if (!inDoorTile && !touchingDoor) continue;
+      this.nudgeHostileToPassableCell(h, true);
+    }
+  }
+
+  private nudgeHostileToPassableCell(h: HostileEntity, preferOuterFromCore: boolean): void {
+    const ts = this.blueprint.tileSize;
+    const hc = Math.max(0, Math.min(this.blueprint.cols - 1, Math.floor(h.pos.x / ts)));
+    const hr = Math.max(0, Math.min(this.blueprint.rows - 1, Math.floor(h.pos.y / ts)));
+
+    let bestCol = -1;
+    let bestRow = -1;
+    let bestScore = -Infinity;
+
+    for (let rad = 1; rad <= 3; rad++) {
+      for (let dr = -rad; dr <= rad; dr++) {
+        for (let dc = -rad; dc <= rad; dc++) {
+          if (Math.max(Math.abs(dc), Math.abs(dr)) !== rad) continue;
+          const nc = hc + dc;
+          const nr = hr + dr;
+          if (!this.pathfinder.isPassableCell(this.blueprint, this.doors, nc, nr)) continue;
+          const cx = nc * ts + ts * 0.5;
+          const cy = nr * ts + ts * 0.5;
+          const distToCore = Math.hypot(
+            cx - this.blueprint.coreCenter.x,
+            cy - this.blueprint.coreCenter.y
+          );
+          const distToHostile = Math.hypot(cx - h.pos.x, cy - h.pos.y);
+          // Prefer closer ring first, and within the ring prefer outer side away from Core
+          const score =
+            -rad * 1000 + (preferOuterFromCore ? distToCore * 2.0 : 0) - distToHostile * 0.5;
+          if (score > bestScore) {
+            bestScore = score;
+            bestCol = nc;
+            bestRow = nr;
+          }
+        }
+      }
+      if (bestCol >= 0) break;
+    }
+
+    if (bestCol >= 0) {
+      h.pos.x = bestCol * ts + ts * 0.5;
+      h.pos.y = bestRow * ts + ts * 0.5;
+      h.knockbackTimer = 0;
+      h.knockbackVel = undefined;
+      h.knockbackMaxTimer = undefined;
+    }
+  }
+
+  // ===========================================================================
   // PLACEMENT, DOOR WELDING, INSPECTOR ACTIONS & ACTIVE COMMAND ABILITIES
-  // (All work seamlessly even while SPACEBAR Tactical Pause is active!)
   // ===========================================================================
 
   public canPlaceHardwareAt(
@@ -519,14 +852,30 @@ export class PerimeterSimulation {
       if (!FlowFieldPathfinder.isWalkableKind(tileKind) || tileKind === 'CORE') {
         return { ok: false, reason: 'DEPLOY M18 CLAYMORE ON OPEN CORRIDOR FLOOR' };
       }
-      if (this.claymores.length >= PERIMETER_CONSTANTS.CLAYMORE_MAX_ACTIVE) {
+      if (this.claymoresRemainingThisWave <= 0) {
         return {
           ok: false,
-          reason: `MAX ${PERIMETER_CONSTANTS.CLAYMORE_MAX_ACTIVE} CLAYMORES ACTIVE`,
+          reason: `M18 STOCK DEPLETED (0/${this.getClaymoreStockPerWave()} THIS WAVE)`,
+        };
+      }
+      const maxActive = this.getClaymoreMaxActive();
+      if (this.claymores.length >= maxActive) {
+        return {
+          ok: false,
+          reason: `MAX ${maxActive} CLAYMORES ACTIVE`,
         };
       }
       if (this.claymores.some((m) => m.col === col && m.row === row)) {
         return { ok: false, reason: 'CLAYMORE ALREADY ARMED ON TILE' };
+      }
+      const ts = this.blueprint.tileSize;
+      const cx = col * ts + ts * 0.5;
+      const cy = row * ts + ts * 0.5;
+      const blockedByAcid = this.acidPools.some(
+        (p) => Math.hypot(p.pos.x - cx, p.pos.y - cy) <= Math.max(60, p.radius * 0.85)
+      );
+      if (blockedByAcid) {
+        return { ok: false, reason: 'CORROSIVE ACID POOL — STERILIZE BEFORE MINING' };
       }
       if (this.scrap < spec.costScrap) {
         return { ok: false, reason: `INSUFFICIENT SCRAP (${spec.costScrap} REQ)` };
@@ -537,6 +886,14 @@ export class PerimeterSimulation {
     const tileKind = this.blueprint.tiles[row][col];
     if (this.turrets.some((t) => t.col === col && t.row === row)) {
       return { ok: false, reason: 'HARDPOINT OCCUPIED' };
+    }
+
+    // P0 #10: Strictly block building turrets on SPAWN_GRATE or any active aux spawn vent
+    if (
+      tileKind === 'SPAWN_GRATE' ||
+      this.blueprint.vents.some((v) => v.isAuxGrate && v.col === col && v.row === row)
+    ) {
+      return { ok: false, reason: 'SUB-FLOOR SPAWN GRATE — NON-BUILDABLE' };
     }
 
     if (buildId === 'CRYO_VALVE' || buildId === 'SHOCK_COIL') {
@@ -633,12 +990,13 @@ export class PerimeterSimulation {
       const wasWelded = door.welded;
 
       if (this.phase === 'TACTICAL_PREP') {
-        // Instant setup during pre-wave tactical prep
         door.welded = true;
         door.weldingTimer = 0;
         door.hp = door.maxHp;
+        door.lastPathHpBand = 4;
         door.repairCooldown = 0;
-        this.pathfinder.recompute(this.blueprint, this.doors);
+        this.ejectHostilesFromDoor(door);
+        this.recomputePathfinder(false);
         this.recomputeRelayLinks();
         this.audioCb.onArcWeld(this.panFromVirtualX(door.def.center.x));
         this.spawnSparks(door.def.center, 14, '#FFB000');
@@ -648,15 +1006,16 @@ export class PerimeterSimulation {
             : `ARC-WELDED BULKHEAD ${door.def.id} (${this.getActiveSealedDoorCount()}/${this.getMaxDoorSeals()}) // HOSTILE FLOW REROUTED`
         );
       } else {
-        // Mid-wave: realistic 2.0s arc-weld torch sequence!
-        door.weldingTimer = PERIMETER_CONSTANTS.WELD_DURATION_SEC;
-        door.weldingDuration = PERIMETER_CONSTANTS.WELD_DURATION_SEC;
+        // Mid-wave: 1.5s arc-weld torch sequence!
+        const weldSec = PERIMETER_CONSTANTS.DOOR_MIDWAVE_WELD_SEC;
+        door.weldingTimer = weldSec;
+        door.weldingDuration = weldSec;
         this.audioCb.onArcWeld(this.panFromVirtualX(door.def.center.x));
         this.spawnSparks(door.def.center, 10, '#FFB000');
         this.pushLog(
           wasWelded
-            ? `REINFORCING ${door.def.id} [${PERIMETER_CONSTANTS.WELD_DURATION_SEC.toFixed(1)}S TORCH SEQUENCE]...`
-            : `ARC-WELDING ${door.def.id} [${PERIMETER_CONSTANTS.WELD_DURATION_SEC.toFixed(1)}S TORCH SEQUENCE]...`
+            ? `REINFORCING ${door.def.id} [${weldSec.toFixed(1)}S TORCH SEQUENCE]...`
+            : `ARC-WELDING ${door.def.id} [${weldSec.toFixed(1)}S TORCH SEQUENCE]...`
         );
       }
       return { ok: true, weldedDoor: door };
@@ -665,19 +1024,24 @@ export class PerimeterSimulation {
     if (buildId === 'CLAYMORE') {
       const spec = HARDWARE_SPECS.CLAYMORE;
       this.scrap -= spec.costScrap;
+      this.claymoresRemainingThisWave = Math.max(0, this.claymoresRemainingThisWave - 1);
       const ts = this.blueprint.tileSize;
       const pos: Vec2 = { x: col * ts + ts * 0.5, y: row * ts + ts * 0.5 };
+      const armSec =
+        this.phase === 'WAVE_ACTIVE'
+          ? PERIMETER_CONSTANTS.CLAYMORE_MIDWAVE_ARM_SEC
+          : PERIMETER_CONSTANTS.CLAYMORE_PREP_ARM_SEC;
       this.claymores.push({
         id: `mine-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         col,
         row,
         pos,
-        armTimer: 0.6,
+        armTimer: armSec,
       });
       this.spawnSparks(pos, 8, '#FFB000');
       this.audioCb.onServoStep(this.panFromVirtualX(pos.x));
       this.pushLog(
-        `ARMED M18 PROXIMITY CLAYMORE (${this.claymores.length}/${PERIMETER_CONSTANTS.CLAYMORE_MAX_ACTIVE}) // -${spec.costScrap} SCRAP`
+        `ARMED M18 CLAYMORE [${this.claymoresRemainingThisWave}/${this.getClaymoreStockPerWave()} STOCK LEFT · ${armSec.toFixed(1)}S ARM] // -${spec.costScrap} SCRAP`
       );
       return { ok: true };
     }
@@ -702,6 +1066,11 @@ export class PerimeterSimulation {
     const ts = this.blueprint.tileSize;
     const pos: Vec2 = { x: col * ts + ts * 0.5, y: row * ts + ts * 0.5 };
 
+    const initMaxAmmo =
+      buildId === 'SENTRY_PULSE'
+        ? Math.round(spec.maxAmmo * (1 + this.getProtocolStacks('AUTOLOADER') * 0.2))
+        : spec.maxAmmo;
+
     const turret: PlacedTurret = {
       id: `turret-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       callsign,
@@ -711,10 +1080,13 @@ export class PerimeterSimulation {
       pos,
       powered: true,
       level: 1,
+      mk4Level: 0,
+      powerUpTimer: 0,
+      totalInvestedScrap: spec.costScrap,
       angle: aimAngle,
       targetAngle: aimAngle,
-      ammo: spec.maxAmmo,
-      maxAmmo: spec.maxAmmo,
+      ammo: initMaxAmmo,
+      maxAmmo: initMaxAmmo,
       rearmTimer: 0,
       rearmDuration: PERIMETER_CONSTANTS.REARM_DURATION_SEC,
       heat: 0,
@@ -742,48 +1114,88 @@ export class PerimeterSimulation {
     return { ok: true, placedTurret: turret };
   }
 
+  /**
+   * P0 #13 Smart Default Aim Angle: points turrets directly toward incoming active open
+   * flow routes from outer vents AND sub-floor grates (including North GRATE-01 on W2!).
+   */
   public computeDefaultAimAngle(col: number, row: number): number {
     const ts = this.blueprint.tileSize;
     const pos = { x: col * ts + ts * 0.5, y: row * ts + ts * 0.5 };
-    const myFlowDist = this.pathfinder.getFlowDistance(col, row);
-    // Score 16 directions by clear corridor sightline + upstream enemy traffic flow alignment!
+    const myFlowDist = this.pathfinder.getFlowDistance(col, row, 'standard');
+
+    // Collect cells on all active vent & aux-grate flow routes so turrets naturally guard real traffic
+    const routeCellWeights = new Map<number, number>();
+    const activeWaveVentIds = new Set(this.currentWaveDef.groups.map((g) => g.ventId));
+    for (const vent of this.blueprint.vents) {
+      const weight = activeWaveVentIds.has(vent.id) ? 2.0 : vent.isAuxGrate ? 1.15 : 1.35;
+      const pts = this.pathfinder.traceRoutePreview(
+        this.blueprint,
+        this.doors,
+        vent.col,
+        vent.row,
+        'standard'
+      );
+      for (const pt of pts) {
+        const rc = Math.floor(pt.x / ts);
+        const rr = Math.floor(pt.y / ts);
+        if (rc >= 0 && rc < this.blueprint.cols && rr >= 0 && rr < this.blueprint.rows) {
+          const key = rr * this.blueprint.cols + rc;
+          routeCellWeights.set(key, (routeCellWeights.get(key) ?? 0) + weight);
+        }
+      }
+    }
+
     let bestAng = Math.atan2(pos.y - this.blueprint.coreCenter.y, pos.x - this.blueprint.coreCenter.x);
     let bestScore = -1e9;
+
     for (let i = 0; i < 16; i++) {
       const a = (i * Math.PI) / 8;
       let clearDist = 0;
       let upstreamBonus = 0;
+      let routeBonus = 0;
       const seenCells = new Set<number>();
-      for (let d = 30; d <= 420; d += 30) {
-        const tc = Math.floor((pos.x + Math.cos(a) * d) / ts);
-        const tr = Math.floor((pos.y + Math.sin(a) * d) / ts);
-        if (
-          tc >= 0 &&
-          tc < this.blueprint.cols &&
-          tr >= 0 &&
-          tr < this.blueprint.rows &&
-          !this.isCellOpaque(tc, tr)
-        ) {
-          clearDist = d;
-          const cellKey = tr * this.blueprint.cols + tc;
-          if (!seenCells.has(cellKey)) {
-            seenCells.add(cellKey);
-            const cellFlow = this.pathfinder.getFlowDistance(tc, tr);
-            if (cellFlow < 1e8 && myFlowDist < 1e8) {
-              if (cellFlow > myFlowDist + 0.5) {
-                upstreamBonus += 38;
-              } else if (cellFlow < myFlowDist - 0.5) {
-                upstreamBonus -= 18;
+
+      // Sample center ray + two narrow flanking rays (±14°) to catch adjacent corridor lanes
+      const subAngles = [a, a - 0.24, a + 0.24];
+      for (let sIdx = 0; sIdx < subAngles.length; sIdx++) {
+        const sa = subAngles[sIdx];
+        const rayWeight = sIdx === 0 ? 1.0 : 0.45;
+        for (let d = 30; d <= 420; d += 30) {
+          const tc = Math.floor((pos.x + Math.cos(sa) * d) / ts);
+          const tr = Math.floor((pos.y + Math.sin(sa) * d) / ts);
+          if (
+            tc >= 0 &&
+            tc < this.blueprint.cols &&
+            tr >= 0 &&
+            tr < this.blueprint.rows &&
+            !this.isCellOpaque(tc, tr)
+          ) {
+            if (sIdx === 0) clearDist = d;
+            const cellKey = tr * this.blueprint.cols + tc;
+            if (!seenCells.has(cellKey)) {
+              seenCells.add(cellKey);
+              const cellFlow = this.pathfinder.getFlowDistance(tc, tr, 'standard');
+              const rw = routeCellWeights.get(cellKey) ?? 0;
+              if (rw > 0) {
+                const dirMult = cellFlow >= myFlowDist - 1.2 ? 1.35 : 0.65;
+                routeBonus += rw * 52 * dirMult * rayWeight;
+              }
+              if (cellFlow < 1e8 && myFlowDist < 1e8) {
+                if (cellFlow > myFlowDist + 0.5) {
+                  upstreamBonus += 32 * rayWeight;
+                } else if (cellFlow < myFlowDist - 0.5) {
+                  upstreamBonus -= 22 * rayWeight;
+                }
               }
             }
+          } else {
+            break;
           }
-        } else {
-          break;
         }
       }
-      // Slight preference for clean cardinal corridor axes so beams run straight down hallways
-      const cardinalBonus = i % 4 === 0 ? 22 : 0;
-      const score = clearDist + upstreamBonus + cardinalBonus;
+
+      const cardinalBonus = i % 4 === 0 ? 24 : 0;
+      const score = Math.min(clearDist, 360) + upstreamBonus + routeBonus + cardinalBonus;
       if (score > bestScore) {
         bestScore = score;
         bestAng = a;
@@ -808,6 +1220,7 @@ export class PerimeterSimulation {
           c >= this.blueprint.cols ||
           r < 0 ||
           r >= this.blueprint.rows ||
+          this.blueprint.tiles[r][c] === 'CORE' ||
           !FlowFieldPathfinder.isWalkableKind(this.blueprint.tiles[r][c])
         ) {
           return { end: lastPt, dist };
@@ -837,7 +1250,14 @@ export class PerimeterSimulation {
   }
 
   private recomputeRelayLinks(): void {
-    const activeRelays = this.turrets.filter((t) => t.kind === 'MOTION_RELAY' && t.powered);
+    // Phase 1 Screamer counterplay: jammed or spinning-up M314 Relays lose relayBoosted & relayMatrixBoosted!
+    const activeRelays = this.turrets.filter(
+      (t) =>
+        t.kind === 'MOTION_RELAY' &&
+        t.powered &&
+        t.powerUpTimer <= 0 &&
+        t.jammedTimer <= 0
+    );
     for (const t of this.turrets) {
       if (t.kind === 'SENTRY_PULSE' || t.kind === 'RAIL_LANCE' || t.kind === 'INCINERATOR') {
         const linked = activeRelays.filter(
@@ -859,11 +1279,11 @@ export class PerimeterSimulation {
       return { ok: false, msg: `${ds.def.id} ARC-WELD IN PROGRESS` };
     }
     if (ds.welded) {
-      // Tactical unseal!
       ds.welded = false;
       ds.hp = 0;
       ds.weldingTimer = 0;
-      this.pathfinder.recompute(this.blueprint, this.doors);
+      ds.lastPathHpBand = 4;
+      this.recomputePathfinder(this.phase === 'WAVE_ACTIVE');
       this.pushLog(`UNSEALED BULKHEAD DOOR ${ds.def.id} // CORRIDOR OPENED`);
       return { ok: true, msg: `${ds.def.id} UNSEALED` };
     }
@@ -873,7 +1293,9 @@ export class PerimeterSimulation {
       ok: res.ok,
       msg:
         res.reason ??
-        (this.phase === 'WAVE_ACTIVE' ? `${ds.def.id} WELDING (2.0S)...` : `${ds.def.id} WELDED`),
+        (this.phase === 'WAVE_ACTIVE'
+          ? `${ds.def.id} WELDING (${PERIMETER_CONSTANTS.DOOR_MIDWAVE_WELD_SEC.toFixed(1)}S)...`
+          : `${ds.def.id} WELDED`),
     };
   }
 
@@ -886,7 +1308,9 @@ export class PerimeterSimulation {
       ok: res.ok,
       msg:
         res.reason ??
-        (this.phase === 'WAVE_ACTIVE' ? `${ds.def.id} REINFORCING (2.0S)...` : `${ds.def.id} REINFORCED`),
+        (this.phase === 'WAVE_ACTIVE'
+          ? `${ds.def.id} REINFORCING (${PERIMETER_CONSTANTS.DOOR_MIDWAVE_WELD_SEC.toFixed(1)}S)...`
+          : `${ds.def.id} REINFORCED`),
     };
   }
 
@@ -894,8 +1318,38 @@ export class PerimeterSimulation {
     if (t.kind !== 'SENTRY_PULSE' || t.ammo >= t.maxAmmo) return 0;
     const missingRatio = (t.maxAmmo - t.ammo) / Math.max(1, t.maxAmmo);
     const autoStacks = this.getProtocolStacks('AUTOLOADER');
-    const costMult = Math.pow(0.65, autoStacks);
-    return Math.max(8, Math.round(PERIMETER_CONSTANTS.REARM_COST_SCRAP * missingRatio * costMult));
+    // Phase 2 AUTOLOADER: -45% rearm time AND cost per stack
+    const costMult = Math.pow(0.55, autoStacks);
+    // Phase 1 Sentry TWIN-LINK rearm tierMult trimmed 1.45 -> 1.25
+    const tierMult =
+      t.level === 3 && t.mk3Branch === 'B' ? 1.25 : t.level >= 2 ? 1.18 : 1.0;
+    return Math.max(
+      8,
+      Math.round(PERIMETER_CONSTANTS.REARM_COST_SCRAP * tierMult * missingRatio * costMult)
+    );
+  }
+
+  private getWaveSalvageYieldMult(): number {
+    if (this.waveNumber <= 8) return 1.0;
+    if (this.waveNumber <= 15) {
+      return 1.0 - (this.waveNumber - 8) * 0.068;
+    }
+    return Math.max(0.25, 0.52 - (this.waveNumber - 15) * 0.03);
+  }
+
+  private applyHostileStun(
+    h: HostileEntity,
+    durationSec: number,
+    ignoreImmunity = false
+  ): boolean {
+    if (durationSec <= 0) return false;
+    if (!ignoreImmunity && (h.stunImmuneTimer ?? 0) > 0) {
+      return false;
+    }
+    h.stunTimer = Math.max(h.stunTimer, durationSec);
+    const postRecoverySec = h.isBoss ? 2.6 : h.kind === 'PRAETORIAN' ? 1.8 : 1.4;
+    h.stunImmuneTimer = Math.max(h.stunImmuneTimer ?? 0, durationSec + postRecoverySec);
+    return true;
   }
 
   public rearmTurret(turretId: string): { ok: boolean; msg: string } {
@@ -922,7 +1376,7 @@ export class PerimeterSimulation {
     }
 
     const autoStacks = this.getProtocolStacks('AUTOLOADER');
-    const dur = Math.max(0.85, PERIMETER_CONSTANTS.REARM_DURATION_SEC * Math.pow(0.55, autoStacks));
+    const dur = Math.max(0.75, PERIMETER_CONSTANTS.REARM_DURATION_SEC * Math.pow(0.55, autoStacks));
     t.rearmTimer = dur;
     t.rearmDuration = dur;
     this.audioCb.onRearmSentry(this.panFromVirtualX(t.pos.x));
@@ -979,17 +1433,35 @@ export class PerimeterSimulation {
         return { ok: false, msg: `REACTOR OVERLOAD (${reqKw} kW NEEDED)` };
       }
       t.powered = true;
+      // P0 #13: 2.5s mid-wave capacitor spin-up stops zero-latency Pause power-juggling!
+      if (this.phase === 'WAVE_ACTIVE') {
+        t.powerUpTimer = PERIMETER_CONSTANTS.TURRET_POWER_SPINUP_SEC;
+      } else {
+        t.powerUpTimer = 0;
+      }
       this.recomputeRelayLinks();
-      this.pushLog(`${t.callsign} POWER ONLINE [+${reqKw} kW]`);
-      return { ok: true, msg: `${t.callsign} ONLINE` };
+      this.pushLog(
+        t.powerUpTimer > 0
+          ? `${t.callsign} CAPACITOR SPIN-UP [${t.powerUpTimer.toFixed(1)}S · +${reqKw} kW]`
+          : `${t.callsign} POWER ONLINE [+${reqKw} kW]`
+      );
+      return {
+        ok: true,
+        msg: t.powerUpTimer > 0 ? `${t.callsign} SPINNING UP (${t.powerUpTimer.toFixed(1)}S)` : `${t.callsign} ONLINE`,
+      };
     } else {
       t.powered = false;
+      t.powerUpTimer = 0;
       this.recomputeRelayLinks();
       this.pushLog(`${t.callsign} STANDBY OFFLINE [-${reqKw} kW FREED]`);
       return { ok: true, msg: `${t.callsign} OFFLINE` };
     }
   }
 
+  /**
+   * P0 #13 Smart Priority [X] Shed Aux: sheds lowest-priority auxiliary units ONLY until
+   * total reactor load <= maxReactorKw (instead of killing all Cryo/Relays at once).
+   */
   public toggleAuxLoadShed(): { ok: boolean; msg: string } {
     if (!this.auxShedActive) {
       const auxUnits = this.turrets.filter(
@@ -1000,17 +1472,42 @@ export class PerimeterSimulation {
       if (auxUnits.length === 0) {
         return { ok: false, msg: 'NO ONLINE AUXILIARY UNITS TO SHED' };
       }
+
+      // Lowest priority shed first: Shock Coil (1) < Non-MK3 Relay (2) < Cryo Valve (3) < MK3 Relay (4)
+      const priorityRank = (u: PlacedTurret): number => {
+        if (u.kind === 'SHOCK_COIL') return 1;
+        if (u.kind === 'MOTION_RELAY' && u.level < 3) return 2;
+        if (u.kind === 'CRYO_VALVE') return 3;
+        return 4;
+      };
+      auxUnits.sort(
+        (a, b) =>
+          priorityRank(a) - priorityRank(b) ||
+          a.level - b.level ||
+          this.getTurretPowerKw(b) - this.getTurretPowerKw(a)
+      );
+
+      const currentOverloadKw = this.getTotalLoadKw() - this.maxReactorKw;
       let freedKw = 0;
       this.auxShedTurretIds = [];
       for (const u of auxUnits) {
         u.powered = false;
+        u.powerUpTimer = 0;
         freedKw += this.getTurretPowerKw(u);
         this.auxShedTurretIds.push(u.id);
+        // Stop shedding as soon as load <= maxReactorKw (or after shedding 1 unit if pre-shedding)
+        if (currentOverloadKw > 0) {
+          if (this.getTotalLoadKw() <= this.maxReactorKw) break;
+        } else {
+          break;
+        }
       }
-      this.auxShedActive = true;
+      this.auxShedActive = this.auxShedTurretIds.length > 0;
       this.recomputeRelayLinks();
       this.audioCb.onServoStep(0);
-      this.pushLog(`AUXILIARY LOAD SHED // ${auxUnits.length} SUPPORT UNITS OFFLINE (-${freedKw} kW)`);
+      this.pushLog(
+        `SMART AUX SHED // ${this.auxShedTurretIds.length} LOW-PRIORITY UNIT(S) OFFLINE (-${freedKw} kW)`
+      );
       return { ok: true, msg: `SHED AUX: -${freedKw} kW FREED` };
     } else {
       let restored = 0;
@@ -1021,6 +1518,9 @@ export class PerimeterSimulation {
           const req = this.getTurretPowerKw(u);
           if (this.getStaticAllocatedKw() + req <= this.maxReactorKw) {
             u.powered = true;
+            if (this.phase === 'WAVE_ACTIVE') {
+              u.powerUpTimer = PERIMETER_CONSTANTS.TURRET_POWER_SPINUP_SEC;
+            }
             restored++;
           } else {
             stillOffline.push(id);
@@ -1049,8 +1549,13 @@ export class PerimeterSimulation {
   }
 
   public expandReactorBus(): { ok: boolean; msg: string } {
-    if (this.maxReactorKw >= PERIMETER_CONSTANTS.MAX_REACTOR_KW_HARD_CAP) {
-      return { ok: false, msg: 'REACTOR BUS AT HARD CAP (360 kW)' };
+    const cap = this.getEffectiveMaxReactorCap();
+    if (this.maxReactorKw >= cap) {
+      const hint =
+        cap < PERIMETER_CONSTANTS.MAX_REACTOR_KW_HARD_CAP
+          ? `SCRAP CAP (${cap} kW) — DRAFT +20kW BUS FOR UP TO ${PERIMETER_CONSTANTS.MAX_REACTOR_KW_HARD_CAP} kW`
+          : `REACTOR BUS AT HARD CAP (${cap} kW)`;
+      return { ok: false, msg: hint };
     }
     const cost = this.getReactorExpandCost();
     if (this.scrap < cost) {
@@ -1058,16 +1563,16 @@ export class PerimeterSimulation {
     }
     this.scrap -= cost;
     this.reactorExpansionsBought += 1;
-    this.maxReactorKw = Math.min(
-      PERIMETER_CONSTANTS.MAX_REACTOR_KW_HARD_CAP,
-      this.maxReactorKw + PERIMETER_CONSTANTS.REACTOR_EXPAND_KW_STEP
-    );
+    this.maxReactorKw = Math.min(cap, this.maxReactorKw + PERIMETER_CONSTANTS.REACTOR_EXPAND_KW_STEP);
     this.audioCb.onUpgradeConfirm(false);
     this.spawnSparks(this.blueprint.coreCenter, 14, '#00F0FF');
     this.pushLog(
-      `REACTOR CAPACITOR EXPANDED // MAX CAPACITY ${this.maxReactorKw} kW (-${cost} SCRAP)`
+      `REACTOR CAPACITOR EXPANDED // MAX CAPACITY ${this.maxReactorKw}/${cap} kW (-${cost} SCRAP)`
     );
-    return { ok: true, msg: `REACTOR +${PERIMETER_CONSTANTS.REACTOR_EXPAND_KW_STEP} kW (${this.maxReactorKw} kW)` };
+    return {
+      ok: true,
+      msg: `REACTOR +${PERIMETER_CONSTANTS.REACTOR_EXPAND_KW_STEP} kW (${this.maxReactorKw} kW)`,
+    };
   }
 
   public fabricateCoreSeal(): { ok: boolean; msg: string } {
@@ -1092,16 +1597,17 @@ export class PerimeterSimulation {
   public upgradeTurret(turretId: string, mk3Branch?: Mk3BranchId): { ok: boolean; msg: string } {
     const t = this.turrets.find((u) => u.id === turretId);
     if (!t) return { ok: false, msg: 'UNIT NOT FOUND' };
-    if (t.level >= 3) return { ok: false, msg: 'MAX MK-III SPEC INSTALLED' };
+    if (t.level >= 3) return { ok: false, msg: 'MAX MK-III SPEC INSTALLED — USE MK-IV REFIT' };
 
     if (t.level === 1) {
       const cost = HARDWARE_SPECS[t.kind].upgradeCostScrap;
       if (this.scrap < cost) return { ok: false, msg: `INSUFFICIENT SCRAP (${cost} REQ)` };
       this.scrap -= cost;
       t.level = 2;
+      t.totalInvestedScrap += cost;
       if (t.kind === 'SENTRY_PULSE') {
-        t.maxAmmo = 440;
-        t.ammo = 440;
+        t.maxAmmo = this.getSentryMaxAmmo(t);
+        t.ammo = t.maxAmmo;
         t.rearmTimer = 0;
         this.warnedLowAmmoIds.delete(t.id);
         this.warnedDryIds.delete(t.id);
@@ -1112,7 +1618,7 @@ export class PerimeterSimulation {
       return { ok: true, msg: `${t.callsign} UPGRADED MK-II` };
     }
 
-    // Level 2 -> Branching MK-III Specialization!
+    // Level 2 -> Branching MK-III Specialization
     const chosen: Mk3BranchId = mk3Branch ?? 'A';
     const bSpec = MK3_BRANCH_SPECS[t.kind][chosen];
     if (this.scrap < bSpec.costScrap) {
@@ -1124,9 +1630,10 @@ export class PerimeterSimulation {
     this.scrap -= bSpec.costScrap;
     t.level = 3;
     t.mk3Branch = chosen;
+    t.totalInvestedScrap += bSpec.costScrap;
     if (t.kind === 'SENTRY_PULSE' && chosen === 'B') {
-      t.maxAmmo = 640;
-      t.ammo = 640;
+      t.maxAmmo = this.getSentryMaxAmmo(t);
+      t.ammo = t.maxAmmo;
       t.rearmTimer = 0;
       this.warnedLowAmmoIds.delete(t.id);
       this.warnedDryIds.delete(t.id);
@@ -1145,16 +1652,73 @@ export class PerimeterSimulation {
     return { ok: true, msg: `${t.callsign} MK-III ${bSpec.code}` };
   }
 
+  /**
+   * Phase 2 Late-Game Scrap Sink: MK-IV Overhaul Refits (450/700/1000S -> +10% DMG & +1 kW per level).
+   */
+  public refitTurretMk4(turretId: string): { ok: boolean; msg: string } {
+    const t = this.turrets.find((u) => u.id === turretId);
+    if (!t) return { ok: false, msg: 'UNIT NOT FOUND' };
+    if (t.level < 3) return { ok: false, msg: 'REQUIRES MK-III SPECIALIZATION FIRST' };
+    const cost = this.getMk4RefitCost(t);
+    if (cost === null) return { ok: false, msg: 'MAX MK-IV+3 REFIT INSTALLED' };
+    if (this.scrap < cost) return { ok: false, msg: `INSUFFICIENT SCRAP (${cost} REQ)` };
+    const extraKw = PERIMETER_CONSTANTS.MK4_KW_PER_LEVEL;
+    if (t.powered && this.getStaticAllocatedKw() + extraKw > this.maxReactorKw) {
+      return { ok: false, msg: `NEED +${extraKw} kW HEADROOM FOR MK-IV REFIT` };
+    }
+    this.scrap -= cost;
+    t.mk4Level += 1;
+    t.totalInvestedScrap += cost;
+    this.audioCb.onUpgradeConfirm(true);
+    this.spawnSparks(t.pos, 16, '#00F0FF');
+    this.callouts.push({
+      pos: { x: t.pos.x, y: t.pos.y - 26 },
+      text: `★ MK-IV+${t.mk4Level} (+${t.mk4Level * 10}% DMG) ★`,
+      color: '#00F0FF',
+      life: 1.6,
+      maxLife: 1.6,
+    });
+    this.pushLog(
+      `MK-IV OVERHAUL REFIT ${t.callsign} [TIER ${t.mk4Level}/3 · +${t.mk4Level * 10}% DMG · +${extraKw} kW] // -${cost} SCRAP`
+    );
+    return { ok: true, msg: `${t.callsign} MK-IV+${t.mk4Level}` };
+  }
+
+  /**
+   * Phase 2 Late-Game Scrap Sink: Tactical Ordnance Resupply (250S + 100S/use per wave).
+   */
+  public purchaseOrdnanceResupply(kind: 'PURGE' | 'CLAYMORES'): { ok: boolean; msg: string } {
+    const cost = this.getOrdnanceResupplyCost();
+    if (this.scrap < cost) {
+      return { ok: false, msg: `INSUFFICIENT SCRAP (${cost} REQ)` };
+    }
+    this.scrap -= cost;
+    this.resupplyPurchasesThisWave += 1;
+    if (kind === 'PURGE') {
+      this.purgeChargesRemaining += 1;
+      this.purgeAvailableThisWave = true;
+      this.audioCb.onUpgradeConfirm(false);
+      this.spawnSparks(this.blueprint.coreCenter, 14, '#8EF5AB');
+      this.pushLog(
+        `ORDNANCE RESUPPLY // +1 AIRLOCK PURGE CHARGE (${this.purgeChargesRemaining} READY) // -${cost} SCRAP`
+      );
+      return { ok: true, msg: `+1 PURGE CHARGE (${this.purgeChargesRemaining} READY)` };
+    } else {
+      this.claymoresRemainingThisWave += 6;
+      this.audioCb.onUpgradeConfirm(false);
+      this.spawnSparks(this.blueprint.coreCenter, 14, '#FFB000');
+      this.pushLog(
+        `ORDNANCE RESUPPLY // +6 M18 CLAYMORES (${this.claymoresRemainingThisWave} STOCK) // -${cost} SCRAP`
+      );
+      return { ok: true, msg: `+6 CLAYMORES (${this.claymoresRemainingThisWave} STOCK)` };
+    }
+  }
+
   public scrapTurret(turretId: string): { ok: boolean; msg: string } {
     const idx = this.turrets.findIndex((u) => u.id === turretId);
     if (idx < 0) return { ok: false, msg: 'UNIT NOT FOUND' };
     const t = this.turrets[idx];
-    const spec = HARDWARE_SPECS[t.kind];
-    let invested = spec.costScrap + (t.level >= 2 ? spec.upgradeCostScrap : 0);
-    if (t.level === 3 && t.mk3Branch) {
-      invested += MK3_BRANCH_SPECS[t.kind][t.mk3Branch].costScrap;
-    }
-    const refund = Math.round(invested * 0.65);
+    const refund = Math.round(t.totalInvestedScrap * 0.65);
     this.scrap += refund;
     this.turrets.splice(idx, 1);
     this.recomputeRelayLinks();
@@ -1162,8 +1726,210 @@ export class PerimeterSimulation {
     return { ok: true, msg: `+${refund} SCRAP` };
   }
 
-  public selectProtocolDraft(protocolId: ProtocolId): { ok: boolean; msg: string } {
-    if (this.phase !== 'PROTOCOL_DRAFT') return { ok: false, msg: 'NO PROTOCOL DRAFT ACTIVE' };
+  // ===========================================================================
+  // PROTOCOL DRAFTS, OMEGA DIRECTIVES, ENDGAME DIRECTIVES & PAID REROLLS
+  // ===========================================================================
+
+  private shuffleInPlace<T>(arr: T[]): T[] {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = arr[i];
+      arr[i] = arr[j];
+      arr[j] = tmp;
+    }
+    return arr;
+  }
+
+  public rollProtocolDraftChoices(): DraftChoiceId[] {
+    const allIds = Object.keys(TACTICAL_PROTOCOLS) as ProtocolId[];
+    const eligible = allIds.filter((id) => {
+      if (id === 'AUX_BUS' && this.getEffectiveMaxReactorCap() >= PERIMETER_CONSTANTS.MAX_REACTOR_KW_HARD_CAP) {
+        return false;
+      }
+      return this.getProtocolStacks(id) < TACTICAL_PROTOCOLS[id].maxStacks;
+    });
+
+    this.shuffleInPlace(eligible);
+    const chosen: DraftChoiceId[] = eligible.slice(0, 3);
+
+    // P0 #6: Fill remaining slots with distinct repeatable ENDGAME_DIRECTIVES (never duplicate SALVAGE_BONUS!)
+    if (chosen.length < 3) {
+      const endgamePool = this.shuffleInPlace(
+        Object.keys(ENDGAME_DIRECTIVES) as EndgameDirectiveId[]
+      );
+      for (const egId of endgamePool) {
+        if (chosen.length >= 3) break;
+        if (!chosen.includes(egId)) {
+          chosen.push(egId);
+        }
+      }
+    }
+    return chosen;
+  }
+
+  private rollOmegaDraftChoices(): OmegaDirectiveId[] {
+    const unowned = (Object.keys(OMEGA_DIRECTIVES) as OmegaDirectiveId[]).filter(
+      (id) => !this.activeOmegas.includes(id)
+    );
+    this.shuffleInPlace(unowned);
+    return unowned.slice(0, 3);
+  }
+
+  private openProtocolDraftModal(): void {
+    this.draftMode = 'PROTOCOL';
+    this.protocolDraftChoices = this.rollProtocolDraftChoices();
+    this.omegaDraftChoices = [];
+    this.draftRerollsUsedThisDraft = 0;
+    this.paidRerollsUsedThisDraft = 0;
+    this.freeDraftRerollsRemaining = this.getProtocolStacks('SALVAGE_BONUS');
+    this.phase = 'PROTOCOL_DRAFT';
+    this.audioCb.onIntercomVoice('protocol');
+    this.pushLog('★ MU-TH-UR TACTICAL PROTOCOL DRAFT READY — SELECT 1 DIRECTIVE [1 / 2 / 3] ★');
+  }
+
+  private openOmegaDraftModal(): boolean {
+    const choices = this.rollOmegaDraftChoices();
+    if (choices.length === 0) return false;
+    this.draftMode = 'OMEGA';
+    this.omegaDraftChoices = choices;
+    this.protocolDraftChoices = [];
+    this.draftRerollsUsedThisDraft = 0;
+    this.paidRerollsUsedThisDraft = 0;
+    this.freeDraftRerollsRemaining = this.getProtocolStacks('SALVAGE_BONUS');
+    this.phase = 'PROTOCOL_DRAFT';
+    this.audioCb.onIntercomVoice('protocol');
+    this.pushLog('★ BOSS MILESTONE — OMEGA DIRECTIVE AUTHORIZED! HIGH-RISK TRADE-OFF READY ★');
+    return true;
+  }
+
+  public rerollProtocolDraft(): { ok: boolean; msg: string } {
+    if (this.phase !== 'PROTOCOL_DRAFT') {
+      return { ok: false, msg: 'NO DRAFT ACTIVE' };
+    }
+
+    if (this.draftMode === 'OMEGA') {
+      const unowned = (Object.keys(OMEGA_DIRECTIVES) as OmegaDirectiveId[]).filter(
+        (id) => !this.activeOmegas.includes(id)
+      );
+      if (unowned.length <= this.omegaDraftChoices.length) {
+        return { ok: false, msg: 'ALL REMAINING OMEGA DIRECTIVES ALREADY SHOWN' };
+      }
+      const cost = this.getProtocolRerollCost();
+      if (cost > 0 && this.scrap < cost) {
+        return { ok: false, msg: `INSUFFICIENT SCRAP (${cost} REQ)` };
+      }
+      if (this.freeDraftRerollsRemaining > 0) {
+        this.freeDraftRerollsRemaining -= 1;
+      } else {
+        this.scrap -= cost;
+        this.paidRerollsUsedThisDraft += 1;
+      }
+      this.draftRerollsUsedThisDraft += 1;
+      const prevSig = [...this.omegaDraftChoices].sort().join(',');
+      let next = this.rollOmegaDraftChoices();
+      for (let tries = 0; tries < 5 && [...next].sort().join(',') === prevSig; tries++) {
+        next = this.rollOmegaDraftChoices();
+      }
+      this.omegaDraftChoices = next;
+      this.audioCb.onServoStep(0);
+      this.pushLog(
+        cost === 0
+          ? 'OMEGA DRAFT REROLLED [FREE SALVAGE REROLL]'
+          : `OMEGA DRAFT REROLLED // -${cost} SCRAP`
+      );
+      return { ok: true, msg: cost === 0 ? 'FREE REROLL' : `REROLLED (-${cost}S)` };
+    }
+
+    const cost = this.getProtocolRerollCost();
+    if (cost > 0 && this.scrap < cost) {
+      return { ok: false, msg: `INSUFFICIENT SCRAP (${cost} REQ)` };
+    }
+    if (this.freeDraftRerollsRemaining > 0) {
+      this.freeDraftRerollsRemaining -= 1;
+    } else {
+      this.scrap -= cost;
+      this.paidRerollsUsedThisDraft += 1;
+    }
+    this.draftRerollsUsedThisDraft += 1;
+
+    const prevSig = [...this.protocolDraftChoices].sort().join(',');
+    let next = this.rollProtocolDraftChoices();
+    for (let tries = 0; tries < 6 && [...next].sort().join(',') === prevSig; tries++) {
+      next = this.rollProtocolDraftChoices();
+    }
+    this.protocolDraftChoices = next;
+    this.audioCb.onServoStep(0);
+    this.pushLog(
+      cost === 0
+        ? 'PROTOCOL DRAFT REROLLED [FREE SALVAGE REROLL]'
+        : `PROTOCOL DRAFT REROLLED // -${cost} SCRAP`
+    );
+    return { ok: true, msg: cost === 0 ? 'FREE REROLL' : `REROLLED (-${cost}S)` };
+  }
+
+  public selectEndgameDirective(id: EndgameDirectiveId): { ok: boolean; msg: string } {
+    if (this.phase !== 'PROTOCOL_DRAFT' || this.draftMode !== 'PROTOCOL') {
+      return { ok: false, msg: 'NO PROTOCOL DRAFT ACTIVE' };
+    }
+    if (!this.protocolDraftChoices.includes(id)) {
+      return { ok: false, msg: 'INVALID ENDGAME DIRECTIVE CHOICE' };
+    }
+    const spec = ENDGAME_DIRECTIVES[id];
+    this.activeEndgameDirectives[id] = (this.activeEndgameDirectives[id] ?? 0) + 1;
+
+    if (id === 'EMERGENCY_ORDNANCE') {
+      this.purgeChargesRemaining += 1;
+      this.purgeAvailableThisWave = true;
+      this.scrap += 250;
+    }
+
+    this.protocolDraftChoices = [];
+    this.phase = 'TACTICAL_PREP';
+    this.audioCb.onUpgradeConfirm(true);
+    this.pushLog(`★ ENDGAME DIRECTIVE INSTALLED: [${spec.code}] ${spec.title} — ${spec.desc} ★`);
+    return { ok: true, msg: `DIRECTIVE: ${spec.code}` };
+  }
+
+  public selectOmegaDirective(id: OmegaDirectiveId): { ok: boolean; msg: string } {
+    if (this.phase !== 'PROTOCOL_DRAFT' || this.draftMode !== 'OMEGA') {
+      return { ok: false, msg: 'NO OMEGA DRAFT ACTIVE' };
+    }
+    if (!this.omegaDraftChoices.includes(id)) {
+      return { ok: false, msg: 'INVALID OMEGA DIRECTIVE CHOICE' };
+    }
+    const spec = OMEGA_DIRECTIVES[id];
+    if (!this.activeOmegas.includes(id)) {
+      this.activeOmegas.push(id);
+    }
+
+    if (id === 'BREACH_SAPPER') {
+      this.claymoresRemainingThisWave += 4;
+    } else if (id === 'NIGHT_HUNTER_OPTICS') {
+      this.floodlightTimer = 0;
+    }
+
+    this.omegaDraftChoices = [];
+    this.audioCb.onUpgradeConfirm(true);
+    this.pushLog(`★ OMEGA DIRECTIVE LOCKED: [${spec.code}] ${spec.title} — ${spec.desc} ★`);
+
+    if (this.pendingProtocolDraftAfterOmega) {
+      this.pendingProtocolDraftAfterOmega = false;
+      this.openProtocolDraftModal();
+    } else {
+      this.draftMode = 'PROTOCOL';
+      this.phase = 'TACTICAL_PREP';
+    }
+    return { ok: true, msg: `OMEGA: ${spec.code}` };
+  }
+
+  public selectProtocolDraft(choiceId: DraftChoiceId): { ok: boolean; msg: string } {
+    if (choiceId in ENDGAME_DIRECTIVES) {
+      return this.selectEndgameDirective(choiceId as EndgameDirectiveId);
+    }
+    if (this.phase !== 'PROTOCOL_DRAFT' || this.draftMode !== 'PROTOCOL') {
+      return { ok: false, msg: 'NO PROTOCOL DRAFT ACTIVE' };
+    }
+    const protocolId = choiceId as ProtocolId;
     if (!this.protocolDraftChoices.includes(protocolId)) {
       return { ok: false, msg: 'INVALID PROTOCOL CHOICE' };
     }
@@ -1171,17 +1937,33 @@ export class PerimeterSimulation {
     this.activeProtocols[protocolId] = (this.activeProtocols[protocolId] ?? 0) + 1;
 
     if (protocolId === 'AUX_BUS') {
-      this.maxReactorKw = Math.min(
-        PERIMETER_CONSTANTS.MAX_REACTOR_KW_HARD_CAP,
-        this.maxReactorKw + 20
-      );
-    } else if (protocolId === 'SEAL_FABRICATION') {
+      // Raises hard cap (295 -> 375) AND grants +20 kW immediately without touching autoReactorUnlocks!
+      this.maxReactorKw = Math.min(this.getEffectiveMaxReactorCap(), this.maxReactorKw + 20);
+    } else if (protocolId === 'AUTOLOADER') {
+      // Immediately boost drum capacity on all deployed Sentries!
+      for (const t of this.turrets) {
+        if (t.kind === 'SENTRY_PULSE') {
+          const prevMax = t.maxAmmo;
+          t.maxAmmo = this.getSentryMaxAmmo(t);
+          t.ammo += Math.max(0, t.maxAmmo - prevMax);
+        }
+      }
+    } else if (protocolId === 'AEGIS_SHIELD') {
       this.bulkheadSeals = Math.min(PERIMETER_CONSTANTS.MAX_BULKHEAD_SEALS, this.bulkheadSeals + 1);
+      const stacks = this.getProtocolStacks('AEGIS_SHIELD');
+      this.aegisBarrierCharges = Math.min(stacks, this.aegisBarrierCharges + 1);
+      this.aegisBarrierReady = this.aegisBarrierCharges > 0;
+      if (this.aegisBarrierCharges >= stacks) {
+        this.aegisRechargeWavesRemaining = 0;
+      }
     } else if (protocolId === 'BULKHEAD_ARMOR') {
       const newMax = this.getDoorMaxHp();
       for (const ds of this.doors.values()) {
         ds.maxHp = newMax;
-        if (ds.welded) ds.hp = Math.min(newMax, ds.hp + Math.round(PERIMETER_CONSTANTS.DOOR_MAX_HP * 0.45));
+        if (ds.welded) {
+          ds.hp = Math.min(newMax, ds.hp + Math.round(PERIMETER_CONSTANTS.DOOR_MAX_HP * 0.5));
+          ds.lastPathHpBand = this.getDoorHpBand(ds);
+        }
       }
     }
 
@@ -1191,6 +1973,10 @@ export class PerimeterSimulation {
     this.pushLog(`★ PROTOCOL INSTALLED: [${spec.code}] ${spec.title} — ${spec.desc} ★`);
     return { ok: true, msg: `PROTOCOL: ${spec.code}` };
   }
+
+  // ===========================================================================
+  // COMMAND ABILITIES
+  // ===========================================================================
 
   public triggerInstantCommandAbility(
     abilityId: 'FLOODLIGHT' | 'COOLANT_FLUSH'
@@ -1202,6 +1988,9 @@ export class PerimeterSimulation {
       };
     }
     if (abilityId === 'FLOODLIGHT') {
+      if (this.hasOmega('NIGHT_HUNTER_OPTICS')) {
+        return { ok: false, msg: 'DISABLED BY Ω-NIGHTOPT PROTOCOL' };
+      }
       if (this.floodlightCooldown > 0) {
         return {
           ok: false,
@@ -1220,13 +2009,28 @@ export class PerimeterSimulation {
       );
       this.floodlightCooldown = PERIMETER_CONSTANTS.FLOODLIGHT_COOLDOWN_SEC;
       const dur =
-        PERIMETER_CONSTANTS.FLOODLIGHT_DURATION_SEC + this.getProtocolStacks('OPTICS_GAIN') * 4.0;
+        PERIMETER_CONSTANTS.FLOODLIGHT_DURATION_SEC + this.getProtocolStacks('OPTICS_GAIN') * 2.5;
       this.floodlightTimer = Math.max(this.floodlightTimer, dur);
+
+      // Phase 1 [L] Floodlight buff: instant Screamer jam purge + map-wide Stalker reveal +25% crit!
+      for (const t of this.turrets) {
+        t.jammedTimer = 0;
+      }
+      this.phantomBlips = [];
+      for (const h of this.hostiles) {
+        if (h.kind === 'STALKER') {
+          h.stealthBurnTimer = Math.max(h.stealthBurnTimer ?? 0, dur);
+        }
+      }
+      this.recomputeRelayLinks();
+
       this.audioCb.onReactorBreaker(false);
       this.audioCb.onFlarePop(0);
       this.spawnSparks(this.blueprint.coreCenter, 18, '#FFFFFF');
-      this.pushLog(`EMERGENCY SECTOR FLOODLIGHT ACTIVE [${dur.toFixed(0)}S MAP-WIDE ILLUMINATION!]`);
-      return { ok: true, msg: `FLOODLIGHT ACTIVE (${dur.toFixed(0)}S)` };
+      this.pushLog(
+        `EMERGENCY SECTOR FLOODLIGHT ACTIVE [${dur.toFixed(1)}S · +25% CRIT · JAM PURGED · STALKERS EXPOSED!]`
+      );
+      return { ok: true, msg: `FLOODLIGHT ACTIVE (${dur.toFixed(1)}S)` };
     }
 
     if (abilityId === 'COOLANT_FLUSH') {
@@ -1244,7 +2048,7 @@ export class PerimeterSimulation {
       this.activeCoolantSurgeTimer = PERIMETER_CONSTANTS.COOLANT_FLUSH_SURGE_SEC;
       let cooledCount = 0;
       for (const t of this.turrets) {
-        if (t.heat > 5 || t.thermalLocked) {
+        if (t.heat > 5 || t.thermalLocked || t.acidDebuffTimer > 0) {
           t.heat = Math.max(0, t.heat - 78);
           t.thermalLocked = false;
           t.acidDebuffTimer = 0;
@@ -1292,7 +2096,7 @@ export class PerimeterSimulation {
       this.flareCooldown = PERIMETER_CONSTANTS.FLARE_COOLDOWN_SEC;
       this.activeFlareSurgeTimer = 0;
       const flareDur =
-        PERIMETER_CONSTANTS.FLARE_DURATION_SEC + this.getProtocolStacks('OPTICS_GAIN') * 4.0;
+        PERIMETER_CONSTANTS.FLARE_DURATION_SEC + this.getProtocolStacks('OPTICS_GAIN') * 2.5;
       this.flares.push({
         pos: { ...targetPos },
         radius: PERIMETER_CONSTANTS.FLARE_RADIUS_PX,
@@ -1301,7 +2105,7 @@ export class PerimeterSimulation {
       });
       this.audioCb.onFlarePop(this.panFromVirtualX(targetPos.x));
       this.spawnSparks(targetPos, 14, '#FFFFFF');
-      this.pushLog(`M40 STROBE FLARE DEPLOYED // ${flareDur.toFixed(0)}S FULL RANGE & CRIT (0 kW)`);
+      this.pushLog(`M40 STROBE FLARE DEPLOYED // ${flareDur.toFixed(1)}S FULL RANGE & CRIT (0 kW)`);
       return { ok: true, msg: 'STROBE FLARE DEPLOYED (+100% RANGE)' };
     }
 
@@ -1320,7 +2124,7 @@ export class PerimeterSimulation {
       }
       const ocDur =
         PERIMETER_CONSTANTS.OVERCLOCK_DURATION_SEC +
-        this.getProtocolStacks('CAPACITOR_DRIVE') * 2.5;
+        this.getProtocolStacks('CAPACITOR_DRIVE') * 2.0;
       this.overclockCooldown = PERIMETER_CONSTANTS.OVERCLOCK_COOLDOWN_SEC;
       this.activeOverclockSurgeTimer = ocDur;
       for (const t of affected) {
@@ -1343,14 +2147,15 @@ export class PerimeterSimulation {
     }
 
     if (abilityId === 'PURGE') {
-      if (!this.purgeAvailableThisWave) {
-        return { ok: false, msg: 'AIRLOCK VENT PURGE EXPENDED THIS WAVE (1X/WAVE)' };
+      if (this.purgeChargesRemaining <= 0) {
+        return { ok: false, msg: 'AIRLOCK VENT PURGE EXPENDED THIS WAVE' };
       }
       const chamber = this.findAirlockAt(targetPos);
       if (!chamber) {
-        return { ok: false, msg: 'CLICK DESIGNATED AIRLOCK CHAMBER [W-01 / E-02 / S-03]' };
+        return { ok: false, msg: 'CLICK DESIGNATED AIRLOCK CHAMBER' };
       }
-      this.purgeAvailableThisWave = false;
+      this.purgeChargesRemaining = Math.max(0, this.purgeChargesRemaining - 1);
+      this.purgeAvailableThisWave = this.purgeChargesRemaining > 0;
       this.purgeWaves.push({
         chamberId: chamber.id,
         bounds: { ...chamber.bounds },
@@ -1374,24 +2179,45 @@ export class PerimeterSimulation {
     const minY = chamber.bounds.y - padPx;
     const maxY = chamber.bounds.y + chamber.bounds.height + padPx;
 
-    // Clear corrosive acid pools in/around the purged airlock corridor
     this.acidPools = this.acidPools.filter(
       (p) => p.pos.x < minX || p.pos.x > maxX || p.pos.y < minY || p.pos.y > maxY
     );
 
     let flushedCount = 0;
     let purgeKills = 0;
+    const knockbackDur = 0.42;
     for (const h of this.hostiles) {
       if (h.pos.x >= minX && h.pos.x <= maxX && h.pos.y >= minY && h.pos.y <= maxY) {
         flushedCount++;
-        const pushScale = h.kind === 'PRAETORIAN' ? 0.28 : 1.0;
+        const pushScale =
+          h.kind === 'QUEEN'
+            ? 0.22
+            : h.kind === 'CRUSHER'
+              ? 0.28
+              : h.kind === 'PRAETORIAN'
+                ? 0.35
+                : 1.0;
+        const stunDur =
+          h.kind === 'QUEEN'
+            ? 0.6
+            : h.kind === 'CRUSHER'
+              ? 0.7
+              : h.kind === 'PRAETORIAN'
+                ? 0.8
+                : 1.75;
         const pushDist = PERIMETER_CONSTANTS.PURGE_PUSH_PX * pushScale;
-        this.pushHostileAlongCorridor(h, chamber.flushDir, pushDist);
-        h.stunTimer = Math.max(h.stunTimer, h.kind === 'PRAETORIAN' ? 0.65 : 1.75);
-        h.hp -= h.kind === 'SKITTERER' ? 32 : 28;
+        this.applyHostileKnockback(h, chamber.flushDir, pushDist, knockbackDur, true);
+        this.applyHostileStun(h, stunDur, true);
+        if (h.kind === 'CRUSHER') {
+          h.chargeActiveTimer = 0;
+          h.chargeTelegraphTimer = 0;
+        }
+        // Phase 1 [V] Airlock Purge buff: 35% current HP (15% boss) + 100 flat dmg!
+        const purgeDmg = Math.round(h.hp * (h.isBoss ? 0.15 : 0.35) + 100);
+        h.hp -= purgeDmg;
         if (h.hp <= 0) {
           purgeKills++;
-          this.score += HOSTILE_SPECS[h.kind].scoreValue; // +100% decompression kill bonus!
+          this.score += HOSTILE_SPECS[h.kind].scoreValue;
         }
       }
     }
@@ -1408,33 +2234,116 @@ export class PerimeterSimulation {
     }
   }
 
-  private pushHostileAlongCorridor(h: HostileEntity, dir: Vec2, totalPx: number): void {
-    const steps = 12;
-    const stepD = totalPx / steps;
+  private applyHostileKnockback(
+    h: HostileEntity,
+    dir: Vec2,
+    totalPx: number,
+    durationSec = 0.42,
+    forceOverride = false
+  ): void {
+    const dur = Math.max(0.05, durationSec);
+    if (!forceOverride && h.knockbackTimer && h.knockbackTimer > dur) {
+      return;
+    }
+    const v0 = (2 * totalPx) / dur;
+    h.knockbackVel = { x: dir.x * v0, y: dir.y * v0 };
+    h.knockbackTimer = dur;
+    h.knockbackMaxTimer = dur;
+  }
+
+  private stepHostileKnockback(h: HostileEntity, dt: number): void {
+    if (!h.knockbackVel || !h.knockbackTimer || h.knockbackTimer <= 0) return;
+    const maxDur = Math.max(0.05, h.knockbackMaxTimer ?? 0.42);
+    const prevT = h.knockbackTimer;
+    const nextT = Math.max(0, prevT - dt);
+    const midFrac = ((prevT + nextT) * 0.5) / maxDur;
+    const stepDx = h.knockbackVel.x * midFrac * dt;
+    const stepDy = h.knockbackVel.y * midFrac * dt;
+    h.knockbackTimer = nextT;
+    if (nextT <= 0) {
+      h.knockbackVel = undefined;
+      h.knockbackMaxTimer = undefined;
+    }
+
+    const dist = Math.hypot(stepDx, stepDy);
+    const subSteps = Math.max(1, Math.ceil(dist / 12));
     const ts = this.blueprint.tileSize;
-    for (let i = 0; i < steps; i++) {
-      const nx = h.pos.x + dir.x * stepD;
-      const ny = h.pos.y + dir.y * stepD;
-      const nc = Math.floor(nx / ts);
-      const nr = Math.floor(ny / ts);
-      if (this.pathfinder.isPassableCell(this.blueprint, this.doors, nc, nr)) {
+    for (let s = 0; s < subSteps; s++) {
+      const nx = h.pos.x + stepDx / subSteps;
+      const ny = h.pos.y + stepDy / subSteps;
+      let moved = false;
+      if (
+        this.pathfinder.isPassableCell(
+          this.blueprint,
+          this.doors,
+          Math.floor(nx / ts),
+          Math.floor(h.pos.y / ts)
+        )
+      ) {
         h.pos.x = nx;
+        moved = true;
+      }
+      if (
+        this.pathfinder.isPassableCell(
+          this.blueprint,
+          this.doors,
+          Math.floor(h.pos.x / ts),
+          Math.floor(ny / ts)
+        )
+      ) {
         h.pos.y = ny;
-      } else {
+        moved = true;
+      }
+      if (!moved) {
+        h.knockbackTimer = 0;
+        h.knockbackVel = undefined;
+        h.knockbackMaxTimer = undefined;
         break;
       }
+    }
+    if (Math.random() < dt * 16) {
+      this.spawnSparks(h.pos, 2, '#8EF5AB');
     }
   }
 
   // ===========================================================================
-  // WAVE FLOW & FIXED-STEP SIMULATION
+  // WAVE FLOW, DYNAMIC BREACHES & SECTOR EXTRACTION
   // ===========================================================================
 
   public launchNextWave(): void {
     if (this.phase !== 'TACTICAL_PREP') return;
-    this.currentWaveDef = Sector01Blueprint.getWaveDefinition(this.waveNumber);
+    this.currentWaveDef = getWaveDefinition(this.waveNumber, this.blueprint.sectorId);
     this.activeMutator = this.currentWaveDef.mutator ?? 'NONE';
     this.sealLostThisWave = false;
+
+    // Phase 3: Trigger any scheduled Dynamic AIR_SHAFT Hull Breaches on W5/15/25!
+    const openedSet = new Set(this.activeBreachIds);
+    const breachesNow = getDynamicBreachesForWave(this.blueprint, this.waveNumber, openedSet);
+    if (breachesNow.length > 0) {
+      const ts = this.blueprint.tileSize;
+      for (const br of breachesNow) {
+        applyDynamicBreach(this.blueprint, br);
+        this.activeBreachIds.push(br.id);
+        const midTile = br.tiles[Math.floor(br.tiles.length / 2)] ?? br.tiles[0];
+        if (midTile) {
+          const bPos = { x: midTile.col * ts + ts * 0.5, y: midTile.row * ts + ts * 0.5 };
+          this.spawnSparks(bPos, 24, '#FFB000');
+          this.callouts.push({
+            pos: { x: bPos.x, y: bPos.y - 16 },
+            text: `⚠ HULL BREACH: ${br.label}!`,
+            color: '#FF5522',
+            life: 2.6,
+            maxLife: 2.6,
+          });
+        }
+        this.pushLog(`⚠ HULL BREACH // ${br.label} COLLAPSED INTO NEW BYPASS CORRIDOR!`);
+      }
+      this.pendingBreachIds = [];
+      this.audioCb.onBulkheadBreach();
+      this.audioCb.onSyncGlitch(0.65);
+      this.recomputePathfinder(false);
+    }
+
     this.spawnQueue = this.currentWaveDef.groups.map((g) => ({
       ventId: g.ventId,
       kind: g.kind,
@@ -1443,9 +2352,12 @@ export class PerimeterSimulation {
       intervalSec: g.intervalSec,
       timerSec: g.delaySec,
       telegraphSent: false,
+      hpOverride: g.hpOverride,
     }));
     this.grateTelegraphs = [];
-    this.purgeAvailableThisWave = true;
+    this.purgeChargesRemaining = Math.max(1, this.purgeChargesRemaining);
+    this.purgeAvailableThisWave = this.purgeChargesRemaining > 0;
+    this.congestionRecomputeTimer = 1.0;
     this.phase = 'WAVE_ACTIVE';
     this.tacticalPaused = false;
 
@@ -1457,6 +2369,75 @@ export class PerimeterSimulation {
     this.pushLog(
       `WAVE ${String(this.waveNumber).padStart(2, '0')} INBOUND // ${this.currentWaveDef.title}${mutTag} [${activeVents}]`
     );
+  }
+
+  /**
+   * Phase 3 Post-Queen Sector Extraction (W11 / W21 / W31+):
+   * Auto-liquidates all turrets at 100% invested Scrap, swaps to the next asymmetric Sector
+   * blueprint, resets doors/hazards, and preserves Protocols, Omegas, kW, Seals, Streak & Score!
+   */
+  public performSectorExtraction(nextSectorId: SectorId): number {
+    let totalRefund = 0;
+    for (const t of this.turrets) {
+      totalRefund += t.totalInvestedScrap;
+    }
+    this.scrap += totalRefund;
+    this.turrets = [];
+    this.hostiles = [];
+    this.claymores = [];
+    this.acidSpits = [];
+    this.eggSacs = [];
+    this.shockArcs = [];
+    this.railBeams = [];
+    this.phantomBlips = [];
+    this.motionWaves = [];
+    this.flares = [];
+    this.overclocks = [];
+    this.napalmClouds = [];
+    this.cryoPlumes = [];
+    this.acidPools = [];
+    this.purgeWaves = [];
+    this.tracers = [];
+    this.sparks = [];
+    this.callouts = [];
+    this.grateTelegraphs = [];
+    this.spawnQueue = [];
+    this.cryoCoolerBuffedTurretIds.clear();
+    this.relayFloodHostileIds.clear();
+    this.acidSpitOwners.clear();
+    this.auxShedActive = false;
+    this.auxShedTurretIds = [];
+    this.warnedLowAmmoIds.clear();
+    this.warnedDryIds.clear();
+    this.warnedAcidDoorIds.clear();
+    this.callsignCounters = {
+      SENTRY_PULSE: 0,
+      INCINERATOR: 0,
+      RAIL_LANCE: 0,
+      CRYO_VALVE: 0,
+      SHOCK_COIL: 0,
+      MOTION_RELAY: 0,
+    };
+
+    this.blueprint = createSectorBlueprint(nextSectorId);
+    this.pathfinder = new FlowFieldPathfinder(this.blueprint);
+    const totalCells = this.blueprint.cols * this.blueprint.rows;
+    this.congestionGrid = new Float32Array(totalCells);
+    this.hazardMask = new Uint8Array(totalCells);
+    this.activeBreachIds = [];
+    this.pendingBreachIds = [];
+
+    this.initDoorsFromBlueprint();
+    this.pathfinder.recompute(this.blueprint, this.doors);
+    this.sectorTransitionVersion += 1;
+    this.onSectorChanged?.(nextSectorId, this.blueprint);
+
+    this.audioCb.onUpgradeConfirm(true);
+    this.audioCb.onSyncGlitch(0.5);
+    this.pushLog(
+      `★ SECTOR EXTRACTION -> ${this.blueprint.sectorId}: ${this.blueprint.sectorName} // 100% LIQUIDATION (+${totalRefund} SCRAP) ★`
+    );
+    return totalRefund;
   }
 
   public step(rawDt: number): void {
@@ -1479,7 +2460,7 @@ export class PerimeterSimulation {
 
     const simDt = Math.min(0.08, rawDt) * (this.fastForward2x ? 2.0 : 1.0);
 
-    // 1. Update Ability Cooldowns, Surges, Reserve Battery & Real Reactor Overload / Blackout State!
+    // 1. Update Ability Cooldowns, Surges, Reserve Battery & Reactor Overload / Blackout State
     if (this.flareCooldown > 0) this.flareCooldown = Math.max(0, this.flareCooldown - simDt);
     if (this.overclockCooldown > 0)
       this.overclockCooldown = Math.max(0, this.overclockCooldown - simDt);
@@ -1510,10 +2491,9 @@ export class PerimeterSimulation {
     } else {
       const currentLoad = this.getTotalLoadKw();
       if (currentLoad > this.maxReactorKw) {
-        // Reserve Battery automatically absorbs Overclock/Surge overload until depleted!
         if (this.reserveBattery > 0) {
           this.reserveBattery = Math.max(0, this.reserveBattery - 26 * simDt);
-          this.overloadTimer = Math.max(0, this.overloadTimer - simDt * 1.2);
+          this.overloadTimer = Math.max(0, this.overloadTimer - simDt * 1.0);
         } else {
           this.overloadTimer += simDt;
           if (this.overloadWarnCooldown <= 0) {
@@ -1525,7 +2505,6 @@ export class PerimeterSimulation {
             }
           }
           if (this.overloadTimer >= PERIMETER_CONSTANTS.REACTOR_OVERLOAD_TRIP_SEC) {
-            // MAIN BREAKER TRIP -> 3.5S SECTOR BLACKOUT!
             this.blackoutTimer = PERIMETER_CONSTANTS.REACTOR_BLACKOUT_SEC;
             this.overloadTimer = 0;
             this.activeFlareSurgeTimer = 0;
@@ -1550,13 +2529,14 @@ export class PerimeterSimulation {
           }
         }
       } else {
+        // P0 #13: Fixed [X] overload-reset exploit (decay 2.0x -> 1.0x)
         if (this.overloadTimer > 0) {
-          this.overloadTimer = Math.max(0, this.overloadTimer - simDt * 2.0);
+          this.overloadTimer = Math.max(0, this.overloadTimer - simDt * 1.0);
         }
-        // Charge Reactor Reserve Battery from unused free kW headroom during active waves (capped so [F] Flare stays vital!)
         if (this.phase === 'WAVE_ACTIVE' && this.reserveBattery < 100 && this.floodlightTimer <= 0) {
           const freeKw = Math.max(0, this.maxReactorKw - currentLoad);
-          const capBoost = 1 + this.getProtocolStacks('CAPACITOR_DRIVE') * 0.5;
+          // Phase 2 CAPACITOR_DRIVE: +40% battery charge per stack
+          const capBoost = 1 + this.getProtocolStacks('CAPACITOR_DRIVE') * 0.4;
           const chargePerSec = (1.15 + Math.min(2.6, (freeKw / 55) * 2.6)) * capBoost;
           this.reserveBattery = Math.min(100, this.reserveBattery + chargePerSec * simDt);
         }
@@ -1576,7 +2556,7 @@ export class PerimeterSimulation {
       if (this.purgeWaves[i].remainingSec <= 0) this.purgeWaves.splice(i, 1);
     }
 
-    // 1B. Tick Mid-Wave 2.0s Arc-Weld Torch Sequences & Repair Cooldowns
+    // 1B. Tick Mid-Wave 1.5s Arc-Weld Torch Sequences & Repair Cooldowns
     for (const ds of this.doors.values()) {
       if (ds.repairCooldown > 0) {
         ds.repairCooldown = Math.max(0, ds.repairCooldown - simDt);
@@ -1590,8 +2570,11 @@ export class PerimeterSimulation {
           const wasWelded = ds.welded;
           ds.welded = true;
           ds.hp = ds.maxHp;
+          ds.lastPathHpBand = 4;
           ds.repairCooldown = PERIMETER_CONSTANTS.WELD_REPAIR_COOLDOWN_SEC;
-          this.pathfinder.recompute(this.blueprint, this.doors);
+          // P0 #1: Eject any hostiles occupying the door tiles to nearest passable outer cell!
+          this.ejectHostilesFromDoor(ds);
+          this.recomputePathfinder(this.phase === 'WAVE_ACTIVE');
           this.recomputeRelayLinks();
           this.audioCb.onArcWeld(this.panFromVirtualX(ds.def.center.x));
           this.spawnSparks(ds.def.center, 16, '#FFB000');
@@ -1611,13 +2594,21 @@ export class PerimeterSimulation {
       }
     }
 
+    // 1C. Phase 1: Periodic 1.0s active-wave congestion/hazard flow-field recompute
+    if (this.phase === 'WAVE_ACTIVE') {
+      this.congestionRecomputeTimer -= simDt;
+      if (this.congestionRecomputeTimer <= 0) {
+        this.congestionRecomputeTimer = 1.0;
+        this.recomputePathfinder(true);
+      }
+    }
+
     // 2. Floor-Grate 5s Rattling Breach Telegraphs & Wave Hostile Spawns
     if (this.phase === 'WAVE_ACTIVE') {
       for (const sq of this.spawnQueue) {
         if (sq.remaining <= 0) continue;
         sq.timerSec -= simDt;
 
-        // Emit 5-second rattling floor-grate breach telegraph before auxiliary grates erupt!
         if (!sq.telegraphSent && sq.timerSec <= PERIMETER_CONSTANTS.GRATE_TELEGRAPH_SEC) {
           const vent = this.blueprint.vents.find((v) => v.id === sq.ventId);
           if (vent?.isAuxGrate) {
@@ -1631,6 +2622,21 @@ export class PerimeterSimulation {
               maxSec: rem,
               count: sq.totalCount,
             });
+            // Phase 2 BREACH_SAPPER Omega: auto-seed rattling grates with a free armed Claymore!
+            if (
+              this.hasOmega('BREACH_SAPPER') &&
+              !this.claymores.some((m) => m.col === vent.col && m.row === vent.row)
+            ) {
+              this.claymores.push({
+                id: `sapper-mine-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                col: vent.col,
+                row: vent.row,
+                pos: { ...vent.pos },
+                armTimer: 0.5,
+              });
+              this.spawnSparks(vent.pos, 10, '#FFB000');
+              this.pushLog(`Ω-SAPPER // AUTO-MINED RATTLING GRATE [${vent.id}]!`);
+            }
             this.audioCb.onDoorBatter(this.panFromVirtualX(vent.pos.x));
             this.audioCb.onIntercomVoice('grate_breach');
             this.spawnSparks(vent.pos, 10, '#FFB000');
@@ -1652,11 +2658,10 @@ export class PerimeterSimulation {
         if (sq.timerSec <= 0) {
           sq.timerSec += sq.intervalSec;
           sq.remaining -= 1;
-          this.spawnHostile(sq.ventId, sq.kind);
+          this.spawnHostile(sq.ventId, sq.kind, undefined, sq.hpOverride);
         }
       }
 
-      // Tick down active floor-grate breach telegraphs with periodic metallic rattle + sparks
       for (let i = this.grateTelegraphs.length - 1; i >= 0; i--) {
         const gt = this.grateTelegraphs[i];
         gt.remainingSec -= simDt;
@@ -1673,7 +2678,7 @@ export class PerimeterSimulation {
       }
     }
 
-    // 3. Baseline Core Motion Sweep (pauses during Blackout!) + M314 Relay Sweeps & Cryo Valves
+    // 3. Baseline Core Motion Sweep (pauses during Blackout)
     if (this.blackoutTimer <= 0) {
       this.coreSweepTimer -= simDt;
       if (this.coreSweepTimer <= 0) {
@@ -1699,7 +2704,7 @@ export class PerimeterSimulation {
     this.stepXenomorphChaosAudio(simDt);
     this.stepMotionTrackerAudio(rawDt);
 
-    // 4. Check Wave Completion (Training Drill director manages its own stage progression)
+    // 4. Check Wave Completion
     if (this.phase === 'WAVE_ACTIVE' && !this.trainingMode) {
       const anyPending = this.spawnQueue.some((s) => s.remaining > 0);
       if (!anyPending && this.hostiles.length === 0 && this.eggSacs.length === 0) {
@@ -1708,7 +2713,6 @@ export class PerimeterSimulation {
     }
   }
 
-  /** Spawns a live hostile during the unranked Interactive Training Drill */
   public spawnTrainingHostile(
     ventId: string,
     kind: HostileKind,
@@ -1718,7 +2722,6 @@ export class PerimeterSimulation {
     return this.hostiles[this.hostiles.length - 1];
   }
 
-  /** Spawns a corrosive acid hazard pool for the Incinerator sterilization drill */
   public spawnTrainingAcidPool(pos: Vec2, radius = 64): void {
     this.acidPools.push({
       pos: { x: pos.x, y: pos.y },
@@ -1728,15 +2731,18 @@ export class PerimeterSimulation {
     });
   }
 
-  private spawnHostile(ventId: string, kind: HostileKind, overridePos?: Vec2): void {
+  private spawnHostile(
+    ventId: string,
+    kind: HostileKind,
+    overridePos?: Vec2,
+    hpOverride?: number
+  ): void {
     const vent = this.blueprint.vents.find((v) => v.id === ventId) ?? this.blueprint.vents[0];
     const spec = HOSTILE_SPECS[kind];
-    // Progressive HP scaling on later waves (gentle ramp Waves 1..10, steeper Endless 11+)
-    const hpScale =
-      this.waveNumber <= 10
-        ? 1 + Math.max(0, this.waveNumber - 1) * 0.1
-        : 1.9 + (this.waveNumber - 10) * 0.16;
-    const maxHp = Math.round(spec.baseHp * hpScale);
+    const hpScale = this.currentWaveDef.hpScale ?? getWaveHpScale(this.waveNumber);
+    const speedScale =
+      this.waveNumber <= 10 ? 1.0 : 1.0 + Math.min(0.45, (this.waveNumber - 10) * 0.024);
+    const maxHp = hpOverride ?? Math.round(spec.baseHp * hpScale);
     const jitterX = overridePos ? 0 : (Math.random() - 0.5) * 18;
     const jitterY = overridePos ? 0 : (Math.random() - 0.5) * 18;
     const spawnPos = overridePos
@@ -1751,7 +2757,7 @@ export class PerimeterSimulation {
       heading: 0,
       hp: maxHp,
       maxHp,
-      speedPxS: spec.speedPxS * (0.95 + Math.random() * 0.1),
+      speedPxS: spec.speedPxS * speedScale * (0.95 + Math.random() * 0.1),
       radiusPx: spec.radiusPx,
       weavePhase: Math.random() * Math.PI * 2,
       blipTimer: 1.4,
@@ -1767,6 +2773,15 @@ export class PerimeterSimulation {
       cryoDeepFreeze: false,
       napalmBurnTimer: 0,
       stunTimer: 0,
+      stunImmuneTimer: 0,
+      armorShredTimer: 0,
+      silenceTimer: 0,
+      thermalShockIcd: 0,
+      burnArmorMeltTimer: 0,
+      doorBatterTimer: 0,
+      stealthBurnTimer: 0,
+      firewallSlowTimer: 0,
+      opticalIlluminated: false,
       illuminated: false,
       verified: false,
       batteringDoorId: null,
@@ -1846,8 +2861,38 @@ export class PerimeterSimulation {
     }
   }
 
+  private triggerThermalShock(h: HostileEntity, creditTurret?: PlacedTurret): void {
+    const shockDmg = Math.max(18, Math.round(h.maxHp * 0.08));
+    h.hp -= shockDmg;
+    h.thermalShockIcd = 4.0;
+    h.napalmBurnTimer = 0;
+    h.cryoSlowTimer = 0;
+    h.cryoDeepFreeze = false;
+    if (h.hp <= 0 && creditTurret) {
+      creditTurret.kills += 1;
+    }
+    this.audioCb.onShatterCrunch(this.panFromVirtualX(h.pos.x));
+    this.spawnSparks(h.pos, 10, '#00F0FF');
+    this.spawnSparks(h.pos, 6, '#FFB000');
+    this.callouts.push({
+      pos: { x: h.pos.x, y: h.pos.y - 24 },
+      text: `⚡ THERMAL SHOCK -${shockDmg}`,
+      color: '#00F0FF',
+      life: 0.95,
+      maxLife: 0.95,
+    });
+  }
+
+  private computeSterilizeScrap(): number {
+    const mutMult = this.activeMutator === 'ACIDIC_SURGE' ? 2.0 : 1.0;
+    const decayedBase = 12 * mutMult * this.getWaveSalvageYieldMult();
+    // P0 #12 + Phase 2: THERMITE_CATALYST +12 flat sterilize Scrap EXEMPT from yield decay!
+    const thermFlat = this.getProtocolStacks('THERMITE_CATALYST') * 12 * mutMult;
+    return Math.max(6, decayedBase + thermFlat);
+  }
+
   private stepHazardsAndClouds(dt: number): void {
-    // Napalm Clouds: burn hostiles (bypassing armor!) AND burn away Acid Pools!
+    // 1. Expire Napalm Clouds and handle Acid Pool sterilization & Egg burning
     for (let i = this.napalmClouds.length - 1; i >= 0; i--) {
       const c = this.napalmClouds[i];
       c.remainingSec -= dt;
@@ -1856,64 +2901,14 @@ export class PerimeterSimulation {
         continue;
       }
 
-      const srcTurret = c.sourceTurretId
-        ? this.turrets.find((u) => u.id === c.sourceTurretId)
-        : undefined;
-
-      for (const h of this.hostiles) {
-        if (h.hp <= 0) continue;
-        if (Math.hypot(h.pos.x - c.pos.x, h.pos.y - c.pos.y) <= c.radius + h.radiusPx) {
-          const thermiteBonus =
-            c.isThermite && (h.kind === 'PRAETORIAN' || h.isBoss) ? 1.35 : 1.0;
-          h.hp -= c.dps * thermiteBonus * dt;
-          h.napalmBurnTimer = 0.65;
-          h.lastBurnTurretId = c.sourceTurretId;
-          if (h.hp <= 0 && srcTurret) {
-            srcTurret.kills += 1;
-          }
-          if (this.burnScreechCooldown <= 0 && h.hp > 0) {
-            this.burnScreechCooldown = 0.52 + Math.random() * 0.85;
-            this.audioCb.onAlienScreech(
-              'BURNING',
-              h.kind,
-              this.panFromVirtualX(h.pos.x),
-              this.distNormFromCore(h.pos)
-            );
-          }
-        }
-      }
-
-      // Napalm incinerates Queen Egg Sacs before they hatch!
-      for (let e = this.eggSacs.length - 1; e >= 0; e--) {
-        const sac = this.eggSacs[e];
-        if (Math.hypot(sac.pos.x - c.pos.x, sac.pos.y - c.pos.y) <= c.radius + 20) {
-          sac.hp -= c.dps * 1.6 * dt;
-          if (sac.hp <= 0) {
-            this.scrap += 12;
-            this.score += Math.round(90 * this.getActiveScoreMultiplier());
-            this.audioCb.onAcidSizzle(this.panFromVirtualX(sac.pos.x));
-            this.spawnSparks(sac.pos, 10, '#FFB000');
-            this.callouts.push({
-              pos: { x: sac.pos.x, y: sac.pos.y - 10 },
-              text: 'EGG INCINERATED +12S',
-              color: '#FFB000',
-              life: 1.2,
-              maxLife: 1.2,
-            });
-            this.eggSacs.splice(e, 1);
-          }
-        }
-      }
-
       // Burn away overlapping corrosive acid pools -> STERILIZED COMBO!
       for (let a = this.acidPools.length - 1; a >= 0; a--) {
         const pool = this.acidPools[a];
         if (Math.hypot(pool.pos.x - c.pos.x, pool.pos.y - c.pos.y) <= c.radius + pool.radius * 0.7) {
           pool.remainingSec -= dt * 4.2;
           if (pool.remainingSec <= 0) {
-            const baseScrap = 15 + this.getProtocolStacks('THERMITE_CATALYST') * 20;
-            const scrapGain = this.activeMutator === 'ACIDIC_SURGE' ? baseScrap * 2 : baseScrap;
-            this.scrap += scrapGain;
+            const rawScrap = this.computeSterilizeScrap();
+            const scrapGain = this.addSalvageScrap(rawScrap, true);
             this.score += Math.round(75 * this.getActiveScoreMultiplier());
             this.audioCb.onAcidSizzle(this.panFromVirtualX(pool.pos.x));
             this.spawnSparks(pool.pos, 10, '#FFB000');
@@ -1931,7 +2926,108 @@ export class PerimeterSimulation {
       }
     }
 
-    // Cryo Plumes: chill hostiles, expose Stalkers, cancel Crusher charges, and cool nearby turret barrels!
+    // 1B. Phase 1: Top-3 Diminishing Napalm Cloud Cap per Hostile (100% / 50% / 25% = 1.75x max!)
+    if (this.napalmClouds.length > 0) {
+      const weights = [1.0, 0.5, 0.25];
+      for (const h of this.hostiles) {
+        if (h.hp <= 0) continue;
+        let top0 = 0;
+        let top1 = 0;
+        let top2 = 0;
+        let topTurretId: string | undefined;
+        let hitThermite = false;
+        let hitFirewall = false;
+
+        for (const c of this.napalmClouds) {
+          if (Math.hypot(h.pos.x - c.pos.x, h.pos.y - c.pos.y) <= c.radius + h.radiusPx) {
+            const effDps = c.dps;
+            if (effDps > top0) {
+              top2 = top1;
+              top1 = top0;
+              top0 = effDps;
+              topTurretId = c.sourceTurretId;
+            } else if (effDps > top1) {
+              top2 = top1;
+              top1 = effDps;
+            } else if (effDps > top2) {
+              top2 = effDps;
+            }
+            if (c.isThermite) hitThermite = true;
+            if (c.isFirewall) hitFirewall = true;
+          }
+        }
+
+        if (top0 > 0) {
+          const totalDps = top0 * weights[0] + top1 * weights[1] + top2 * weights[2];
+          h.hp -= totalDps * dt;
+          h.napalmBurnTimer = 0.65;
+          h.lastBurnTurretId = topTurretId;
+          // Phase 1 Thermite -35% armor melt (4s) & Firewall -25% slow!
+          if (hitThermite) {
+            h.burnArmorMeltTimer = Math.max(h.burnArmorMeltTimer, 4.0);
+          }
+          if (hitFirewall) {
+            h.firewallSlowTimer = Math.max(h.firewallSlowTimer ?? 0, 0.65);
+          }
+          if (h.hp <= 0 && topTurretId) {
+            const srcTurret = this.turrets.find((u) => u.id === topTurretId);
+            if (srcTurret) srcTurret.kills += 1;
+          }
+          if (this.burnScreechCooldown <= 0 && h.hp > 0) {
+            this.burnScreechCooldown = 0.52 + Math.random() * 0.85;
+            this.audioCb.onAlienScreech(
+              'BURNING',
+              h.kind,
+              this.panFromVirtualX(h.pos.x),
+              this.distNormFromCore(h.pos)
+            );
+          }
+        }
+      }
+
+      // 1C. Napalm vs Queen Egg Sacs (50% Napalm resistance + top-3 cloud cap!)
+      for (let e = this.eggSacs.length - 1; e >= 0; e--) {
+        const sac = this.eggSacs[e];
+        let top0 = 0;
+        let top1 = 0;
+        let top2 = 0;
+        for (const c of this.napalmClouds) {
+          if (Math.hypot(sac.pos.x - c.pos.x, sac.pos.y - c.pos.y) <= c.radius + 20) {
+            if (c.dps > top0) {
+              top2 = top1;
+              top1 = top0;
+              top0 = c.dps;
+            } else if (c.dps > top1) {
+              top2 = top1;
+              top1 = c.dps;
+            } else if (c.dps > top2) {
+              top2 = c.dps;
+            }
+          }
+        }
+        if (top0 > 0) {
+          const effEggDps = (top0 + 0.5 * top1 + 0.25 * top2) * 0.5; // 50% Napalm resist!
+          sac.hp -= effEggDps * dt;
+          if (sac.hp <= 0) {
+            const gain = this.addSalvageScrap(12, true);
+            this.score += Math.round(90 * this.getActiveScoreMultiplier());
+            this.audioCb.onAcidSizzle(this.panFromVirtualX(sac.pos.x));
+            this.spawnSparks(sac.pos, 10, '#FFB000');
+            this.callouts.push({
+              pos: { x: sac.pos.x, y: sac.pos.y - 10 },
+              text: `EGG INCINERATED +${gain}S`,
+              color: '#FFB000',
+              life: 1.2,
+              maxLife: 1.2,
+            });
+            this.eggSacs.splice(e, 1);
+          }
+        }
+      }
+    }
+
+    // 2. Cryo Plumes: LOS-enforced chill, CRYO COOLER 320px aura (-20% heat / +15% ROF), Thermal Shock!
+    this.cryoCoolerBuffedTurretIds.clear();
     for (let i = this.cryoPlumes.length - 1; i >= 0; i--) {
       const p = this.cryoPlumes[i];
       p.remainingSec -= dt;
@@ -1941,30 +3037,42 @@ export class PerimeterSimulation {
       }
 
       for (const h of this.hostiles) {
-        if (Math.hypot(h.pos.x - p.pos.x, h.pos.y - p.pos.y) <= p.radius + h.radiusPx) {
+        if (h.hp <= 0) continue;
+        if (
+          Math.hypot(h.pos.x - p.pos.x, h.pos.y - p.pos.y) <= p.radius + h.radiusPx &&
+          this.hasLineOfSight(p.pos, h.pos)
+        ) {
+          // Phase 2 THERMAL_SHOCK Omega Directive: Cryo hitting Burning foe -> 8% max-HP detonation!
+          if (this.hasOmega('THERMAL_SHOCK') && h.napalmBurnTimer > 0 && h.thermalShockIcd <= 0) {
+            this.triggerThermalShock(h);
+            continue;
+          }
           h.cryoSlowTimer = Math.max(h.cryoSlowTimer, p.isDeepFreeze ? 2.1 : 1.35);
           if (p.isDeepFreeze) h.cryoDeepFreeze = true;
-          if (h.chargeActiveTimer > 0 || h.chargeTelegraphTimer > 0) {
-            h.chargeActiveTimer = 0;
-            h.chargeTelegraphTimer = 0;
-            h.stunTimer = Math.max(h.stunTimer, 0.7);
-          }
+          // Phase 1: Cryo no longer hard-cancels Crusher charges (slows active charge 30% in stepHostiles!)
         }
       }
 
-      const coolRad = p.radius + (p.isCooler ? 110 : 45);
-      const coolMult = p.isCooler ? 46 : 24;
+      // P0 #12 + Phase 1: CRYO COOLER true 320px (2x) cooling radius + -20% heat/shot & +15% ROF!
+      const coolRad = p.isCooler ? 320 : p.radius + 45;
+      const coolMult = p.isCooler ? 48 : 24;
       for (const t of this.turrets) {
-        if (Math.hypot(t.pos.x - p.pos.x, t.pos.y - p.pos.y) <= coolRad) {
+        if (
+          Math.hypot(t.pos.x - p.pos.x, t.pos.y - p.pos.y) <= coolRad &&
+          this.hasLineOfSight(p.pos, t.pos)
+        ) {
           t.heat = Math.max(0, t.heat - coolMult * dt);
           if (t.thermalLocked && t.heat <= 32) {
             t.thermalLocked = false;
+          }
+          if (p.isCooler) {
+            this.cryoCoolerBuffedTurretIds.add(t.id);
           }
         }
       }
     }
 
-    // Corrosive Acid Pools: eat welded Blast Doors and damage M314 Laser Tripwires!
+    // 3. Corrosive Acid Pools: eat welded Blast Doors, damage Tripwires, AND debuff turrets within 60px!
     for (let i = this.acidPools.length - 1; i >= 0; i--) {
       const pool = this.acidPools[i];
       pool.remainingSec -= dt;
@@ -1977,20 +3085,24 @@ export class PerimeterSimulation {
         if (!ds.welded || ds.hp <= 0) continue;
         const d = Math.hypot(ds.def.center.x - pool.pos.x, ds.def.center.y - pool.pos.y);
         if (d <= pool.radius + 42) {
-          ds.hp -= 38 * dt;
           ds.acidCorrodingTimer = 0.35;
           const prevWarn = this.warnedAcidDoorIds.get(ds.def.id) ?? 0;
           if (prevWarn <= 0) {
             this.warnedAcidDoorIds.set(ds.def.id, 5.0);
             this.pushLog(`ACID CORROSION ON BULKHEAD DOOR ${ds.def.id}!`);
           }
-          if (ds.hp <= 0) {
-            this.breachWeldedDoor(ds, 'CORRODED BY MOLECULAR ACID');
-          }
+          this.applyDoorDamage(ds, 38 * dt, 'CORRODED BY MOLECULAR ACID');
         }
       }
 
       for (const t of this.turrets) {
+        // Phase 1 Burster Acid Pool counterplay: pools within 60px debuff turrets (+25% CD, +8 heat/s)
+        if (Math.hypot(t.pos.x - pool.pos.x, t.pos.y - pool.pos.y) <= 60) {
+          t.acidDebuffTimer = Math.max(t.acidDebuffTimer, 0.35);
+          if (t.kind === 'SENTRY_PULSE' || t.kind === 'RAIL_LANCE' || t.kind === 'INCINERATOR') {
+            t.heat = Math.min(98, t.heat + 8 * dt);
+          }
+        }
         if (t.kind === 'MOTION_RELAY' && t.tripwireStart && t.tripwireEnd) {
           const midX = (t.tripwireStart.x + t.tripwireEnd.x) * 0.5;
           const midY = (t.tripwireStart.y + t.tripwireEnd.y) * 0.5;
@@ -2012,7 +3124,12 @@ export class PerimeterSimulation {
   }
 
   private stepClaymoresAndEggSacs(dt: number): void {
-    // 1. Proximity Claymores: arm in 0.6s, detonate when any hostile steps within trigger radius!
+    const waveMineDmg =
+      PERIMETER_CONSTANTS.CLAYMORE_DAMAGE *
+      (1 + (this.waveNumber - 1) * 0.14) *
+      (this.hasOmega('BREACH_SAPPER') ? 1.5 : 1.0);
+
+    // 1. Proximity Claymores
     for (let i = this.claymores.length - 1; i >= 0; i--) {
       const m = this.claymores[i];
       if (m.armTimer > 0) {
@@ -2039,29 +3156,52 @@ export class PerimeterSimulation {
         const d = Math.hypot(h.pos.x - m.pos.x, h.pos.y - m.pos.y);
         if (d <= PERIMETER_CONSTANTS.CLAYMORE_BLAST_RADIUS_PX + h.radiusPx) {
           const falloff = 1 - Math.max(0, d / (PERIMETER_CONSTANTS.CLAYMORE_BLAST_RADIUS_PX * 1.4));
-          h.hp -= PERIMETER_CONSTANTS.CLAYMORE_DAMAGE * Math.max(0.45, falloff);
-          h.stunTimer = Math.max(h.stunTimer, h.isBoss ? 0.45 : 1.15);
+          h.hp -= waveMineDmg * Math.max(0.45, falloff);
+          this.applyHostileStun(h, h.isBoss ? 0.42 : 0.95);
           h.chargeActiveTimer = 0;
           hits++;
         }
       }
-      // Blast vaporizes nearby acid pools & Queen egg sacs!
-      this.acidPools = this.acidPools.filter(
-        (p) => Math.hypot(p.pos.x - m.pos.x, p.pos.y - m.pos.y) > PERIMETER_CONSTANTS.CLAYMORE_BLAST_RADIUS_PX
-      );
-      this.eggSacs = this.eggSacs.filter(
-        (s) => Math.hypot(s.pos.x - m.pos.x, s.pos.y - m.pos.y) > PERIMETER_CONSTANTS.CLAYMORE_BLAST_RADIUS_PX
-      );
+
+      // Phase 1: Claymore grants 50% sterilize Scrap & 50% egg Scrap when clearing acid pools & eggs!
+      let bonusScrap = 0;
+      for (let a = this.acidPools.length - 1; a >= 0; a--) {
+        const p = this.acidPools[a];
+        if (Math.hypot(p.pos.x - m.pos.x, p.pos.y - m.pos.y) <= PERIMETER_CONSTANTS.CLAYMORE_BLAST_RADIUS_PX) {
+          this.acidPools.splice(a, 1);
+          bonusScrap += this.addSalvageScrap(this.computeSterilizeScrap() * 0.5, true);
+        }
+      }
+      for (let e = this.eggSacs.length - 1; e >= 0; e--) {
+        const s = this.eggSacs[e];
+        if (Math.hypot(s.pos.x - m.pos.x, s.pos.y - m.pos.y) <= PERIMETER_CONSTANTS.CLAYMORE_BLAST_RADIUS_PX) {
+          this.eggSacs.splice(e, 1);
+          bonusScrap += this.addSalvageScrap(6, true);
+        }
+      }
+
+      // Phase 2 BREACH_SAPPER Omega: mines leave 4.0s Napalm cloud on detonation!
+      if (this.hasOmega('BREACH_SAPPER')) {
+        const thermProto = 1 + this.getProtocolStacks('THERMITE_CATALYST') * 0.25;
+        this.napalmClouds.push({
+          pos: { ...m.pos },
+          radius: 92,
+          remainingSec: 4.0,
+          maxSec: 4.0,
+          dps: 76 * thermProto,
+        });
+      }
+
       this.callouts.push({
         pos: { x: m.pos.x, y: m.pos.y - 16 },
-        text: `CLAYMORE BLAST ×${hits}`,
+        text: bonusScrap > 0 ? `CLAYMORE ×${hits} (+${bonusScrap}S)` : `CLAYMORE BLAST ×${hits}`,
         color: '#FFB000',
         life: 1.4,
         maxLife: 1.4,
       });
     }
 
-    // 2. Queen Egg Sacs: hatch into 3 Skitterers after 5.5s unless destroyed!
+    // 2. Queen Egg Sacs: hatch into 3 Skitterers after timer expires unless destroyed
     for (let i = this.eggSacs.length - 1; i >= 0; i--) {
       const sac = this.eggSacs[i];
       sac.hatchTimer -= dt;
@@ -2088,6 +3228,8 @@ export class PerimeterSimulation {
 
       const distTarget = Math.hypot(sp.targetPos.x - sp.pos.x, sp.targetPos.y - sp.pos.y);
       if (sp.life <= 0 || distTarget <= 18) {
+        const ownerId = this.acidSpitOwners.get(sp.id);
+        this.acidSpitOwners.delete(sp.id);
         this.acidSpits.splice(i, 1);
         const pan = this.panFromVirtualX(sp.pos.x);
         this.audioCb.onAcidSizzle(pan);
@@ -2096,11 +3238,39 @@ export class PerimeterSimulation {
         if (sp.targetDoorId) {
           const ds = this.doors.get(sp.targetDoorId);
           if (ds && ds.welded) {
-            ds.hp -= 55;
-            ds.acidCorrodingTimer = 1.2;
-            if (ds.hp <= 0) {
-              this.breachWeldedDoor(ds, 'CORRODED BY SPITTER ACID');
+            const armorStacks = this.getProtocolStacks('BULKHEAD_ARMOR');
+            const baseSpitDmg = 55;
+            // Phase 2 BULKHEAD_ARMOR: 50% Spitter acid reflect back onto the attacking Spitter!
+            if (armorStacks > 0) {
+              const reflectDmg = Math.round(baseSpitDmg * 0.5 * armorStacks);
+              const attacker =
+                (ownerId !== undefined ? this.hostiles.find((h) => h.id === ownerId && h.hp > 0) : undefined) ??
+                this.hostiles.find(
+                  (h) =>
+                    h.kind === 'SPITTER' &&
+                    h.hp > 0 &&
+                    Math.hypot(h.pos.x - ds.def.center.x, h.pos.y - ds.def.center.y) <= 360
+                );
+              if (attacker) {
+                attacker.hp -= reflectDmg;
+                this.shockArcs.push({
+                  points: [{ ...ds.def.center }, { ...attacker.pos }],
+                  life: 0.24,
+                  maxLife: 0.24,
+                });
+                this.spawnSparks(attacker.pos, 8, '#00F0FF');
+                this.callouts.push({
+                  pos: { x: attacker.pos.x, y: attacker.pos.y - 20 },
+                  text: `⚡ ACID REFLECT -${reflectDmg}`,
+                  color: '#00F0FF',
+                  life: 0.95,
+                  maxLife: 0.95,
+                });
+              }
             }
+            const effectiveDmg = armorStacks > 0 ? Math.round(baseSpitDmg * (1 - 0.25 * armorStacks)) : baseSpitDmg;
+            ds.acidCorrodingTimer = 1.2;
+            this.applyDoorDamage(ds, effectiveDmg, 'CORRODED BY SPITTER ACID');
           }
         } else if (sp.targetTurretId) {
           const tur = this.turrets.find((t) => t.id === sp.targetTurretId);
@@ -2130,7 +3300,10 @@ export class PerimeterSimulation {
   private breachWeldedDoor(ds: BlastDoorState, cause: string): void {
     ds.welded = false;
     ds.hp = 0;
-    this.pathfinder.recompute(this.blueprint, this.doors);
+    // P0 #1: Clear weldingTimer so a destroyed door can NEVER resurrect on top of breachers!
+    ds.weldingTimer = 0;
+    ds.lastPathHpBand = 4;
+    this.recomputePathfinder(this.phase === 'WAVE_ACTIVE');
     this.audioCb.onSyncGlitch(0.55);
     this.audioCb.onDoorBatter(this.panFromVirtualX(ds.def.center.x));
     this.spawnSparks(ds.def.center, 20, '#FF3318');
@@ -2145,26 +3318,30 @@ export class PerimeterSimulation {
   }
 
   /**
-   * Returns true if a grid cell blocks turret line-of-sight (solid bulkheads,
-   * outer air shafts, or currently welded blast doors).
+   * P0 #2 & #10: Opaque check for line-of-sight.
+   * Solid bulkheads, air shafts, Reactor CORE, and welded blast doors (except optional `ignoreDoorId`)
+   * all block line-of-sight!
    */
-  public isCellOpaque(col: number, row: number): boolean {
+  public isCellOpaque(col: number, row: number, ignoreDoorId?: string): boolean {
     if (col < 0 || col >= this.blueprint.cols || row < 0 || row >= this.blueprint.rows) {
       return true;
     }
     const kind = this.blueprint.tiles[row][col];
-    if (!FlowFieldPathfinder.isWalkableKind(kind)) {
+    if (kind === 'CORE' || !FlowFieldPathfinder.isWalkableKind(kind)) {
       return true;
     }
     const weldedDoor = this.pathfinder.getWeldedDoorAtCell(this.doors, col, row);
-    return weldedDoor !== null;
+    if (weldedDoor !== null && weldedDoor.def.id !== ignoreDoorId) {
+      return true;
+    }
+    return false;
   }
 
   /**
    * High-precision line-of-sight check between two points in blueprint space.
-   * Prevents turrets from sensing or firing through solid bulkheads or sealed blast doors.
+   * Pass `ignoreDoorId` when checking LOS to a welded Blast Door itself (e.g., Spitter acid spit!).
    */
-  public hasLineOfSight(from: Vec2, to: Vec2): boolean {
+  public hasLineOfSight(from: Vec2, to: Vec2, ignoreDoorId?: string): boolean {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const dist = Math.hypot(dx, dy);
@@ -2183,17 +3360,13 @@ export class PerimeterSimulation {
       const c = Math.floor(px / ts);
       const r = Math.floor(py / ts);
       if (c === startCol && r === startRow) continue;
-      if (this.isCellOpaque(c, r)) {
+      if (this.isCellOpaque(c, r, ignoreDoorId)) {
         return false;
       }
     }
     return true;
   }
 
-  /**
-   * Casts a sightline ray from `origin` along `angle` up to `maxDist`,
-   * terminating precisely where it intersects a bulkhead wall or welded blast door.
-   */
   public castSightRay(origin: Vec2, angle: number, maxDist: number): Vec2 {
     const ts = this.blueprint.tileSize;
     const ux = Math.cos(angle);
@@ -2209,7 +3382,6 @@ export class PerimeterSimulation {
       const c = Math.floor(px / ts);
       const r = Math.floor(py / ts);
       if (!(c === startCol && r === startRow) && this.isCellOpaque(c, r)) {
-        // Binary refine edge to crisp wall face
         let lo = d - stepPx;
         let hi = d;
         for (let k = 0; k < 4; k++) {
@@ -2230,22 +3402,25 @@ export class PerimeterSimulation {
     return { x: lastX, y: lastY };
   }
 
-  /**
-   * Computes Darkness Illumination vs. Short Unlit IR Detection for every hostile BEFORE turrets fire!
-   * - Illuminated targets (Flare, M314 Relay sweep, Tripwire, Cryo, Napalm, Core Light): 100% range +20% crit!
-   * - Unlit dark targets: only detectable at 55% range inside turret IR cone (with 20% dark scatter miss chance).
-   * - STALKERs: completely invisible in darkness — MUST be illuminated!
-   */
   private updateHostileVerification(dt: number): void {
     const inBlackout = this.blackoutTimer > 0;
+    this.relayFloodHostileIds.clear();
 
-    // 1. Check Laser Tripwire crossings on powered M314 Relays (paused during Blackout)
+    // 1. Check Laser Tripwire crossings on powered, unjammed, spun-up M314 Relays
     for (const t of this.turrets) {
       if (t.kind !== 'MOTION_RELAY') continue;
       if (t.tripwireIntegrity < 100) {
         t.tripwireIntegrity = Math.min(100, t.tripwireIntegrity + 12 * dt);
       }
-      if (inBlackout || !t.powered || t.tripwireIntegrity < 20 || !t.tripwireStart || !t.tripwireEnd) {
+      if (
+        inBlackout ||
+        !t.powered ||
+        t.powerUpTimer > 0 ||
+        t.jammedTimer > 0 ||
+        t.tripwireIntegrity < 20 ||
+        !t.tripwireStart ||
+        !t.tripwireEnd
+      ) {
         continue;
       }
 
@@ -2259,7 +3434,13 @@ export class PerimeterSimulation {
       }
     }
 
-    // 2. Evaluate illumination & verification per hostile
+    // 2. Evaluate timers, optical illumination, Cryo/Napalm visibility & Stalker stealth per hostile
+    const coreLitRad =
+      this.activeMutator === 'GRID_BROWNOUT'
+        ? PERIMETER_CONSTANTS.CORE_LIT_RADIUS * 0.52
+        : PERIMETER_CONSTANTS.CORE_LIT_RADIUS;
+    const mapFloodLit = this.floodlightTimer > 0 && !inBlackout;
+
     for (const h of this.hostiles) {
       if (h.blipTimer > 0) {
         h.blipTimer = Math.max(0, h.blipTimer - dt);
@@ -2274,55 +3455,75 @@ export class PerimeterSimulation {
       if (h.cryoSlowTimer > 0) h.cryoSlowTimer = Math.max(0, h.cryoSlowTimer - dt);
       if (h.napalmBurnTimer > 0) h.napalmBurnTimer = Math.max(0, h.napalmBurnTimer - dt);
       if (h.stunTimer > 0) h.stunTimer = Math.max(0, h.stunTimer - dt);
+      if (h.stunImmuneTimer && h.stunImmuneTimer > 0) {
+        h.stunImmuneTimer = Math.max(0, h.stunImmuneTimer - dt);
+      }
+      if (h.armorShredTimer > 0) h.armorShredTimer = Math.max(0, h.armorShredTimer - dt);
+      if (h.silenceTimer > 0) h.silenceTimer = Math.max(0, h.silenceTimer - dt);
+      if (h.thermalShockIcd > 0) h.thermalShockIcd = Math.max(0, h.thermalShockIcd - dt);
+      if (h.burnArmorMeltTimer > 0) h.burnArmorMeltTimer = Math.max(0, h.burnArmorMeltTimer - dt);
+      if (h.stealthBurnTimer && h.stealthBurnTimer > 0) {
+        h.stealthBurnTimer = Math.max(0, h.stealthBurnTimer - dt);
+      }
+      if (h.firewallSlowTimer && h.firewallSlowTimer > 0) {
+        h.firewallSlowTimer = Math.max(0, h.firewallSlowTimer - dt);
+      }
 
       const inFlare = this.flares.some(
         (f) => Math.hypot(h.pos.x - f.pos.x, h.pos.y - f.pos.y) <= f.radius + h.radiusPx
       );
+      // Phase 1 M314 FLOODLIGHT: 280px optical halo, IMMUNE to Screamer jam, burns Stalker stealth 6s!
       const inRelayFlood =
         !inBlackout &&
         this.turrets.some(
           (t) =>
             t.kind === 'MOTION_RELAY' &&
             t.powered &&
+            t.powerUpTimer <= 0 &&
             t.level === 3 &&
             t.mk3Branch === 'A' &&
-            t.jammedTimer <= 0 &&
-            Math.hypot(h.pos.x - t.pos.x, h.pos.y - t.pos.y) <= 240 + h.radiusPx
+            Math.hypot(h.pos.x - t.pos.x, h.pos.y - t.pos.y) <= 280 + h.radiusPx
         );
-      const coreLitRad =
-        this.activeMutator === 'GRID_BROWNOUT'
-          ? PERIMETER_CONSTANTS.CORE_LIT_RADIUS * 0.52
-          : PERIMETER_CONSTANTS.CORE_LIT_RADIUS;
+      if (inRelayFlood) {
+        this.relayFloodHostileIds.add(h.id);
+        if (h.kind === 'STALKER') {
+          h.stealthBurnTimer = Math.max(h.stealthBurnTimer ?? 0, 6.0);
+        }
+      }
       const inCoreLight =
         !inBlackout &&
         Math.hypot(
           h.pos.x - this.blueprint.coreCenter.x,
           h.pos.y - this.blueprint.coreCenter.y
         ) <= coreLitRad;
-      const mapFloodLit = this.floodlightTimer > 0 && !inBlackout;
-      const hasSensorReveal =
+
+      // Optical / Sensor reveal (M314, Flare, Floodlight, Tripwire, Shock[sets tripwireTagTimer], Core)
+      const opticalReveal =
         inFlare ||
         mapFloodLit ||
         inRelayFlood ||
         h.tripwireTagTimer > 0 ||
-        h.cryoSlowTimer > 0 ||
-        h.m314SweepTimer > 0;
-      const illuminated = hasSensorReveal || inCoreLight || h.napalmBurnTimer > 0;
-      h.illuminated = illuminated;
+        h.m314SweepTimer > 0 ||
+        inCoreLight ||
+        (h.stealthBurnTimer ?? 0) > 0;
+
+      h.opticalIlluminated = opticalReveal;
+      // Phase 1: Napalm reveals visibility WITHOUT granting full lit crit; Cryo does not grant lit crit either!
+      h.illuminated = opticalReveal;
 
       if (h.kind === 'STALKER') {
-        // Optical/IR stealth: completely invisible to unlit turret IR cones unless illuminated!
-        h.verified = illuminated;
-      } else if (illuminated) {
+        // Phase 1 Stalker: optical/sensor reveal = full lock; Cryo/Napalm-only = targetable with 50% evasion!
+        h.verified = opticalReveal || h.cryoSlowTimer > 0 || h.napalmBurnTimer > 0;
+      } else if (opticalReveal || h.napalmBurnTimer > 0 || h.cryoSlowTimer > 0) {
         h.verified = true;
       } else if (inBlackout) {
         h.verified = false;
       } else {
-        // Unlit dark corridor: short-range 55% passive IR pickup inside a powered turret's cone only!
         let inShortDarkCone = false;
         for (const t of this.turrets) {
           if (
             !t.powered ||
+            t.powerUpTimer > 0 ||
             t.rearmTimer > 0 ||
             (t.kind !== 'SENTRY_PULSE' && t.kind !== 'INCINERATOR' && t.kind !== 'RAIL_LANCE')
           ) {
@@ -2351,23 +3552,104 @@ export class PerimeterSimulation {
     }
   }
 
+  private isTurretOpticallyProtected(t: PlacedTurret, inBlackout: boolean): boolean {
+    if (!inBlackout && this.floodlightTimer > 0) return true;
+    if (this.flares.some((f) => Math.hypot(t.pos.x - f.pos.x, t.pos.y - f.pos.y) <= f.radius)) {
+      return true;
+    }
+    if (
+      !inBlackout &&
+      this.turrets.some(
+        (r) =>
+          r.kind === 'MOTION_RELAY' &&
+          r.powered &&
+          r.powerUpTimer <= 0 &&
+          r.level === 3 &&
+          r.mk3Branch === 'A' &&
+          Math.hypot(t.pos.x - r.pos.x, t.pos.y - r.pos.y) <= 280
+      )
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Computes Phase 2 Shared Additive Combat Card Bucket for a shot against `target`:
+   * `1 + duDmg + litCritBonuses + shatterBonuses`
+   */
+  private computeAdditiveCombatBucket(
+    t: PlacedTurret,
+    target: HostileEntity,
+    includeDu: boolean
+  ): { mult: number; triggeredShatter: boolean; shatterBonus: number } {
+    let bucket = 1.0;
+
+    if (includeDu) {
+      bucket += this.getProtocolStacks('DU_ROUNDS') * 0.15;
+    }
+
+    if (target.illuminated) {
+      bucket += PERIMETER_CONSTANTS.ILLUMINATED_CRIT_MULT - 1.0; // +0.20 base lit crit
+      bucket += this.getProtocolStacks('OPTICS_GAIN') * 0.15;
+      if (t.relayMatrixBoosted) bucket += 0.32;
+      if (this.relayFloodHostileIds.has(target.id)) bucket += 0.15;
+      if (this.floodlightTimer > 0 && this.blackoutTimer <= 0) bucket += 0.25;
+    }
+
+    let triggeredShatter = false;
+    let shatterBonus = 0;
+    if (
+      target.cryoSlowTimer > 0 &&
+      (target.kind === 'PRAETORIAN' || target.kind === 'BURSTER' || target.isBoss)
+    ) {
+      triggeredShatter = true;
+      shatterBonus =
+        (target.cryoDeepFreeze ? 0.55 : 0.35) + this.getProtocolStacks('CRYO_SHATTER') * 0.2;
+      bucket += shatterBonus;
+    }
+
+    return { mult: bucket, triggeredShatter, shatterBonus };
+  }
+
   private stepTurrets(dt: number): void {
     this.updateHostileVerification(dt);
     const inBlackout = this.blackoutTimer > 0;
+    const volatileOverpressure = this.hasOmega('VOLATILE_OVERPRESSURE');
+    const nightHunter = this.hasOmega('NIGHT_HUNTER_OPTICS');
+    const overdriveStacks = this.getEndgameStacks('REACTOR_OVERDRIVE');
+    const globalDmgMult = 1 + overdriveStacks * 0.05;
+    const autoStacks = this.getProtocolStacks('AUTOLOADER');
+
+    let relayLinkDirty = false;
 
     for (const t of this.turrets) {
       if (t.firingFlashTimer > 0) t.firingFlashTimer = Math.max(0, t.firingFlashTimer - dt);
       if (t.dryFireTimer > 0) t.dryFireTimer = Math.max(0, t.dryFireTimer - dt);
       if (t.overclockTimer > 0) t.overclockTimer = Math.max(0, t.overclockTimer - dt);
-      if (t.fireCooldown > 0) t.fireCooldown = Math.max(0, t.fireCooldown - dt);
+      // P0 #8: True 60Hz fireCooldown carry-over (clamp idle floor to -dt, never 0 before firing!)
+      t.fireCooldown = Math.max(-dt, t.fireCooldown - dt);
       if (t.acidDebuffTimer > 0) t.acidDebuffTimer = Math.max(0, t.acidDebuffTimer - dt);
-      if (t.jammedTimer > 0) t.jammedTimer = Math.max(0, t.jammedTimer - dt);
+      if (t.jammedTimer > 0) {
+        t.jammedTimer = Math.max(0, t.jammedTimer - dt);
+        if (t.jammedTimer <= 0 && t.kind === 'MOTION_RELAY') {
+          relayLinkDirty = true;
+        }
+      }
+      if (t.powerUpTimer > 0 && t.powered && !inBlackout) {
+        t.powerUpTimer = Math.max(0, t.powerUpTimer - dt);
+        if (t.powerUpTimer <= 0 && t.kind === 'MOTION_RELAY') {
+          relayLinkDirty = true;
+        }
+      }
 
       const isOverclocked = t.overclockTimer > 0 && !inBlackout;
+      const isCryoCooled = this.cryoCoolerBuffedTurretIds.has(t.id);
+      const mk4DmgMult = 1 + (t.mk4Level ?? 0) * PERIMETER_CONSTANTS.MK4_DMG_PER_LEVEL;
 
       // Passive barrel cooling
       const coolRate = t.level >= 2 ? 16.0 : 11.5;
-      if (t.firingFlashTimer <= 0.01) {
+      if (t.firingFlashTimer <= 0.015) {
         t.heat = Math.max(0, t.heat - coolRate * dt);
       } else {
         t.heat = Math.max(0, t.heat - coolRate * 0.25 * dt);
@@ -2377,7 +3659,7 @@ export class PerimeterSimulation {
         this.pushLog(`${t.callsign} BARREL COOLED // TARGET LOCK RESTORED`, false);
       }
 
-      // Tick Mid-Wave Automated Belt-Loader Reload Sequence (offline while reloading!)
+      // Tick Mid-Wave Automated Belt-Loader Reload Sequence
       if (t.rearmTimer > 0) {
         t.rearmTimer = Math.max(0, t.rearmTimer - dt);
         if (t.rearmTimer <= 0) {
@@ -2395,10 +3677,27 @@ export class PerimeterSimulation {
           });
           this.pushLog(`${t.callsign} DRUM LOADED [${t.maxAmmo} RDS] — WEAPON HOT`);
         }
+        if (t.fireCooldown < 0) t.fireCooldown = 0;
         continue;
       }
 
-      if (!t.powered || inBlackout) continue;
+      // Phase 2 AUTOLOADER: Auto-rearms empty Sentries automatically!
+      if (
+        t.kind === 'SENTRY_PULSE' &&
+        t.powered &&
+        !inBlackout &&
+        t.ammo <= 0 &&
+        autoStacks > 0 &&
+        this.scrap >= this.getRearmCostFor(t)
+      ) {
+        this.rearmTurret(t.id);
+        continue;
+      }
+
+      if (!t.powered || inBlackout || t.powerUpTimer > 0) {
+        if (t.fireCooldown < 0) t.fireCooldown = 0;
+        continue;
+      }
 
       // Mechanical Servo Rotation toward targetAngle
       const diff = this.normalizeAngle(t.targetAngle - t.angle);
@@ -2412,14 +3711,17 @@ export class PerimeterSimulation {
       }
 
       const spec = HARDWARE_SPECS[t.kind];
+      const omegaRofMult = volatileOverpressure ? 1.3 : 1.0;
 
-      // 1. M314 Motion Relay Periodic Pulse Sweep (paused briefly when Screamer-jammed!)
+      // 1. M314 Motion Relay Periodic Pulse Sweep
       if (t.kind === 'MOTION_RELAY') {
         if (t.jammedTimer > 0) continue;
-        t.pulseTimer -= dt * (isOverclocked ? 1.65 : 1.0);
+        t.pulseTimer -= dt * (isOverclocked ? 1.65 : 1.0) * omegaRofMult;
         if (t.pulseTimer <= 0) {
           t.pulseTimer = t.level === 3 ? 1.25 : 1.55;
-          const maxR = spec.rangePx * (t.level >= 2 ? 1.2 : 1.0);
+          // Base 390px -> MK-II ~430px (1.1025x)
+          const levelRangeMult = t.level >= 2 ? 1.105 : 1.0;
+          const maxR = spec.rangePx * levelRangeMult * mk4DmgMult;
           this.motionWaves.push({
             origin: { ...t.pos },
             radius: 10,
@@ -2432,22 +3734,27 @@ export class PerimeterSimulation {
         continue;
       }
 
-      // 2. Cryo-Stasis Vent Valve Periodic LN2 Plume
+      // 2. Cryo-Stasis Vent Valve Periodic LN2 Plume (Spitter acid halves plume rate!)
       if (t.kind === 'CRYO_VALVE') {
-        t.pulseTimer -= dt * (isOverclocked ? 1.7 : 1.0);
+        const acidPlumeRateMult = t.acidDebuffTimer > 0 ? 0.5 : 1.0;
+        t.pulseTimer -= dt * (isOverclocked ? 1.7 : 1.0) * omegaRofMult * acidPlumeRateMult;
         if (t.pulseTimer <= 0) {
-          const protoRad = 1 + this.getProtocolStacks('CRYO_SHATTER') * 0.2;
+          // Phase 2 CRYO_SHATTER: +15% LOS-bound Cryo & Shock radius per stack
+          const protoRad = 1 + this.getProtocolStacks('CRYO_SHATTER') * 0.15;
           const isCooler = t.level === 3 && t.mk3Branch === 'B';
           const isDeepFreeze = t.level === 3 && t.mk3Branch === 'A';
           const rPx = spec.rangePx * (t.level >= 2 ? 1.22 : 1.0) * protoRad;
           const hostileNear = this.hostiles.some(
-            (h) => Math.hypot(h.pos.x - t.pos.x, h.pos.y - t.pos.y) <= rPx + 48
+            (h) =>
+              Math.hypot(h.pos.x - t.pos.x, h.pos.y - t.pos.y) <= rPx + 48 &&
+              this.hasLineOfSight(t.pos, h.pos)
           );
+          const coolCheckRad = isCooler ? 320 : rPx + 45;
           const hotTurretNear = this.turrets.some(
             (u) =>
               u.id !== t.id &&
-              u.heat > 30 &&
-              Math.hypot(u.pos.x - t.pos.x, u.pos.y - t.pos.y) <= rPx + (isCooler ? 110 : 45)
+              u.heat > 24 &&
+              Math.hypot(u.pos.x - t.pos.x, u.pos.y - t.pos.y) <= coolCheckRad
           );
           if (hostileNear || hotTurretNear || this.phase === 'WAVE_ACTIVE') {
             t.pulseTimer = isCooler ? 2.1 : 2.75;
@@ -2469,14 +3776,20 @@ export class PerimeterSimulation {
         continue;
       }
 
-      // 2B. Arc-Shock Coil (Floor Grate Alternative: Chain-Stuns Skitterers & Decloaks Stalkers!)
+      // 2B. Arc-Shock Coil (LOS-bound, wave scaling, TESLA %HP shock, EMP 1.2s stun + armor shred + 4s silence!)
       if (t.kind === 'SHOCK_COIL') {
-        t.pulseTimer -= dt * (isOverclocked ? 1.75 : 1.0) * (t.acidDebuffTimer > 0 ? 0.65 : 1.0);
+        t.pulseTimer -=
+          dt * (isOverclocked ? 1.75 : 1.0) * omegaRofMult * (t.acidDebuffTimer > 0 ? 0.65 : 1.0);
         if (t.pulseTimer <= 0) {
-          const protoRad = 1 + this.getProtocolStacks('CRYO_SHATTER') * 0.2;
+          const protoRad = 1 + this.getProtocolStacks('CRYO_SHATTER') * 0.15;
           const rPx = spec.rangePx * (t.level >= 2 ? 1.18 : 1.0) * protoRad;
           const inRange = this.hostiles
-            .filter((h) => h.hp > 0 && Math.hypot(h.pos.x - t.pos.x, h.pos.y - t.pos.y) <= rPx + h.radiusPx)
+            .filter(
+              (h) =>
+                h.hp > 0 &&
+                Math.hypot(h.pos.x - t.pos.x, h.pos.y - t.pos.y) <= rPx + h.radiusPx &&
+                this.hasLineOfSight(t.pos, h.pos)
+            )
             .sort(
               (a, b) =>
                 Math.hypot(a.pos.x - t.pos.x, a.pos.y - t.pos.y) -
@@ -2489,25 +3802,50 @@ export class PerimeterSimulation {
             t.firingFlashTimer = 0.25;
             const maxChains = isTesla ? 7 : t.level >= 2 ? 5 : 4;
             const targets = inRange.slice(0, maxChains);
-            const baseDmg = (t.level >= 2 ? 58 : 42) * (isTesla ? 1.35 : 1.0);
+
+            // Phase 1 Shock Coil scaling: +12%/wave + CAPACITOR_DRIVE (+25%/stack) + OPTICS_GAIN + MK4!
+            const waveScale = 1 + (this.waveNumber - 1) * 0.12;
+            const capScale = 1 + this.getProtocolStacks('CAPACITOR_DRIVE') * 0.25;
+            const opticsBonus = this.getProtocolStacks('OPTICS_GAIN') * 0.15;
+            const baseDmg =
+              (t.level >= 2 ? 58 : 42) *
+              (isTesla ? 1.35 : 1.0) *
+              waveScale *
+              capScale *
+              mk4DmgMult *
+              globalDmgMult;
+
             const pts: Vec2[] = [{ ...t.pos }];
             for (const target of targets) {
               pts.push({ ...target.pos });
-              target.hp -= baseDmg;
+              const litMult = target.illuminated ? 1 + opticsBonus : 1.0;
+              // TESLA CHAIN: +5% max-HP shock (capped 450 vs bosses)
+              const pctHpDmg = isTesla
+                ? Math.min(target.isBoss ? 450 : 9999, target.maxHp * 0.05)
+                : 0;
+              target.hp -= baseDmg * litMult + pctHpDmg;
               if (target.hp <= 0) t.kills += 1;
+
+              // P0 #12 + Phase 1 EMP PULSE: true 1.2s stun (0.65s boss), -50% frontal armor shred, 4.0s silence!
               const stunDur = isEmp
                 ? target.isBoss
-                  ? 0.55
-                  : 1.25
+                  ? 0.65
+                  : 1.2
                 : target.isBoss
-                  ? 0.22
-                  : 0.68;
-              target.stunTimer = Math.max(target.stunTimer, stunDur);
-              target.tripwireTagTimer = Math.max(target.tripwireTagTimer, 4.0); // Decloaks Stalkers!
+                  ? 0.25
+                  : 0.65;
+              this.applyHostileStun(target, stunDur);
+              target.tripwireTagTimer = Math.max(target.tripwireTagTimer, 4.0);
               target.chargeActiveTimer = 0;
               target.chargeTelegraphTimer = 0;
               if (target.kind === 'SCREAMER') target.abilityCooldown += 3.5;
-              if (isEmp && target.isBoss) target.cryoSlowTimer = Math.max(target.cryoSlowTimer, 2.5);
+              if (isEmp) {
+                target.armorShredTimer = Math.max(target.armorShredTimer, 4.0);
+                target.silenceTimer = Math.max(target.silenceTimer, 4.0);
+                if (target.isBoss) {
+                  target.cryoSlowTimer = Math.max(target.cryoSlowTimer, 2.5);
+                }
+              }
               this.spawnSparks(target.pos, 5, '#00F0FF');
             }
             this.shockArcs.push({ points: pts, life: 0.22, maxLife: 0.22 });
@@ -2519,7 +3857,10 @@ export class PerimeterSimulation {
         continue;
       }
 
-      if (t.thermalLocked) continue;
+      if (t.thermalLocked) {
+        if (t.fireCooldown < 0) t.fireCooldown = 0;
+        continue;
+      }
 
       // 3. Directional Combat Turrets (UA 571-C Sentry, M240 Incinerator, M99 Rail-Lance)
       const rlyRangeMult = t.relayMatrixBoosted ? 1.32 : t.relayBoosted ? 1.24 : 1.0;
@@ -2527,7 +3868,7 @@ export class PerimeterSimulation {
         spec.rangePx * rlyRangeMult * (t.level === 3 ? 1.22 : t.level === 2 ? 1.12 : 1.0);
       const darkRange = fullRange * PERIMETER_CONSTANTS.DARK_CORRIDOR_RANGE_MULT;
 
-      // Acquire highest-priority VERIFIED target inside cone (100% range if illuminated, 55% if dark!)
+      // Acquire highest-priority VERIFIED target inside cone
       let bestTarget: HostileEntity | null = null;
       let bestScore = Infinity;
 
@@ -2536,7 +3877,8 @@ export class PerimeterSimulation {
         const dx = h.pos.x - t.pos.x;
         const dy = h.pos.y - t.pos.y;
         const dist = Math.hypot(dx, dy);
-        const allowedRange = h.illuminated ? fullRange : darkRange;
+        const allowedRange =
+          h.illuminated || h.napalmBurnTimer > 0 || h.cryoSlowTimer > 0 ? fullRange : darkRange;
         if (dist > allowedRange + h.radiusPx) continue;
         const angToH = Math.atan2(dy, dx);
         const angDiff = Math.abs(this.normalizeAngle(angToH - t.angle));
@@ -2547,7 +3889,6 @@ export class PerimeterSimulation {
           h.pos.x - this.blueprint.coreCenter.x,
           h.pos.y - this.blueprint.coreCenter.y
         );
-        // Rail-Lance prioritizes heavy armor & bosses first!
         const priorityBias =
           t.kind === 'RAIL_LANCE' && (h.isBoss || h.kind === 'PRAETORIAN') ? -450 : 0;
         if (distToCore + priorityBias < bestScore) {
@@ -2556,9 +3897,12 @@ export class PerimeterSimulation {
         }
       }
 
-      // If no hostile in cone, also allow turrets to shoot nearby Queen Egg Sacs!
+      // P0 #11 + Phase 1: Unified Queen Egg Sac targeting across Sentries, Rails, AND Incinerators!
+      // All 3 turret types prioritize Eggs <2.0s from hatch (Firewall prioritizes Eggs even earlier!)
       let eggTarget: QueenEggSac | null = null;
-      if (!bestTarget && this.eggSacs.length > 0 && t.fireCooldown <= 0) {
+      if (this.eggSacs.length > 0) {
+        let bestEggTimer = Infinity;
+        const isFirewall = t.kind === 'INCINERATOR' && t.level === 3 && t.mk3Branch === 'B';
         for (const sac of this.eggSacs) {
           const dx = sac.pos.x - t.pos.x;
           const dy = sac.pos.y - t.pos.y;
@@ -2566,19 +3910,131 @@ export class PerimeterSimulation {
           if (dist > fullRange + 16) continue;
           const angDiff = Math.abs(this.normalizeAngle(Math.atan2(dy, dx) - t.angle));
           if (angDiff <= spec.coneHalfAngleRad && this.hasLineOfSight(t.pos, sac.pos)) {
-            eggTarget = sac;
+            const urgent = sac.hatchTimer < 2.0 || (isFirewall && sac.hatchTimer < 3.5);
+            if ((urgent || !bestTarget) && sac.hatchTimer < bestEggTimer) {
+              bestEggTimer = sac.hatchTimer;
+              eggTarget = sac;
+            }
+          }
+        }
+      }
+
+      // Phase 1 Screamer Phantom Blip decoy: turrets not in optical Floodlight/Flare waste 1 shot!
+      let phantomIdx = -1;
+      if (
+        !eggTarget &&
+        this.phantomBlips.length > 0 &&
+        t.fireCooldown <= 0 &&
+        !this.isTurretOpticallyProtected(t, inBlackout)
+      ) {
+        for (let pi = 0; pi < this.phantomBlips.length; pi++) {
+          const pb = this.phantomBlips[pi];
+          const dx = pb.pos.x - t.pos.x;
+          const dy = pb.pos.y - t.pos.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > fullRange) continue;
+          const angDiff = Math.abs(this.normalizeAngle(Math.atan2(dy, dx) - t.angle));
+          if (angDiff <= spec.coneHalfAngleRad && this.hasLineOfSight(t.pos, pb.pos)) {
+            phantomIdx = pi;
             break;
           }
         }
       }
 
-      if (eggTarget && !bestTarget && t.fireCooldown <= 0) {
+      if (!bestTarget && !eggTarget && phantomIdx < 0) {
+        if (t.fireCooldown < 0) t.fireCooldown = 0;
+        continue;
+      }
+
+      if (t.fireCooldown > 0) continue;
+
+      const heatMutMult =
+        (this.activeMutator === 'THERMAL_SPIKE' ? 1.28 : 1.0) *
+        (volatileOverpressure ? 1.35 : 1.0) *
+        (isCryoCooled ? 0.8 : 1.0);
+      // Phase 1: Cryo Cooler +15% ROF, Volatile Overpressure +30% ROF, Overclock 1.15x heat (down from 1.38x)
+      const rofSpeedMult = (isCryoCooled ? 1.15 : 1.0) * omegaRofMult;
+      const acidRofMult = t.acidDebuffTimer > 0 ? 1.25 : 1.0;
+      const ocSpeedMult = isOverclocked ? 0.52 / (1 + overdriveStacks * 0.05) : 1.0;
+      const ocHeatMult = isOverclocked ? 1.15 : 1.0;
+
+      // Consume phantom decoy shot if lured by Screamer interference!
+      if (phantomIdx >= 0) {
+        const pb = this.phantomBlips[phantomIdx];
+        this.phantomBlips.splice(phantomIdx, 1);
+        const pan = this.panFromVirtualX(t.pos.x);
         if (t.kind === 'SENTRY_PULSE' && t.ammo > 0) {
           t.ammo = Math.max(0, t.ammo - 2);
-          t.fireCooldown = 0.095;
-          t.firingFlashTimer = 0.07;
-          eggTarget.hp -= 24;
-          const pan = this.panFromVirtualX(t.pos.x);
+          const baseCd = t.level === 3 && t.mk3Branch === 'B' ? 0.064 : 0.088;
+          t.fireCooldown += ((baseCd * ocSpeedMult) / rofSpeedMult) * acidRofMult;
+          t.firingFlashTimer = 0.045;
+          this.tracers.push({
+            p1: { x: t.pos.x + Math.cos(t.angle) * 18, y: t.pos.y + Math.sin(t.angle) * 18 },
+            p2: { ...pb.pos },
+            life: 0.085,
+            maxLife: 0.085,
+            ricochet: true,
+            overclocked: isOverclocked,
+          });
+          this.audioCb.onPulseBurst(pan, isOverclocked, this.distNormFromCore(t.pos), t.level);
+        } else if (t.kind === 'RAIL_LANCE') {
+          const isCap = t.level === 3 && t.mk3Branch === 'B';
+          const baseCd = (t.level >= 2 ? 1.32 : 1.72) * (isCap ? 0.65 : 1.0);
+          t.fireCooldown += ((baseCd * ocSpeedMult) / rofSpeedMult) * acidRofMult;
+          t.firingFlashTimer = 0.24;
+          const aimAng = Math.atan2(pb.pos.y - t.pos.y, pb.pos.x - t.pos.x);
+          const beamEnd = this.castSightRay(t.pos, aimAng, fullRange);
+          this.railBeams.push({
+            p1: { x: t.pos.x + Math.cos(aimAng) * 18, y: t.pos.y + Math.sin(aimAng) * 18 },
+            p2: beamEnd,
+            life: 0.22,
+            maxLife: 0.22,
+            tier: t.level,
+          });
+          this.audioCb.onRailLance(pan, t.level, this.distNormFromCore(t.pos));
+        } else if (t.kind === 'INCINERATOR') {
+          t.fireCooldown += ((0.62 * ocSpeedMult) / rofSpeedMult) * acidRofMult;
+          t.firingFlashTimer = 0.22;
+          this.audioCb.onIncinerator(pan, this.distNormFromCore(pb.pos));
+        }
+        this.spawnSparks(pb.pos, 6, '#CC66FF');
+        this.callouts.push({
+          pos: { x: pb.pos.x, y: pb.pos.y - 16 },
+          text: 'PHANTOM DECOY!',
+          color: '#CC66FF',
+          life: 0.85,
+          maxLife: 0.85,
+        });
+        continue;
+      }
+
+      // Unified Egg Sac Firing Branch (Sentry, Rail-Lance, Incinerator)
+      if (eggTarget) {
+        const pan = this.panFromVirtualX(t.pos.x);
+        const duStacks = this.getProtocolStacks('DU_ROUNDS');
+        if (t.kind === 'SENTRY_PULSE') {
+          if (t.ammo <= 0) {
+            t.fireCooldown = 0.42;
+            t.dryFireTimer = 0.25;
+            this.audioCb.onDryFire(pan);
+            continue;
+          }
+          const isApSabot = t.level === 3 && t.mk3Branch === 'A';
+          const isTwinLink = t.level === 3 && t.mk3Branch === 'B';
+          const sentryHeatBase = (isTwinLink ? 1.9 : 2.6) * Math.max(0.5, 1 - autoStacks * 0.15);
+          t.ammo = Math.max(0, t.ammo - 2);
+          const baseCd = isTwinLink ? 0.064 : 0.088;
+          t.fireCooldown += ((baseCd * ocSpeedMult) / rofSpeedMult) * acidRofMult;
+          t.firingFlashTimer = 0.045;
+          t.heat = Math.min(100, t.heat + sentryHeatBase * ocHeatMult * heatMutMult);
+          const eggDmg =
+            (t.level >= 2 ? 22 : 16.5) *
+            (isApSabot ? 1.45 : 1.0) *
+            (1 + duStacks * 0.15) *
+            (t.relayBoosted ? 1.18 : 1.0) *
+            mk4DmgMult *
+            globalDmgMult;
+          eggTarget.hp -= eggDmg;
           this.audioCb.onPulseBurst(pan, isOverclocked, this.distNormFromCore(t.pos), t.level);
           this.tracers.push({
             p1: { x: t.pos.x + Math.cos(t.angle) * 18, y: t.pos.y + Math.sin(t.angle) * 18 },
@@ -2590,17 +4046,82 @@ export class PerimeterSimulation {
           });
           if (eggTarget.hp <= 0) {
             this.eggSacs = this.eggSacs.filter((s) => s.id !== eggTarget!.id);
-            this.scrap += 10;
+            const gain = this.addSalvageScrap(10, true);
             this.spawnSparks(eggTarget.pos, 10, '#B8FF3B');
+            this.callouts.push({
+              pos: { x: eggTarget.pos.x, y: eggTarget.pos.y - 12 },
+              text: `EGG DESTROYED +${gain}S`,
+              color: '#B8FF3B',
+              life: 1.0,
+              maxLife: 1.0,
+            });
           }
+        } else if (t.kind === 'RAIL_LANCE') {
+          const isOverpen = t.level === 3 && t.mk3Branch === 'A';
+          const isCapacitor = t.level === 3 && t.mk3Branch === 'B';
+          const baseCd = (t.level >= 2 ? 1.32 : 1.72) * (isCapacitor ? 0.65 : 1.0);
+          t.fireCooldown += ((baseCd * ocSpeedMult) / rofSpeedMult) * acidRofMult;
+          t.firingFlashTimer = 0.24;
+          t.heat = Math.min(100, t.heat + 18 * ocHeatMult * heatMutMult);
+          const aimAng = Math.atan2(eggTarget.pos.y - t.pos.y, eggTarget.pos.x - t.pos.x);
+          const beamEnd = this.castSightRay(t.pos, aimAng, fullRange);
+          const eggDmg =
+            (t.level >= 2 ? 155 : 112) *
+            (isOverpen ? 1.4 : 1.0) *
+            (1 + duStacks * 0.15) *
+            mk4DmgMult *
+            globalDmgMult;
+          // Damage all eggs along the rail beam!
+          for (let ei = this.eggSacs.length - 1; ei >= 0; ei--) {
+            const s = this.eggSacs[ei];
+            if (this.pointToSegmentDist(s.pos, t.pos, beamEnd) <= 22 && this.hasLineOfSight(t.pos, s.pos)) {
+              s.hp -= eggDmg;
+              this.spawnSparks(s.pos, 8, '#00F0FF');
+              if (s.hp <= 0) {
+                this.eggSacs.splice(ei, 1);
+                this.addSalvageScrap(10, true);
+              }
+            }
+          }
+          this.railBeams.push({
+            p1: { x: t.pos.x + Math.cos(aimAng) * 18, y: t.pos.y + Math.sin(aimAng) * 18 },
+            p2: beamEnd,
+            life: 0.26,
+            maxLife: 0.26,
+            tier: t.level,
+          });
+          this.audioCb.onRailLance(pan, t.level, this.distNormFromCore(t.pos));
+        } else if (t.kind === 'INCINERATOR') {
+          const isThermite = t.level === 3 && t.mk3Branch === 'A';
+          const isFirewall = t.level === 3 && t.mk3Branch === 'B';
+          t.fireCooldown += ((0.62 * ocSpeedMult) / rofSpeedMult) * acidRofMult;
+          t.firingFlashTimer = 0.25;
+          t.heat = Math.min(100, t.heat + 16.5 * ocHeatMult * heatMutMult);
+          const rawDist = Math.min(
+            fullRange * 0.85,
+            Math.hypot(eggTarget.pos.x - t.pos.x, eggTarget.pos.y - t.pos.y)
+          );
+          const dirAng = Math.atan2(eggTarget.pos.y - t.pos.y, eggTarget.pos.x - t.pos.x);
+          const cloudPos = this.castSightRay(t.pos, dirAng, rawDist);
+          const thermProto = 1 + this.getProtocolStacks('THERMITE_CATALYST') * 0.25;
+          const baseBurnDps = isThermite ? 140 : t.level >= 2 ? 88 : 64;
+          this.napalmClouds.push({
+            pos: cloudPos,
+            radius: (t.level >= 2 ? 78 : 64) * (isFirewall ? 1.45 : 1.0),
+            remainingSec: isFirewall ? 5.2 : 3.4,
+            maxSec: isFirewall ? 5.2 : 3.4,
+            dps: baseBurnDps * thermProto * mk4DmgMult * globalDmgMult,
+            isThermite,
+            isFirewall,
+            sourceTurretId: t.id,
+          });
+          this.audioCb.onIncinerator(pan, this.distNormFromCore(cloudPos));
+          this.spawnSparks(cloudPos, 8, '#FFB000');
         }
         continue;
       }
 
-      if (!bestTarget || t.fireCooldown > 0) continue;
-
-      const heatMutMult = this.activeMutator === 'THERMAL_SPIKE' ? 1.28 : 1.0;
-      const acidRofMult = t.acidDebuffTimer > 0 ? 1.45 : 1.0;
+      if (!bestTarget) continue;
 
       if (t.kind === 'SENTRY_PULSE') {
         if (t.ammo <= 0) {
@@ -2623,10 +4144,12 @@ export class PerimeterSimulation {
 
         const roundsSpent = Math.min(t.ammo, 2);
         t.ammo -= roundsSpent;
+        // P0 #8 + Phase 1: 60Hz carry-over `+= cd`, `firingFlashTimer = 0.045s`, Twin-Link heat 1.9!
         const baseCd = isTwinLink ? 0.064 : 0.088;
-        t.fireCooldown = (isOverclocked ? baseCd * 0.52 : baseCd) * acidRofMult;
-        t.firingFlashTimer = 0.075;
-        t.heat = Math.min(100, t.heat + (isOverclocked ? 3.6 : 2.6) * heatMutMult);
+        t.fireCooldown += ((baseCd * ocSpeedMult) / rofSpeedMult) * acidRofMult;
+        t.firingFlashTimer = 0.045;
+        const baseHeat = (isTwinLink ? 1.9 : 2.6) * Math.max(0.5, 1 - autoStacks * 0.15);
+        t.heat = Math.min(100, t.heat + baseHeat * ocHeatMult * heatMutMult);
 
         const lowThresh = Math.ceil(t.maxAmmo * 0.25);
         if (t.ammo <= 0 && !this.warnedDryIds.has(t.id)) {
@@ -2655,42 +4178,46 @@ export class PerimeterSimulation {
         this.audioCb.onPulseBurst(pan, isOverclocked, distanceNorm, t.level);
         this.audioCb.onAmmoTick(t.ammo / Math.max(1, t.maxAmmo));
 
+        const targetVisuallyLit = bestTarget.illuminated || bestTarget.napalmBurnTimer > 0;
         const darkMiss =
-          !bestTarget.illuminated && Math.random() < PERIMETER_CONSTANTS.DARK_CORRIDOR_MISS_CHANCE;
-        const duStacks = this.getProtocolStacks('DU_ROUNDS');
-        const opticsStacks = this.getProtocolStacks('OPTICS_GAIN');
-        const litCrit =
-          PERIMETER_CONSTANTS.ILLUMINATED_CRIT_MULT +
-          opticsStacks * 0.18 +
-          (t.relayMatrixBoosted ? 0.32 : 0);
+          !targetVisuallyLit &&
+          !nightHunter &&
+          Math.random() < PERIMETER_CONSTANTS.DARK_CORRIDOR_MISS_CHANCE;
+        // Phase 1 Stalker: 50% evasion in Cryo-only chokes without optical/sensor reveal!
+        const stalkerEvade =
+          bestTarget.kind === 'STALKER' && !bestTarget.opticalIlluminated && Math.random() < 0.5;
+        const missed = darkMiss || stalkerEvade;
 
-        let dmg = darkMiss
+        const duStacks = this.getProtocolStacks('DU_ROUNDS');
+        const bucketRes = this.computeAdditiveCombatBucket(t, bestTarget, true);
+        const nightBonus = nightHunter && !bestTarget.illuminated ? 1.35 : 1.0;
+
+        // P0 #12: DU_ROUNDS 1.00 AP cap + excess AP converts at 50% into bonus boss DMG!
+        const rawAp = (isApSabot ? 0.65 : 0) + duStacks * 0.25;
+        const cappedAp = Math.min(1.0, rawAp);
+        const excessAp = Math.max(0, rawAp - 1.0);
+        const bossExcessApMult = bestTarget.isBoss && excessAp > 0 ? 1 + excessAp * 0.5 : 1.0;
+
+        let dmg = missed
           ? 0
           : (t.level >= 2 ? 22 : 16.5) *
             (isApSabot ? 1.45 : 1.0) *
-            (1 + duStacks * 0.18) *
             (t.relayBoosted ? 1.18 : 1.0) *
-            (bestTarget.illuminated ? litCrit : 1.0);
+            bucketRes.mult *
+            nightBonus *
+            bossExcessApMult *
+            mk4DmgMult *
+            globalDmgMult;
         let ricochet = false;
 
-        if (!darkMiss) {
-          // CRYO + PULSE SHATTER Combo (+35%..+85% vs Chilled Heavy Hostiles + Crystalline Crunch Audio!)
-          if (
-            bestTarget.cryoSlowTimer > 0 &&
-            (bestTarget.kind === 'PRAETORIAN' ||
-              bestTarget.kind === 'BURSTER' ||
-              bestTarget.isBoss)
-          ) {
-            const shatterBonus =
-              (bestTarget.cryoDeepFreeze ? 0.55 : 0.35) +
-              this.getProtocolStacks('CRYO_SHATTER') * 0.25;
-            dmg *= 1 + shatterBonus;
+        if (!missed) {
+          if (bucketRes.triggeredShatter) {
             this.audioCb.onShatterCrunch(pan);
             this.spawnSparks(bestTarget.pos, 5, '#9BF8FF');
             if (Math.random() < 0.24) {
               this.callouts.push({
                 pos: { x: bestTarget.pos.x, y: bestTarget.pos.y - 20 },
-                text: `SHATTER +${Math.round(shatterBonus * 100)}%`,
+                text: `SHATTER +${Math.round(bucketRes.shatterBonus * 100)}%`,
                 color: '#9BF8FF',
                 life: 0.7,
                 maxLife: 0.7,
@@ -2698,15 +4225,14 @@ export class PerimeterSimulation {
             }
           }
 
-          // Twin-Link MK-III subtle stopping-power knockback on non-bosses!
           if (isTwinLink && !bestTarget.isBoss && Math.random() < 0.35) {
             const kDx = bestTarget.pos.x - t.pos.x;
             const kDy = bestTarget.pos.y - t.pos.y;
             const kLen = Math.max(1, Math.hypot(kDx, kDy));
-            this.pushHostileAlongCorridor(bestTarget, { x: kDx / kLen, y: kDy / kLen }, 14);
+            this.applyHostileKnockback(bestTarget, { x: kDx / kLen, y: kDy / kLen }, 14, 0.12);
           }
 
-          // Heavy Directional Carapace (Praetorian, Crusher, Queen): 70% Frontal Deflection vs Flank Crit!
+          // Heavy Directional Carapace (W1-W6 Crusher softened 60% deflect; EMP -50% shred; Thermite -35% melt!)
           if (bestTarget.kind === 'PRAETORIAN' || bestTarget.isBoss) {
             const shotDx = t.pos.x - bestTarget.pos.x;
             const shotDy = t.pos.y - bestTarget.pos.y;
@@ -2715,10 +4241,13 @@ export class PerimeterSimulation {
             const noseY = Math.sin(bestTarget.heading);
             const frontalAlignment = (shotDx / shotLen) * noseX + (shotDy / shotLen) * noseY;
             if (frontalAlignment > 0.5) {
-              const armorPierce = Math.min(0.9, (isApSabot ? 0.65 : 0) + duStacks * 0.25);
-              const defMult = 0.3 + 0.7 * armorPierce;
+              let effectiveDeflect =
+                bestTarget.kind === 'CRUSHER' && this.waveNumber <= 6 ? 0.6 : 0.7;
+              if (bestTarget.armorShredTimer > 0) effectiveDeflect *= 0.5;
+              if (bestTarget.burnArmorMeltTimer > 0) effectiveDeflect *= 0.65;
+              const defMult = 1 - effectiveDeflect + effectiveDeflect * cappedAp;
               dmg *= defMult;
-              if (armorPierce < 0.5) {
+              if (cappedAp < 0.5 && effectiveDeflect > 0.35) {
                 ricochet = true;
                 this.audioCb.onRicochet(pan);
                 this.spawnSparks(bestTarget.pos, 5, '#FFB000');
@@ -2759,9 +4288,28 @@ export class PerimeterSimulation {
               this.distNormFromCore(bestTarget.pos)
             );
           }
+
+          // Phase 1 Sentry TWIN-LINK: 2-target splash (40% damage within 65px)!
+          if (isTwinLink && dmg > 0) {
+            const splashDmg = dmg * 0.4;
+            let splashed = 0;
+            for (const other of this.hostiles) {
+              if (other.id === bestTarget.id || other.hp <= 0) continue;
+              if (
+                Math.hypot(other.pos.x - bestTarget.pos.x, other.pos.y - bestTarget.pos.y) <=
+                65 + other.radiusPx
+              ) {
+                other.hp -= splashDmg;
+                if (other.hp <= 0) t.kills += 1;
+                this.spawnSparks(other.pos, 2, '#FFB000');
+                splashed++;
+                if (splashed >= 2) break;
+              }
+            }
+          }
         }
 
-        const spread = darkMiss
+        const spread = missed
           ? (Math.random() < 0.5 ? -1 : 1) * (16 + Math.random() * 14)
           : (bestTarget.illuminated ? 3 : 10) * (Math.random() - 0.5);
         this.tracers.push({
@@ -2775,20 +4323,19 @@ export class PerimeterSimulation {
           },
           life: 0.085,
           maxLife: 0.085,
-          ricochet: ricochet || darkMiss,
+          ricochet: ricochet || missed,
           overclocked: isOverclocked,
         });
-        if (!ricochet && !darkMiss) {
+        if (!ricochet && !missed) {
           this.spawnSparks(bestTarget.pos, 3, bestTarget.illuminated ? '#8EF5AB' : '#44FF77');
         }
       } else if (t.kind === 'RAIL_LANCE') {
-        // M99 Electromagnetic Rail-Lance: Pierces frontal armor & punches straight down the corridor!
         const isOverpen = t.level === 3 && t.mk3Branch === 'A';
         const isCapacitor = t.level === 3 && t.mk3Branch === 'B';
         const baseCd = (t.level >= 2 ? 1.32 : 1.72) * (isCapacitor ? 0.65 : 1.0);
-        t.fireCooldown = (isOverclocked ? baseCd * 0.52 : baseCd) * acidRofMult;
+        t.fireCooldown += ((baseCd * ocSpeedMult) / rofSpeedMult) * acidRofMult;
         t.firingFlashTimer = 0.24;
-        t.heat = Math.min(100, t.heat + (isOverclocked ? 24 : 18) * heatMutMult);
+        t.heat = Math.min(100, t.heat + 18 * ocHeatMult * heatMutMult);
         if (t.heat >= 100) {
           t.thermalLocked = true;
           this.audioCb.onThermalSteam(this.panFromVirtualX(t.pos.x));
@@ -2797,19 +4344,14 @@ export class PerimeterSimulation {
 
         const aimAng = Math.atan2(bestTarget.pos.y - t.pos.y, bestTarget.pos.x - t.pos.x);
         const beamEnd = this.castSightRay(t.pos, aimAng, fullRange);
+        // Phase 1: OVERPEN pierce capped 99 -> 12
+        const maxPierce = isOverpen ? 12 : t.level >= 2 ? 5 : 4;
+        const baseRailRaw =
+          (t.level >= 2 ? 155 : 112) * (isOverpen ? 1.4 : 1.0) * mk4DmgMult * globalDmgMult;
         const duStacks = this.getProtocolStacks('DU_ROUNDS');
-        const opticsStacks = this.getProtocolStacks('OPTICS_GAIN');
-        const litMult = bestTarget.illuminated
-          ? 1.2 + opticsStacks * 0.18 + (t.relayMatrixBoosted ? 0.32 : 0)
-          : 1.0;
-        const baseDmg =
-          (t.level >= 2 ? 155 : 112) *
-          (isOverpen ? 1.4 : 1.0) *
-          (1 + duStacks * 0.18) *
-          litMult;
-        const maxPierce = isOverpen ? 99 : t.level >= 2 ? 5 : 4;
+        // Rail already pierces 100% armor: DU_ROUNDS AP excess converts at 50% into boss bonus DMG!
+        const railBossExcessMult = duStacks > 0 ? 1 + duStacks * 0.25 * 0.5 : 1.0;
 
-        // Gather all hostiles along the sightline ray sorted near-to-far
         const linedUp = this.hostiles
           .filter(
             (h) =>
@@ -2827,20 +4369,74 @@ export class PerimeterSimulation {
         let pierced = 0;
         for (const h of linedUp) {
           if (pierced >= maxPierce) break;
-          let shotDmg = baseDmg * (pierced === 0 ? 1.0 : isOverpen ? 0.92 : 0.78);
-          if (h.cryoSlowTimer > 0) {
-            shotDmg *= 1.35 + this.getProtocolStacks('CRYO_SHATTER') * 0.25;
+
+          // Phase 1: 10% Rail dark miss chance (unless illuminated, burning, or NIGHT_HUNTER_OPTICS!)
+          const visuallyLit = h.illuminated || h.napalmBurnTimer > 0;
+          if (!visuallyLit && !nightHunter && Math.random() < PERIMETER_CONSTANTS.RAIL_DARK_MISS_CHANCE) {
+            continue;
+          }
+          // Phase 1 Stalker: 50% evasion when not optically revealed
+          if (h.kind === 'STALKER' && !h.opticalIlluminated && Math.random() < 0.5) {
+            continue;
+          }
+
+          // P0 #11 + Phase 2: Evaluate h.illuminated & Deep Freeze shatter PER PIERCED TARGET!
+          const bucketRes = this.computeAdditiveCombatBucket(t, h, true);
+          const nightBonus = nightHunter && !h.illuminated ? 1.35 : 1.0;
+          const bossBonus = h.isBoss ? railBossExcessMult : 1.0;
+          const pierceFalloff = pierced === 0 ? 1.0 : isOverpen ? 0.92 : 0.78;
+          const shotDmg = baseRailRaw * bucketRes.mult * nightBonus * bossBonus * pierceFalloff;
+
+          if (bucketRes.triggeredShatter) {
             this.audioCb.onShatterCrunch(pan);
           }
+
           h.hp -= shotDmg;
-          if (isCapacitor) {
-            h.stunTimer = Math.max(h.stunTimer, h.isBoss ? 0.72 : 1.0);
+
+          // Phase 2 THERMAL_SHOCK Omega Directive: Rail hitting Burning foe -> 8% max-HP detonation!
+          if (
+            this.hasOmega('THERMAL_SHOCK') &&
+            h.hp > 0 &&
+            h.napalmBurnTimer > 0 &&
+            h.thermalShockIcd <= 0
+          ) {
+            this.triggerThermalShock(h, t);
+          }
+
+          if (isCapacitor && h.hp > 0) {
+            const cancelledCharge = h.chargeActiveTimer > 0 || h.chargeTelegraphTimer > 0;
             h.chargeActiveTimer = 0;
             h.chargeTelegraphTimer = 0;
+            const appliedStun = this.applyHostileStun(
+              h,
+              h.isBoss ? 0.48 : h.kind === 'PRAETORIAN' ? 0.75 : 0.72
+            );
+            if (cancelledCharge || (h.isBoss && appliedStun)) {
+              this.callouts.push({
+                pos: { x: h.pos.x, y: h.pos.y - h.radiusPx - 12 },
+                text: cancelledCharge ? '⚡ CHARGE STAGGERED!' : '⚡ STAGGERED!',
+                color: '#00F0FF',
+                life: 0.85,
+                maxLife: 0.85,
+              });
+            }
           }
           if (h.hp <= 0) t.kills += 1;
           this.spawnSparks(h.pos, 8, '#00F0FF');
           pierced++;
+        }
+
+        // Also cleave any Queen Egg Sacs along the rail beam!
+        for (let ei = this.eggSacs.length - 1; ei >= 0; ei--) {
+          const sac = this.eggSacs[ei];
+          if (this.pointToSegmentDist(sac.pos, t.pos, beamEnd) <= 22 && this.hasLineOfSight(t.pos, sac.pos)) {
+            sac.hp -= baseRailRaw * (1 + duStacks * 0.15);
+            this.spawnSparks(sac.pos, 6, '#00F0FF');
+            if (sac.hp <= 0) {
+              this.eggSacs.splice(ei, 1);
+              this.addSalvageScrap(10, true);
+            }
+          }
         }
 
         if (pierced >= 3) {
@@ -2864,9 +4460,9 @@ export class PerimeterSimulation {
       } else if (t.kind === 'INCINERATOR') {
         const isThermite = t.level === 3 && t.mk3Branch === 'A';
         const isFirewall = t.level === 3 && t.mk3Branch === 'B';
-        t.fireCooldown = (isOverclocked ? 0.34 : 0.62) * acidRofMult;
+        t.fireCooldown += ((0.62 * ocSpeedMult) / rofSpeedMult) * acidRofMult;
         t.firingFlashTimer = 0.25;
-        t.heat = Math.min(100, t.heat + (isOverclocked ? 22 : 16.5) * heatMutMult);
+        t.heat = Math.min(100, t.heat + 16.5 * ocHeatMult * heatMutMult);
         if (t.heat >= 100) {
           t.thermalLocked = true;
           this.audioCb.onThermalSteam(this.panFromVirtualX(t.pos.x));
@@ -2879,15 +4475,18 @@ export class PerimeterSimulation {
         );
         const dirAng = Math.atan2(bestTarget.pos.y - t.pos.y, bestTarget.pos.x - t.pos.x);
         const cloudPos = this.castSightRay(t.pos, dirAng, rawDist);
-        const thermProto = 1 + this.getProtocolStacks('THERMITE_CATALYST') * 0.3;
+        // Phase 1 & 2: Retuned base DPS (64 / 88 / 140) + THERMITE_CATALYST +25%/stack!
+        const thermProto = 1 + this.getProtocolStacks('THERMITE_CATALYST') * 0.25;
+        const baseBurnDps = isThermite ? 140 : t.level >= 2 ? 88 : 64;
 
         this.napalmClouds.push({
           pos: cloudPos,
           radius: (t.level >= 2 ? 78 : 64) * (isFirewall ? 1.45 : 1.0),
           remainingSec: isFirewall ? 5.2 : 3.4,
           maxSec: isFirewall ? 5.2 : 3.4,
-          dps: (t.level >= 2 ? 76 : 56) * (isThermite ? 1.65 : 1.0) * thermProto,
+          dps: baseBurnDps * thermProto * mk4DmgMult * globalDmgMult,
           isThermite,
+          isFirewall,
           sourceTurretId: t.id,
         });
         this.audioCb.onIncinerator(
@@ -2897,10 +4496,18 @@ export class PerimeterSimulation {
         this.spawnSparks(cloudPos, 8, '#FFB000');
       }
     }
+
+    if (relayLinkDirty) {
+      this.recomputeRelayLinks();
+    }
   }
 
   private stepHostiles(dt: number): void {
     const ts = this.blueprint.tileSize;
+    const mapW = this.getMapWidthPx();
+    const mapH = this.getMapHeightPx();
+    const hpScale = this.currentWaveDef.hpScale ?? getWaveHpScale(this.waveNumber);
+    const armorStacks = this.getProtocolStacks('BULKHEAD_ARMOR');
 
     for (let i = this.hostiles.length - 1; i >= 0; i--) {
       const h = this.hostiles[i];
@@ -2911,6 +4518,18 @@ export class PerimeterSimulation {
         this.handleHostileKilled(h);
         this.hostiles.splice(i, 1);
         continue;
+      }
+
+      // P0 #1 Safety Nudge: if any hostile sits on an impassable tile, push cleanly to nearest passable tile!
+      const curCol = Math.floor(h.pos.x / ts);
+      const curRow = Math.floor(h.pos.y / ts);
+      if (!this.pathfinder.isPassableCell(this.blueprint, this.doors, curCol, curRow)) {
+        this.nudgeHostileToPassableCell(h, true);
+      }
+
+      // Apply active decompression knockback slide smoothly even while stunned
+      if (h.knockbackTimer && h.knockbackTimer > 0) {
+        this.stepHostileKnockback(h, dt);
       }
 
       if (h.stunTimer > 0) {
@@ -2926,33 +4545,28 @@ export class PerimeterSimulation {
         this.hostiles.splice(i, 1);
         this.handleCoreSealBreach(h);
         if (this.phase === 'CORE_BREACHED') return;
-        // Core breach shockwave can splice additional nearby hostiles; clamp loop cursor!
         i = Math.min(i, this.hostiles.length);
         continue;
       }
 
-      // Sample Flow-Field steering & welded Blast Door obstruction
-      const nav = this.pathfinder.sampleDirection(
-        this.blueprint,
-        this.doors,
-        h.pos,
-        h.kind === 'PRAETORIAN' || h.kind === 'CRUSHER' || h.kind === 'QUEEN'
-      );
+      // Phase 1: 3-Tier Flow-Field Pathfinding (standard / sapper / heavy)
+      const tier = FlowFieldPathfinder.tierForHostile(h.kind);
+      const nav = this.pathfinder.sampleDirection(this.blueprint, this.doors, h.pos, tier);
 
-      // Special Caste Tactical Abilities (Spitter, Screamer, Crusher Charge, Queen Egg Sacs!)
+      // Special Caste Tactical Abilities
       if (h.abilityCooldown > 0) h.abilityCooldown = Math.max(0, h.abilityCooldown - dt);
       if (h.cryoSlowTimer <= 0) h.cryoDeepFreeze = false;
 
-      if (h.kind === 'SPITTER' && h.abilityCooldown <= 0) {
-        // Lob corrosive acid onto nearest welded Blast Door or powered Turret with LOS!
+      if (h.kind === 'SPITTER' && h.abilityCooldown <= 0 && h.silenceTimer <= 0) {
+        // P0 #2 + Phase 1: 320px Spitter range + ignoreDoorId LOS fix so Spitters actually corrode welded doors!
         let spitTargetPos: Vec2 | null = null;
         let spitDoorId: string | undefined;
         let spitTurretId: string | undefined;
-        let bestD = 265;
+        let bestD = 320;
         for (const ds of this.doors.values()) {
           if (!ds.welded) continue;
           const d = Math.hypot(ds.def.center.x - h.pos.x, ds.def.center.y - h.pos.y);
-          if (d < bestD && this.hasLineOfSight(h.pos, ds.def.center)) {
+          if (d < bestD && this.hasLineOfSight(h.pos, ds.def.center, ds.def.id)) {
             bestD = d;
             spitTargetPos = { ...ds.def.center };
             spitDoorId = ds.def.id;
@@ -2977,8 +4591,9 @@ export class PerimeterSimulation {
           const dy = spitTargetPos.y - h.pos.y;
           const dist = Math.max(1, Math.hypot(dx, dy));
           const spd = 290;
+          const spitId = this.nextHostileId++;
           this.acidSpits.push({
-            id: this.nextHostileId++,
+            id: spitId,
             pos: { ...h.pos },
             targetPos: spitTargetPos,
             vel: { x: (dx / dist) * spd, y: (dy / dist) * spd },
@@ -2987,9 +4602,10 @@ export class PerimeterSimulation {
             targetDoorId: spitDoorId,
             targetTurretId: spitTurretId,
           });
+          this.acidSpitOwners.set(spitId, h.id);
           this.audioCb.onAcidSizzle(this.panFromVirtualX(h.pos.x));
         }
-      } else if (h.kind === 'SCREAMER' && h.abilityCooldown <= 0) {
+      } else if (h.kind === 'SCREAMER' && h.abilityCooldown <= 0 && h.silenceTimer <= 0) {
         h.abilityCooldown = 4.8;
         let jammedAny = false;
         for (const tur of this.turrets) {
@@ -3002,19 +4618,28 @@ export class PerimeterSimulation {
             jammedAny = true;
           }
         }
+        if (jammedAny) {
+          // Phase 1: Screamer jam immediately disables relayBoosted & relayMatrixBoosted!
+          this.recomputeRelayLinks();
+        }
         for (let p = 0; p < 3; p++) {
           const ang = Math.random() * Math.PI * 2;
           const rad = 75 + Math.random() * 145;
           this.phantomBlips.push({
             pos: {
-              x: Math.max(90, Math.min(PERIMETER_CONSTANTS.VIRTUAL_W - 90, h.pos.x + Math.cos(ang) * rad)),
-              y: Math.max(90, Math.min(PERIMETER_CONSTANTS.VIRTUAL_H - 90, h.pos.y + Math.sin(ang) * rad)),
+              x: Math.max(90, Math.min(mapW - 90, h.pos.x + Math.cos(ang) * rad)),
+              y: Math.max(90, Math.min(mapH - 90, h.pos.y + Math.sin(ang) * rad)),
             },
-            life: 2.4,
-            maxLife: 2.4,
+            life: 2.6,
+            maxLife: 2.6,
           });
         }
-        this.audioCb.onAlienScreech('SWARM', 'SCREAMER', this.panFromVirtualX(h.pos.x), this.distNormFromCore(h.pos));
+        this.audioCb.onAlienScreech(
+          'SWARM',
+          'SCREAMER',
+          this.panFromVirtualX(h.pos.x),
+          this.distNormFromCore(h.pos)
+        );
         if (jammedAny) {
           this.callouts.push({
             pos: { x: h.pos.x, y: h.pos.y - 22 },
@@ -3030,25 +4655,46 @@ export class PerimeterSimulation {
           if (Math.random() < dt * 10) this.spawnSparks(h.pos, 2, '#FFB000');
           if (h.chargeTelegraphTimer <= 0) {
             h.chargeActiveTimer = 1.85;
-            this.audioCb.onAlienScreech('SWARM', 'CRUSHER', this.panFromVirtualX(h.pos.x), this.distNormFromCore(h.pos));
+            this.audioCb.onAlienScreech(
+              'SWARM',
+              'CRUSHER',
+              this.panFromVirtualX(h.pos.x),
+              this.distNormFromCore(h.pos)
+            );
           }
-          continue; // Pauses briefly during pre-charge telegraph
+          continue;
         }
         if (h.chargeActiveTimer > 0) {
           h.chargeActiveTimer = Math.max(0, h.chargeActiveTimer - dt);
-        } else if (h.abilityCooldown <= 0 && h.cryoSlowTimer <= 0 && !nav.batteringDoor) {
-          h.abilityCooldown = 6.6;
-          h.chargeTelegraphTimer = 1.05;
-          this.callouts.push({
-            pos: { x: h.pos.x, y: h.pos.y - 28 },
-            text: '⚠ CRUSHER CHARGE!',
-            color: '#FF5522',
-            life: 1.1,
-            maxLife: 1.1,
-          });
+        } else if (h.abilityCooldown <= 0) {
+          // P0 #4 + Phase 1: Allow Crusher charges against welded doors (5s battering-ram cycle)
+          // AND allow initiating charge while chilled with +30% telegraph!
+          const chilledTelegraphMult = h.cryoSlowTimer > 0 ? 1.3 : 1.0;
+          if (nav.batteringDoor) {
+            h.abilityCooldown = 5.0;
+            h.chargeTelegraphTimer = 1.05 * chilledTelegraphMult;
+            this.callouts.push({
+              pos: { x: h.pos.x, y: h.pos.y - 28 },
+              text: '⚠ DOOR RAM CHARGE!',
+              color: '#FF5522',
+              life: 1.1,
+              maxLife: 1.1,
+            });
+          } else {
+            h.abilityCooldown = 6.6;
+            h.chargeTelegraphTimer = 1.05 * chilledTelegraphMult;
+            this.callouts.push({
+              pos: { x: h.pos.x, y: h.pos.y - 28 },
+              text: '⚠ CRUSHER CHARGE!',
+              color: '#FF5522',
+              life: 1.1,
+              maxLife: 1.1,
+            });
+          }
         }
-      } else if (h.kind === 'QUEEN') {
-        // Threshold Egg Clutches at 75% and 40% HP so every Queen fight forces an egg-burn response!
+      } else if (h.kind === 'QUEEN' && h.silenceTimer <= 0) {
+        // Phase 1: Scale Egg Sac HP (85 * hpScale * 0.5, floor 85) + respect EMP caster silence!
+        const scaledEggHp = Math.max(85, Math.round(85 * hpScale * 0.5));
         const hpRatio = h.hp / Math.max(1, h.maxHp);
         const curStage = h.queenEggStage ?? 0;
         const triggerThresholdClutch =
@@ -3061,8 +4707,8 @@ export class PerimeterSimulation {
             this.eggSacs.push({
               id: this.nextHostileId++,
               pos: { x: h.pos.x + offX, y: h.pos.y + offY },
-              hp: 85,
-              maxHp: 85,
+              hp: scaledEggHp,
+              maxHp: scaledEggHp,
               hatchTimer: 5.0,
               maxHatchTimer: 5.0,
             });
@@ -3076,19 +4722,19 @@ export class PerimeterSimulation {
           this.spawnSparks(h.pos, 16, '#B8FF3B');
           this.callouts.push({
             pos: { x: h.pos.x, y: h.pos.y - 34 },
-            text: '★ EGG CLUTCH LAID — BURN THEM! ★',
+            text: '★ EGG CLUTCH LAID — DESTROY THEM! ★',
             color: '#C8FF44',
             life: 2.0,
             maxLife: 2.0,
           });
-          this.pushLog('ALERT // MATRIARCH QUEEN LAID EGG CLUTCH — INCINERATE BEFORE HATCH!');
+          this.pushLog('ALERT // MATRIARCH QUEEN LAID EGG CLUTCH — DESTROY BEFORE HATCH!');
         } else if (h.abilityCooldown <= 0 && this.eggSacs.length < 7) {
           h.abilityCooldown = 7.2;
           this.eggSacs.push({
             id: this.nextHostileId++,
             pos: { x: h.pos.x, y: h.pos.y },
-            hp: 85,
-            maxHp: 85,
+            hp: scaledEggHp,
+            maxHp: scaledEggHp,
             hatchTimer: 5.5,
             maxHatchTimer: 5.5,
           });
@@ -3105,17 +4751,72 @@ export class PerimeterSimulation {
 
       if (nav.batteringDoor) {
         h.batteringDoorId = nav.batteringDoor.def.id;
+        h.doorBatterTimer += dt;
         h.heading = Math.atan2(
           nav.batteringDoor.def.center.y - h.pos.y,
           nav.batteringDoor.def.center.x - h.pos.x
         );
+
+        // Phase 1 Burster Door-Detonation: battering a welded door >= 1.5s acid-detonates!
+        if (h.kind === 'BURSTER' && h.doorBatterTimer >= 1.5) {
+          const targetDoor = nav.batteringDoor;
+          const surge = this.activeMutator === 'ACIDIC_SURGE';
+          this.acidPools.push({
+            pos: { ...targetDoor.def.center },
+            radius: 88,
+            remainingSec: surge ? 12.0 : 9.0,
+            maxSec: surge ? 12.0 : 9.0,
+            fromBursterDoorBlast: true,
+          });
+          this.audioCb.onAcidSizzle(this.panFromVirtualX(targetDoor.def.center.x));
+          this.spawnSparks(targetDoor.def.center, 18, '#B8FF3B');
+          this.callouts.push({
+            pos: { x: targetDoor.def.center.x, y: targetDoor.def.center.y - 20 },
+            text: 'ACID BREACH BLAST (-110)!',
+            color: '#B8FF3B',
+            life: 1.5,
+            maxLife: 1.5,
+          });
+          this.pushLog(`ALERT // ACID BURSTER DETONATED ON BULKHEAD ${targetDoor.def.id}!`);
+          this.applyDoorDamage(targetDoor, 110, 'BREACHED BY ACID BURSTER DETONATION');
+          this.hostiles.splice(i, 1);
+          continue;
+        }
+
+        // Phase 2 BULKHEAD_ARMOR Electrified Bulkheads: 55 DPS melee recoil per stack!
+        if (armorStacks > 0) {
+          h.hp -= 55 * armorStacks * dt;
+          if (Math.random() < dt * 6) {
+            this.spawnSparks(h.pos, 3, '#00F0FF');
+          }
+          if (h.hp <= 0) {
+            this.handleHostileKilled(h);
+            this.hostiles.splice(i, 1);
+            continue;
+          }
+        }
+
         const spec = HOSTILE_SPECS[h.kind];
-        const slowFactor = h.cryoSlowTimer > 0 ? (h.cryoDeepFreeze ? 0.28 : 0.45) : 1.0;
+        const slowFactor =
+          h.cryoSlowTimer > 0
+            ? h.isBoss
+              ? h.cryoDeepFreeze
+                ? 0.64
+                : 0.71
+              : h.cryoDeepFreeze
+                ? 0.28
+                : 0.45
+            : 1.0;
         const chargeBonus = h.chargeActiveTimer > 0 ? 2.4 : 1.0;
-        nav.batteringDoor.hp -= spec.doorDps * slowFactor * chargeBonus * dt;
+        const deepDoorMult =
+          this.waveNumber <= 10 ? 1.0 : 1.0 + (this.waveNumber - 10) * 0.05;
+        const doorDmg = spec.doorDps * slowFactor * chargeBonus * deepDoorMult * dt;
         nav.batteringDoor.underAttackTimer = 0.28;
 
-        if (nav.batteringDoor.hp > 0 && nav.batteringDoor.hp < nav.batteringDoor.maxHp * 0.3) {
+        if (
+          nav.batteringDoor.hp - doorDmg > 0 &&
+          nav.batteringDoor.hp - doorDmg < nav.batteringDoor.maxHp * 0.3
+        ) {
           this.audioCb.onIntercomVoice('door_failing');
         }
 
@@ -3133,19 +4834,17 @@ export class PerimeterSimulation {
           );
         }
 
-        if (nav.batteringDoor.hp <= 0) {
-          this.breachWeldedDoor(nav.batteringDoor, `BATTERED BY ${spec.name}`);
-        }
+        this.applyDoorDamage(nav.batteringDoor, doorDmg, `BATTERED BY ${spec.name}`);
         continue;
       }
 
       h.batteringDoorId = null;
+      h.doorBatterTimer = 0;
       h.weavePhase += dt * (h.kind === 'SKITTERER' ? 11.5 : 4.2);
 
       let dirX = nav.dir.x;
       let dirY = nav.dir.y;
 
-      // Skitterers weave erratically across corridors!
       if (h.kind === 'SKITTERER') {
         const perpX = -dirY;
         const perpY = dirX;
@@ -3157,14 +4856,26 @@ export class PerimeterSimulation {
         dirY /= l;
       }
 
-      const speedMult =
-        (h.cryoSlowTimer > 0 ? (h.cryoDeepFreeze ? 0.28 : 0.42) : 1.0) *
-        (h.chargeActiveTimer > 0 ? 2.55 : 1.0);
+      // Phase 1 Cryo Boss 50% slow resist (29% Cryo / 36% Deep Freeze vs Boss),
+      // Crusher active charge slowed 30% by Cryo instead of hard-cancelled, and Firewall -25% slow!
+      let speedMult = 1.0;
+      if (h.chargeActiveTimer > 0) {
+        speedMult = 2.55 * (h.cryoSlowTimer > 0 ? 0.7 : 1.0);
+      } else if (h.cryoSlowTimer > 0) {
+        if (h.isBoss) {
+          speedMult = h.cryoDeepFreeze ? 0.64 : 0.71;
+        } else {
+          speedMult = h.cryoDeepFreeze ? 0.28 : 0.42;
+        }
+      }
+      if (h.firewallSlowTimer && h.firewallSlowTimer > 0) {
+        speedMult *= h.isBoss ? 0.875 : 0.75;
+      }
+
       const moveSpd = h.speedPxS * speedMult;
       const nextX = h.pos.x + dirX * moveSpd * dt;
       const nextY = h.pos.y + dirY * moveSpd * dt;
 
-      // Slide cleanly along corridor bulkhead walls & sealed blast doors
       if (
         this.pathfinder.isPassableCell(
           this.blueprint,
@@ -3194,11 +4905,11 @@ export class PerimeterSimulation {
 
   private handleHostileKilled(h: HostileEntity): void {
     const spec = HOSTILE_SPECS[h.kind];
-    const salvageMult = 1 + this.getProtocolStacks('SALVAGE_BONUS') * 0.22;
-    const scrapGain = Math.max(1, Math.round(spec.scrapReward * salvageMult));
+    const baseScrap = spec.scrapReward * this.getWaveSalvageYieldMult();
+    // Phase 2 SALVAGE_BONUS fractional accumulator (+25%/stack)
+    const scrapGain = Math.max(1, this.addSalvageScrap(baseScrap, true));
     const scoreGain = Math.round(spec.scoreValue * this.getActiveScoreMultiplier());
     this.totalKills += 1;
-    this.scrap += scrapGain;
     this.score += scoreGain;
     this.spawnSparks(
       h.pos,
@@ -3235,7 +4946,6 @@ export class PerimeterSimulation {
       }
     }
 
-    // Acid Burster detonates into a corrosive vector hazard pool on death!
     if (h.kind === 'BURSTER' || (h.kind === 'SPITTER' && this.activeMutator === 'ACIDIC_SURGE')) {
       const surge = this.activeMutator === 'ACIDIC_SURGE';
       this.acidPools.push({
@@ -3251,7 +4961,6 @@ export class PerimeterSimulation {
 
   private handleCoreSealBreach(breacher: HostileEntity): void {
     if (this.trainingMode) {
-      // Unranked Training Drill shield: demonstrate shockwave without losing a seal or ending drill!
       this.sealLostFlashTimer = 1.1;
       this.audioCb.onSyncGlitch(0.45);
       this.spawnSparks(this.blueprint.coreCenter, 18, '#00F0FF');
@@ -3272,6 +4981,41 @@ export class PerimeterSimulation {
       return;
     }
 
+    // Phase 2 AEGIS_SHIELD: rechargeable 1-hit Core Energy Barrier absorbs breach without losing a Seal!
+    if (this.aegisBarrierReady && this.aegisBarrierCharges > 0) {
+      this.aegisBarrierCharges -= 1;
+      this.aegisBarrierReady = this.aegisBarrierCharges > 0;
+      if (this.aegisRechargeWavesRemaining <= 0) {
+        this.aegisRechargeWavesRemaining = 5;
+      }
+      this.sealLostFlashTimer = 1.4;
+      this.audioCb.onReactorBreaker(false);
+      this.audioCb.onSyncGlitch(0.6);
+      this.spawnSparks(this.blueprint.coreCenter, 26, '#00F0FF');
+      for (let i = this.hostiles.length - 1; i >= 0; i--) {
+        const other = this.hostiles[i];
+        if (
+          Math.hypot(
+            other.pos.x - this.blueprint.coreCenter.x,
+            other.pos.y - this.blueprint.coreCenter.y
+          ) <= 170
+        ) {
+          this.hostiles.splice(i, 1);
+        }
+      }
+      this.callouts.push({
+        pos: { x: this.blueprint.coreCenter.x, y: this.blueprint.coreCenter.y - 34 },
+        text: '★ AEGIS BARRIER ABSORBED BREACH! ★',
+        color: '#00F0FF',
+        life: 2.2,
+        maxLife: 2.2,
+      });
+      this.pushLog(
+        `★ AEGIS CORE ENERGY BARRIER ABSORBED ${HOSTILE_SPECS[breacher.kind].name} // RECHARGES IN ${this.aegisRechargeWavesRemaining} WAVES! ★`
+      );
+      return;
+    }
+
     this.bulkheadSeals = Math.max(0, this.bulkheadSeals - 1);
     this.sealLostThisWave = true;
     this.perfectWaveStreak = 0;
@@ -3286,7 +5030,6 @@ export class PerimeterSimulation {
       return;
     }
 
-    // Emergency inner shockwave clears immediate Core chamber on seal blow so 1 pack doesn't instant-drain 3 seals
     for (let i = this.hostiles.length - 1; i >= 0; i--) {
       const other = this.hostiles[i];
       if (
@@ -3304,47 +5047,33 @@ export class PerimeterSimulation {
     );
   }
 
-  public rollProtocolDraftChoices(): ProtocolId[] {
-    const allIds = Object.keys(TACTICAL_PROTOCOLS) as ProtocolId[];
-    const eligible = allIds.filter((id) => {
-      if (id === 'SEAL_FABRICATION') {
-        return this.bulkheadSeals < PERIMETER_CONSTANTS.MAX_BULKHEAD_SEALS;
-      }
-      if (id === 'AUX_BUS' && this.maxReactorKw >= PERIMETER_CONSTANTS.MAX_REACTOR_KW_HARD_CAP) {
-        return false;
-      }
-      return this.getProtocolStacks(id) < TACTICAL_PROTOCOLS[id].maxStacks;
-    });
-    const shuffled = [...eligible].sort(() => Math.random() - 0.5);
-    const chosen = shuffled.slice(0, 3);
-    while (chosen.length < 3) {
-      chosen.push('SALVAGE_BONUS');
-    }
-    return chosen;
-  }
-
   private completeCurrentWave(): void {
     if (!this.sealLostThisWave) {
       this.perfectWaveStreak += 1;
     }
-    const salvageMult = 1 + this.getProtocolStacks('SALVAGE_BONUS') * 0.22;
-    const bonus = Math.round(this.currentWaveDef.scrapBonus * salvageMult);
+
+    // Phase 2: Active mutators grant +20% Wave Clear Scrap (+ SALVAGE_BONUS fractional Scrap)!
+    const mutScrapMult = WAVE_MUTATORS[this.activeMutator]?.scrapMult ?? 1.0;
+    const bonus = this.addSalvageScrap(this.currentWaveDef.scrapBonus * mutScrapMult, true);
     const wavePts = Math.round(
       (this.waveNumber * 500 + this.bulkheadSeals * 250) * this.getActiveScoreMultiplier()
     );
-    this.scrap += bonus;
     this.score += wavePts;
     this.audioCb.onWaveClear();
 
-    // Cleanly finalize any in-progress mid-wave reloads/welds & reset overload between waves
+    // Cleanly finalize any in-progress mid-wave reloads/welds/spin-ups & reset overload
     this.overloadTimer = 0;
     this.blackoutTimer = 0;
     this.grateTelegraphs = [];
     this.acidSpits = [];
+    this.acidSpitOwners.clear();
     this.phantomBlips = [];
+    this.resupplyPurchasesThisWave = 0;
+    this.claymoresRemainingThisWave = this.getClaymoreStockPerWave();
     for (const t of this.turrets) {
       t.acidDebuffTimer = 0;
       t.jammedTimer = 0;
+      t.powerUpTimer = 0;
       if (t.rearmTimer > 0) {
         t.rearmTimer = 0;
         t.ammo = t.maxAmmo;
@@ -3359,17 +5088,41 @@ export class PerimeterSimulation {
         ds.weldingTimer = 0;
         ds.welded = true;
         ds.hp = ds.maxHp;
+        ds.lastPathHpBand = 4;
         doorsChanged = true;
       }
     }
     if (doorsChanged) {
-      this.pathfinder.recompute(this.blueprint, this.doors);
+      this.recomputePathfinder(false);
       this.recomputeRelayLinks();
+    } else {
+      // Clear wave congestion weights for clean Prep route previews
+      this.recomputePathfinder(false);
     }
 
-    if (this.waveNumber % 2 === 0 && this.maxReactorKw < PERIMETER_CONSTANTS.AUTO_REACTOR_KW_CAP) {
-      this.maxReactorKw = Math.min(PERIMETER_CONSTANTS.AUTO_REACTOR_KW_CAP, this.maxReactorKw + 15);
-      this.pushLog(`AUXILIARY REACTOR BUS UNLOCKED // MAX CAPACITY NOW ${this.maxReactorKw} kW!`);
+    // P0 #5: Separate autoReactorUnlocks (0..6 on W2..W12) from maxReactorKw so AUX_BUS/Scrap NEVER cannibalize free unlocks!
+    if (this.waveNumber % 2 === 0 && this.autoReactorUnlocks < MAX_AUTO_REACTOR_UNLOCKS) {
+      this.autoReactorUnlocks += 1;
+      const cap = this.getEffectiveMaxReactorCap();
+      this.maxReactorKw = Math.min(cap, this.maxReactorKw + 15);
+      this.pushLog(
+        `AUXILIARY REACTOR BUS UNLOCKED [${this.autoReactorUnlocks}/${MAX_AUTO_REACTOR_UNLOCKS}] // MAX CAPACITY NOW ${this.maxReactorKw} kW!`
+      );
+    }
+
+    // Phase 2 AEGIS_SHIELD: tick 5-wave barrier recharge counter
+    const aegisStacks = this.getProtocolStacks('AEGIS_SHIELD');
+    if (aegisStacks > 0 && this.aegisBarrierCharges < aegisStacks) {
+      this.aegisRechargeWavesRemaining = Math.max(0, this.aegisRechargeWavesRemaining - 1);
+      if (this.aegisRechargeWavesRemaining <= 0) {
+        this.aegisBarrierCharges += 1;
+        this.aegisBarrierReady = true;
+        if (this.aegisBarrierCharges < aegisStacks) {
+          this.aegisRechargeWavesRemaining = 5;
+        }
+        this.spawnSparks(this.blueprint.coreCenter, 18, '#00F0FF');
+        this.pushLog('★ AEGIS CORE ENERGY BARRIER RECHARGED — 1-HIT PROTECTION ONLINE! ★');
+      }
     }
 
     if (this.waveNumber % 10 === 0) {
@@ -3384,18 +5137,34 @@ export class PerimeterSimulation {
     this.pushLog(
       `WAVE ${String(clearedWave).padStart(2, '0')} CLEARED // +${bonus} SCRAP · STREAK ${this.getStreakMultiplier().toFixed(2)}X`
     );
-    this.waveNumber += 1;
-    this.currentWaveDef = Sector01Blueprint.getWaveDefinition(this.waveNumber);
-    this.activeMutator = this.currentWaveDef.mutator ?? 'NONE';
-    this.purgeAvailableThisWave = true;
 
-    // Trigger MU-TH-UR 3-Choice Tactical Protocol Draft every 3 waves!
-    if (clearedWave % 3 === 0) {
-      this.protocolDraftChoices = this.rollProtocolDraftChoices();
-      this.phase = 'PROTOCOL_DRAFT';
-      this.audioCb.onIntercomVoice('protocol');
-      this.pushLog('★ MU-TH-UR TACTICAL PROTOCOL DRAFT READY — SELECT 1 DIRECTIVE [1 / 2 / 3] ★');
+    this.waveNumber += 1;
+
+    // Post-Queen Sector Extraction on W11/21/31+ across SEC-01 -> SEC-02 -> SEC-03
+    const nextSectorId = getSectorIdForWave(this.waveNumber);
+    if (nextSectorId !== this.blueprint.sectorId) {
+      this.performSectorExtraction(nextSectorId);
+    }
+
+    this.currentWaveDef = getWaveDefinition(this.waveNumber, this.blueprint.sectorId);
+    this.activeMutator = this.currentWaveDef.mutator ?? 'NONE';
+    this.purgeChargesRemaining = Math.max(1, this.purgeChargesRemaining);
+    this.purgeAvailableThisWave = this.purgeChargesRemaining > 0;
+    this.refreshPendingBreaches();
+
+    // Trigger Boss-Milestone Omega Directive (W5, W10, W15, W20...) AND/OR Protocol Draft (every 3 waves)!
+    const wantsOmega = clearedWave % 5 === 0;
+    const wantsProtocol = clearedWave % 3 === 0;
+    this.pendingProtocolDraftAfterOmega = false;
+
+    if (wantsOmega && this.openOmegaDraftModal()) {
+      if (wantsProtocol) {
+        this.pendingProtocolDraftAfterOmega = true;
+      }
+    } else if (wantsProtocol) {
+      this.openProtocolDraftModal();
     } else {
+      this.draftMode = 'PROTOCOL';
       this.phase = 'TACTICAL_PREP';
     }
   }
@@ -3450,7 +5219,6 @@ export class PerimeterSimulation {
       return;
     }
 
-    // Periodic Low-Ammo / Empty-Drum console alert chime reminder during active combat
     const alertingSentry = this.turrets.find(
       (t) =>
         t.powered &&

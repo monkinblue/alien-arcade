@@ -1,6 +1,28 @@
-import { COLORS } from '../../constants';
-import type { CrtInteractiveButton } from '../../render/HudRenderer';
-import { drawRankedHudPill, drawRankedTitleRibbon } from '../../render/RankedBadge';
+import {
+  CONTROLS_STRIP_HEIGHT,
+  drawChromeButton,
+  drawControlsCardModal,
+  drawCornerBrackets,
+  drawEllipsizedText,
+  drawGameOverDebriefModal,
+  drawGlobalManifestModal,
+  drawKeycap,
+  drawPauseBanner,
+  drawPersistentControlsStrip,
+  drawStatusToast,
+  drawSystemMenuModal,
+  drawTopChromeBar,
+  font,
+  hitTestChromeButtons,
+  SEMIOTIC_ICONS,
+  THEME,
+  TOP_CHROME_BAR_HEIGHT,
+  type ChromeButtonHitbox,
+  type ControlsStripItem,
+  type ManifestRowData,
+} from '../../render/chrome';
+import { drawRankedTitleRibbon } from '../../render/RankedBadge';
+import type { CrtPreset, PhosphorTheme } from '../../shell/Cartridge';
 import type { ViewportRect } from '../../types';
 import type { DemoTelemetryState } from './FlakDemoDirector';
 import type { FlakLeaderboardService } from './FlakLeaderboard';
@@ -10,10 +32,17 @@ import type { DefenseBattery, FlakLastSubmittedRun } from './types';
 export interface FlakHudLayout {
   hudScale: number;
   topBarH: number;
-  leftPanel: ViewportRect;
   rightPanel: ViewportRect;
-  bottomLog: ViewportRect;
+  bottomDock: ViewportRect;
+  bottomTicker: ViewportRect;
+  controlsStripY: number;
   scopeViewport: ViewportRect;
+}
+
+export interface FlakStatusToast {
+  text: string;
+  tone: 'green' | 'amber' | 'red' | 'cyan';
+  alpha: number;
 }
 
 export interface FlakHudRenderParams {
@@ -24,93 +53,100 @@ export interface FlakHudRenderParams {
   leaderboard: FlakLeaderboardService;
   hoveredButtonId: string | null;
   audioMuted: boolean;
+  masterVolume: number;
+  crtPreset: CrtPreset;
+  phosphorTheme: PhosphorTheme;
   isFullscreen: boolean;
+  isTouchDevice: boolean;
+  confirmExitPending: boolean;
   osdMenuOpen: boolean;
   manifestOpen: boolean;
+  controlsOpen: boolean;
+  empTouchArmed: boolean;
   callsignDraft: string;
   callsignEditing: boolean;
   scoreSubmitted: boolean;
   submittingScore: boolean;
   submitResultBanner: string | null;
+  submitResultTone: 'green' | 'amber' | 'red';
   lastSubmittedRun: FlakLastSubmittedRun | null;
+  statusToast?: FlakStatusToast | null;
   demoState?: DemoTelemetryState | null;
 }
 
+const FLAK_CONTROLS_STRIP: readonly ControlsStripItem[] = [
+  { key: 'LMB/A/D', label: 'Flak', accent: 'green' },
+  { key: 'RMB/SPACE/S', label: 'EMP', accent: 'amber' },
+  { key: 'P', label: 'Pause', accent: 'amber' },
+  { key: 'H', label: 'Controls', accent: 'cyan' },
+  { key: 'ESC', label: 'Menu', accent: 'amber' },
+];
+
 export class FlakHudRenderer {
-  public buttons: CrtInteractiveButton[] = [];
+  public buttons: ChromeButtonHitbox[] = [];
 
   public hitTestButton(cx: number, cy: number): string | null {
-    for (let i = this.buttons.length - 1; i >= 0; i--) {
-      const b = this.buttons[i];
-      if (
-        cx >= b.rect.x &&
-        cx <= b.rect.x + b.rect.width &&
-        cy >= b.rect.y &&
-        cy <= b.rect.y + b.rect.height
-      ) {
-        return b.id;
-      }
-    }
-    return null;
+    return hitTestChromeButtons(this.buttons, cx, cy);
   }
 
+  /**
+   * Expanded Scope Layout:
+   * - Single slim Right Fire-Control Rail (~210px)
+   * - Single-line Telemetry Ticker (22px) + Bottom Breech/EMP/Dome Status Dock (~74px)
+   * - Persistent 22px Controls Strip anchored cleanly along bottom edge
+   * Eliminates the old 34.5% dual-console pinch & 21-32.5% black letterboxing!
+   */
   public computeLayout(width: number, height: number): FlakHudLayout {
     const w = Math.max(320, width);
     const h = Math.max(240, height);
     const margin = 6;
-    const topBarH = 46;
+    const topBarH = TOP_CHROME_BAR_HEIGHT;
+    const controlsStripY = h - CONTROLS_STRIP_HEIGHT;
 
-    // Asymmetric tactical framing: rich Fire-Control Breech + Kill-CLI Left Console (282px)
-    // paired with sleek Right Telemetry Strip (222px), preserving a huge wide-angle Radar Scope!
-    const baseLeftW = 282;
-    const baseRightW = 222;
-    const basePanelH = 680;
-    const scaleW = (w * 0.345) / (baseLeftW + baseRightW);
-    const scaleH = (h - topBarH - margin - 8) / basePanelH;
-    const hudScale = Math.max(0.68, Math.min(1.14, Math.min(scaleW, scaleH)));
-
-    const leftW = Math.round(baseLeftW * hudScale);
-    const rightW = Math.round(baseRightW * hudScale);
-    const panelH = Math.max(240, h - topBarH - margin - 6);
-
-    const leftPanel: ViewportRect = {
-      x: margin,
-      y: topBarH + 4,
-      width: leftW,
-      height: panelH,
-    };
+    const rightW = Math.round(Math.max(176, Math.min(216, w * 0.165)));
+    const dockH = h < 660 ? 68 : 74;
+    const tickerH = 22;
 
     const rightPanel: ViewportRect = {
       x: w - margin - rightW,
       y: topBarH + 4,
       width: rightW,
-      height: panelH,
+      height: Math.max(180, controlsStripY - 4 - (topBarH + 4)),
     };
 
-    const centerX = leftPanel.x + leftPanel.width + 8;
-    const centerW = Math.max(240, rightPanel.x - 8 - centerX);
-    const logH = Math.max(58, Math.round(68 * hudScale));
+    const scopeX = margin;
+    const scopeW = Math.max(240, rightPanel.x - 6 - scopeX);
 
-    const bottomLog: ViewportRect = {
-      x: centerX,
-      y: h - margin - logH - 2,
-      width: centerW,
-      height: logH,
+    const bottomDock: ViewportRect = {
+      x: scopeX,
+      y: controlsStripY - 4 - dockH,
+      width: scopeW,
+      height: dockH,
+    };
+
+    const bottomTicker: ViewportRect = {
+      x: scopeX,
+      y: bottomDock.y - 4 - tickerH,
+      width: scopeW,
+      height: tickerH,
     };
 
     const scopeViewport: ViewportRect = {
-      x: centerX,
+      x: scopeX,
       y: topBarH + 4,
-      width: centerW,
-      height: Math.max(160, bottomLog.y - 6 - (topBarH + 4)),
+      width: scopeW,
+      height: Math.max(140, bottomTicker.y - 4 - (topBarH + 4)),
     };
+
+    const hudScale = Math.max(0.85, Math.min(1.1, Math.min(w / 1280, h / 800)));
 
     return {
       hudScale,
       topBarH,
-      leftPanel,
       rightPanel,
-      bottomLog,
+      bottomDock,
+      bottomTicker,
+      controlsStripY,
       scopeViewport,
     };
   }
@@ -121,896 +157,345 @@ export class FlakHudRenderer {
     layout: FlakHudLayout
   ): void {
     this.buttons = [];
+    const { width: w, height: h, sim } = params;
 
-    this.drawTopHeader(ctx, params, layout);
-    this.drawLeftFireControlConsole(ctx, params, layout);
-    this.drawRightTelemetryStrip(ctx, params, layout);
-    this.drawBottomTelemetryBar(ctx, params, layout);
+    // 1. Unified 46px Top Chrome Bar (4 pills: [H] CONTROLS | AUDIO | [ESC] MENU | MU-TH-UR OS)
+    const telemetryText =
+      sim.isDemoMode && params.demoState?.active
+        ? `STAGE 0${params.demoState.stageIndex}/0${params.demoState.totalStages} · ${sim.score.toLocaleString()} PTS`
+        : `WAVE ${String(sim.waveNumber).padStart(2, '0')} · ${sim.score.toLocaleString()} PTS`;
 
-    if (params.sim.phase === 'TITLE') {
+    drawTopChromeBar(
+      ctx,
+      w,
+      {
+        title: w < 1060 ? 'FLAK NET' : 'ORBITAL INTERCEPT // FLAK NET',
+        timeSec: params.timeSec,
+        isRanked: !sim.isDemoMode,
+        telemetryText,
+        crt1979Enabled: params.crtPreset === 'CLASSIC_1979',
+        controlsLabel: '[H] CONTROLS',
+        audioMuted: params.audioMuted,
+        hoveredButtonId: params.hoveredButtonId,
+        confirmExitPending: params.confirmExitPending,
+        demoModeActive: sim.isDemoMode,
+      },
+      this.buttons
+    );
+
+    // 2. Slim Right Fire-Control Rail (~210px)
+    this.drawRightFireControlRail(ctx, params, layout);
+
+    // 3. Single-line Bottom Telemetry Ticker
+    this.drawBottomTickerBar(ctx, params, layout);
+
+    // 4. Bottom Breech / EMP Touch Button / Habitat Seals Dock (~74px)
+    this.drawBottomBreechDomeDock(ctx, params, layout);
+
+    // 5. Persistent 22px Controls Strip
+    drawPersistentControlsStrip(ctx, w, h, FLAK_CONTROLS_STRIP, layout.controlsStripY);
+
+    // 6. Phase-Specific Overlays inside Scope Viewport
+    if (sim.phase === 'TITLE') {
       this.drawTitleOverlay(ctx, params, layout);
-    } else if (params.sim.phase === 'WAVE_AUDIT' && params.sim.waveAudit && !params.sim.isDemoMode) {
+    } else if (sim.phase === 'WAVE_AUDIT' && sim.waveAudit && !sim.isDemoMode) {
       this.drawWaveAuditBanner(ctx, params, layout);
-    } else if (params.sim.phase === 'GAME_OVER' && !params.sim.isDemoMode) {
-      this.drawGameOverOverlay(ctx, params);
+    } else if (sim.phase === 'GAME_OVER' && !sim.isDemoMode) {
+      this.drawGameOverDebrief(ctx, params);
     }
 
+    // 7. Top-Priority Unified Modals (each calls drawModalFrame -> clears underlying hitboxes!)
     if (params.osdMenuOpen) {
-      this.drawOsdMenuModal(ctx, params);
-    } else if (params.manifestOpen) {
-      this.drawManifestModal(ctx, params);
-    }
-  }
-
-  // ===========================================================================
-  // TOP HEADER BAR
-  // ===========================================================================
-  private drawTopHeader(
-    ctx: CanvasRenderingContext2D,
-    params: FlakHudRenderParams,
-    layout: FlakHudLayout
-  ): void {
-    const { width: w, sim } = params;
-    ctx.save();
-    ctx.fillStyle = 'rgba(3, 9, 5, 0.94)';
-    ctx.fillRect(0, 0, w, layout.topBarH);
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    ctx.moveTo(8, layout.topBarH - 1);
-    ctx.lineTo(w - 8, layout.topBarH - 1);
-    ctx.stroke();
-
-    const compact = w < 1180;
-    ctx.font = compact
-      ? 'bold 15px "Share Tech Mono", monospace'
-      : 'bold 17.5px "Share Tech Mono", monospace';
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#44FF77';
-    const titleStr = 'ORBITAL INTERCEPT // FLAK NET';
-    ctx.fillText(titleStr, 14, 30);
-
-    const pillX = Math.round(14 + ctx.measureText(titleStr).width + 10);
-    let badgeX: number;
-    if (sim.isDemoMode) {
-      const demoW = compact ? 132 : 156;
-      ctx.fillStyle = 'rgba(42, 26, 4, 0.92)';
-      ctx.fillRect(pillX, 10, demoW, 26);
-      ctx.strokeStyle = '#FFB000';
-      ctx.lineWidth = 1.6;
-      ctx.strokeRect(pillX, 10, demoW, 26);
-      ctx.textAlign = 'center';
-      ctx.font = compact
-        ? 'bold 11.5px "Share Tech Mono", monospace'
-        : 'bold 12.5px "Share Tech Mono", monospace';
-      ctx.fillStyle = '#FFF6CC';
-      ctx.fillText('DEMO // UNRANKED', pillX + demoW * 0.5, 27);
-      ctx.textAlign = 'left';
-      ctx.font = compact
-        ? 'bold 15px "Share Tech Mono", monospace'
-        : 'bold 17.5px "Share Tech Mono", monospace';
-      badgeX = pillX + demoW + 10;
-    } else {
-      const rankedPillW = drawRankedHudPill(
+      drawSystemMenuModal(
         ctx,
-        pillX,
-        10,
-        26,
-        params.timeSec,
-        true,
-        compact
-      );
-      badgeX = pillX + rankedPillW + 10;
-    }
-    ctx.fillStyle = '#FFB000';
-    const waveStr = sim.isDemoMode && params.demoState?.active
-      ? `// STAGE 0${params.demoState.stageIndex}/0${params.demoState.totalStages} // SCORE ${sim.score.toLocaleString()}`
-      : `// WAVE ${String(sim.waveNumber).padStart(2, '0')} // SCORE ${sim.score.toLocaleString()}`;
-    ctx.fillText(waveStr, badgeX, 30);
-    const titleRightEdge = Math.round(badgeX + ctx.measureText(waveStr).width + 14);
-
-    const pills: Array<{ id: string; label: string; w: number; active: boolean; accent: string }> =
-      [
-        sim.isDemoMode
-          ? {
-              id: 'flak-exit-demo',
-              label: '[ESC] EXIT DEMO',
-              w: compact ? 114 : 128,
-              active: true,
-              accent: '#FFB000',
-            }
-          : {
-              id: 'flak-pause',
-              label: sim.paused ? '❚❚ PAUSED' : '[P] PAUSE',
-              w: compact ? 92 : 104,
-              active: sim.paused,
-              accent: '#FFB000',
+        w,
+        h,
+        {
+          programTitle: 'FLAK NET',
+          activeProgramId: 'flak',
+          crtPreset: params.crtPreset,
+          phosphorTheme: params.phosphorTheme,
+          masterVolume: params.masterVolume,
+          audioMuted: params.audioMuted,
+          isFullscreen: params.isFullscreen,
+          hoveredButtonId: params.hoveredButtonId,
+          restartLabel: `${SEMIOTIC_ICONS.REPLAY} RESTART WAVE 01`,
+          confirmExitPending: params.confirmExitPending,
+          extraRows: [
+            {
+              id: 'flak-sys-demo',
+              label: '[T] LAUNCH TACTICAL DEMO',
+              value: sim.isDemoMode ? 'EXIT DEMO' : 'START BRIEFING ►',
+              accent: 'amber',
             },
-        {
-          id: 'flak-manifest',
-          label: 'MANIFEST',
-          w: compact ? 86 : 96,
-          active: params.manifestOpen,
-          accent: COLORS.GREEN_BRIGHT,
+          ],
         },
-        {
-          id: 'flak-mute',
-          label: params.audioMuted ? 'AUDIO: OFF' : 'AUDIO: ON',
-          w: compact ? 88 : 96,
-          active: !params.audioMuted,
-          accent: params.audioMuted ? COLORS.RED_KLAXON : COLORS.GREEN_PRIMARY,
-        },
-        {
-          id: 'flak-fullscreen',
-          label: params.isFullscreen ? 'EXIT FL' : 'FULLSCR',
-          w: compact ? 76 : 84,
-          active: params.isFullscreen,
-          accent: COLORS.AMBER_BRIGHT,
-        },
-        {
-          id: 'flak-osd',
-          label: '[TAB] MENU',
-          w: compact ? 94 : 104,
-          active: params.osdMenuOpen,
-          accent: '#FFB000',
-        },
-        {
-          id: 'flak-exit-os',
-          label: 'MU-TH-UR OS',
-          w: compact ? 104 : 112,
-          active: false,
-          accent: '#FFB000',
-        },
-      ];
-
-    let px = w - 12;
-    for (let i = pills.length - 1; i >= 0; i--) {
-      const p = pills[i];
-      px -= p.w;
-      if (px < titleRightEdge) break;
-      this.addButton(
-        ctx,
-        p.id,
-        { x: px, y: 7, width: p.w, height: 32 },
-        p.label,
-        p.active,
-        params.hoveredButtonId,
-        p.accent,
-        compact ? 12.5 : 13.5
+        this.buttons
       );
-      px -= 6;
+    } else if (params.manifestOpen) {
+      this.drawGlobalLeaderboardModal(ctx, params);
+    } else if (params.controlsOpen) {
+      this.drawControlsQuickCard(ctx, params);
+    } else if (sim.phase === 'ACTIVE_WAVE' && sim.paused && !sim.isDemoMode) {
+      drawPauseBanner(
+        ctx,
+        w,
+        h,
+        'Radar tracking halted. Press [P] to resume intercept, [H] for Controls, or [ESC] for System Menu.',
+        this.buttons,
+        params.hoveredButtonId,
+        params.timeSec
+      );
     }
 
-    ctx.restore();
+    // 8. Transient Status Toast (Mute toggle / Exit latch / EMP arm feedback)
+    if (params.statusToast && params.statusToast.alpha > 0.01) {
+      drawStatusToast(
+        ctx,
+        w,
+        layout.topBarH + 10,
+        params.statusToast.text,
+        params.statusToast.tone,
+        params.statusToast.alpha
+      );
+    }
   }
 
   // ===========================================================================
-  // INNOVATIVE LEFT HUD:
-  // 1) LIVE MECHANICAL BREECH CHAMBERS & HV EMP CAPACITOR BANK + SUBSYSTEM BUFFS
-  // 2) SCROLLING COMMAND-LINE DESTROYED-UNIT KILL LOG (`KILL_LOG.SYS`) W/ COORDS
-  // 3) COMPACT 4-CELL GEODESIC HABITAT PRESSURE SCHEMATIC
+  // SLIM RIGHT FIRE-CONTROL RAIL (~210px, 1:1 CSS PIXELS, ALL >=12px!)
   // ===========================================================================
-  private drawLeftFireControlConsole(
+  private drawRightFireControlRail(
     ctx: CanvasRenderingContext2D,
     params: FlakHudRenderParams,
     layout: FlakHudLayout
   ): void {
-    const { leftPanel: rect, hudScale: s } = layout;
-    const { sim, timeSec } = params;
-    const baseW = 282;
-    const baseH = Math.round(rect.height / s);
+    const r = layout.rightPanel;
+    const { sim, leaderboard, timeSec } = params;
+    const pad = 9;
+    const innerW = r.width - pad * 2;
+    const cx = r.x + r.width * 0.5;
 
     ctx.save();
-    ctx.translate(rect.x, rect.y);
-    ctx.scale(s, s);
+    ctx.fillStyle = THEME.BG_PANEL;
+    ctx.fillRect(r.x, r.y, r.width, r.height);
+    drawCornerBrackets(ctx, r.x, r.y, r.width, r.height, 12, THEME.BORDER_SUBTLE, 1.8);
 
-    ctx.fillStyle = 'rgba(3, 8, 5, 0.95)';
-    ctx.fillRect(0, 0, baseW, baseH);
-    this.drawCornerBrackets(ctx, 0, 0, baseW, baseH, 14, COLORS.GREEN_DIM, 2.2);
-
-    // -------------------------------------------------------------------------
-    // MODULE 1: LIVE MECHANICAL BREECH RACK & HV EMP CAPACITOR BANK + BUFFS
-    // -------------------------------------------------------------------------
+    // Header
+    ctx.textBaseline = 'middle';
+    ctx.font = font('head', 13);
     ctx.textAlign = 'left';
-    ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#8EF5AB';
-    ctx.fillText('FIRE-CONTROL // BREECH BUS', 11, 21);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
+    drawEllipsizedText(ctx, 'FIRE-CONTROL', r.x + pad, r.y + 15, innerW - 48);
 
+    ctx.font = font('micro', 12);
     ctx.textAlign = 'right';
-    ctx.font = 'bold 11px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText('LV-426 NET', baseW - 11, 20);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
+    ctx.fillText('LV-426', r.x + r.width - pad, r.y + 15);
 
-    const rackX = 10;
-    const rackW = baseW - 20;
-    let curY = 28;
-
-    // A) Twin M90 Flak Mechanical Breech Chambers ([A] Left & [D] Right)
-    const batA = sim.batteries[0];
-    const batD = sim.batteries[2];
-    const batS = sim.batteries[1];
-    const overclocked = sim.liveChain >= 4;
-
-    if (batA) {
-      this.drawFlakBreechChamber(ctx, batA, rackX, curY, rackW, 38, timeSec, overclocked);
-      curY += 43;
-    }
-    if (batD) {
-      this.drawFlakBreechChamber(ctx, batD, rackX, curY, rackW, 38, timeSec, overclocked);
-      curY += 43;
-    }
-    if (batS) {
-      this.drawEmpCapacitorBank(
-        ctx,
-        batS,
-        rackX,
-        curY,
-        rackW,
-        54,
-        timeSec,
-        sim.dangerCloseRechargeProgress,
-        sim.empRechargeFlashTimer
-      );
-      curY += 59;
-    }
-
-    // B) Active Buff & Tactical Subsystem Status Bus (2X Predictor Wave | ECM | Drop-Pod)
-    this.drawSubsystemBuffMatrix(ctx, sim, rackX, curY, rackW, 72, timeSec);
-    curY += 80;
-
-    // -------------------------------------------------------------------------
-    // MODULE 3 (anchored at bottom): 4-CELL HABITAT PRESSURE SCHEMATIC
-    // -------------------------------------------------------------------------
-    const habH = 82;
-    const habY = baseH - habH - 10;
-
-    // -------------------------------------------------------------------------
-    // MODULE 2 (fills middle): SCROLLING COMMAND-LINE KILL LOG (`KILL_LOG.SYS`)
-    // -------------------------------------------------------------------------
-    const cliY = curY;
-    const cliH = Math.max(120, habY - cliY - 8);
-    this.drawKillCommandLineLog(ctx, sim, rackX, cliY, rackW, cliH, timeSec);
-
-    // Draw anchored 4-cell habitat pressure schematic at bottom
-    this.drawHabitatPressureSchematic(ctx, sim, rackX, habY, rackW, habH, timeSec);
-
-    ctx.restore();
-  }
-
-  private drawFlakBreechChamber(
-    ctx: CanvasRenderingContext2D,
-    bat: DefenseBattery,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    timeSec: number,
-    overclocked = false
-  ): void {
-    const empty = bat.ammo <= 0;
-    const firing = bat.recoil > 1.5;
-    const borderCol = empty
-      ? Math.sin(timeSec * 14) > 0
-        ? COLORS.RED_KLAXON
-        : '#6B1206'
-      : firing
-        ? '#FFF6CC'
-        : overclocked
-          ? '#FFB000'
-          : 'rgba(68, 255, 119, 0.55)';
-
-    ctx.save();
-    ctx.fillStyle = firing
-      ? 'rgba(42, 34, 8, 0.65)'
-      : overclocked && !empty
-        ? 'rgba(22, 18, 5, 0.92)'
-        : 'rgba(5, 16, 10, 0.94)';
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = borderCol;
-    ctx.lineWidth = firing || empty || overclocked ? 1.8 : 1.3;
-    ctx.strokeRect(x, y, w, h);
-
-    // Left callsign tag
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 12.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = empty ? COLORS.RED_KLAXON : overclocked ? '#FFE082' : '#44FF77';
-    ctx.fillText(`[${bat.id}] M90`, x + 7, y + 15);
-
-    ctx.font = 'bold 10.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = firing || overclocked ? '#FFB000' : empty ? '#FF5538' : COLORS.GREEN_MID;
-    ctx.fillText(
-      firing
-        ? 'RECOIL!'
-        : bat.ammo < bat.maxAmmo
-          ? overclocked
-            ? 'OVERCLK!'
-            : 'CYCLING'
-          : overclocked
-            ? 'OVCL RDY'
-            : 'LOCKED',
-      x + 7,
-      y + 30
-    );
-
-    // 3 Physical Cartridge Breech Slots with vertical animated brass autoloader piston!
-    const slotsX = x + 74;
-    const slotsW = w - 120;
-    const gap = 5;
-    const slotW = (slotsW - gap * (bat.maxAmmo - 1)) / Math.max(1, bat.maxAmmo);
-    const slotH = h - 12;
-    const slotY = y + 6;
-
-    for (let i = 0; i < bat.maxAmmo; i++) {
-      const sx = slotsX + i * (slotW + gap);
-      ctx.fillStyle = 'rgba(2, 8, 5, 0.95)';
-      ctx.fillRect(sx, slotY, slotW, slotH);
-
-      if (i < bat.ammo) {
-        // Chambered live 90mm shell graphic (pointed brass/phosphor casing!)
-        ctx.fillStyle = 'rgba(68, 255, 119, 0.28)';
-        ctx.fillRect(sx + 1, slotY + 1, slotW - 2, slotH - 2);
-        ctx.fillStyle = '#44FF77';
-        ctx.fillRect(sx + 4, slotY + 7, slotW - 8, slotH - 10);
-        // Shell warhead tip
-        ctx.fillStyle = '#FFB000';
-        ctx.fillRect(sx + 7, slotY + 3, slotW - 14, 4);
-        ctx.strokeStyle = '#8EF5AB';
-        ctx.lineWidth = 1.2;
-        ctx.strokeRect(sx, slotY, slotW, slotH);
-      } else if (i === bat.ammo && bat.reloadProgress > 0) {
-        // Animated autoloader piston pushing next shell up into breech!
-        const fillH = Math.max(2, (slotH - 2) * bat.reloadProgress);
-        ctx.fillStyle = 'rgba(255, 176, 0, 0.65)';
-        ctx.fillRect(sx + 2, slotY + slotH - 1 - fillH, slotW - 4, fillH);
-        ctx.strokeStyle = '#FFB000';
-        ctx.lineWidth = 1.2;
-        ctx.strokeRect(sx, slotY, slotW, slotH);
-      } else {
-        ctx.strokeStyle = 'rgba(35, 100, 56, 0.45)';
-        ctx.lineWidth = 1.1;
-        ctx.strokeRect(sx, slotY, slotW, slotH);
-      }
-    }
-
-    // Right-side digital chamber readout
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = empty ? COLORS.RED_KLAXON : '#8EF5AB';
-    ctx.fillText(`${bat.ammo}/${bat.maxAmmo}`, x + w - 7, y + 23);
-    ctx.restore();
-  }
-
-  private drawEmpCapacitorBank(
-    ctx: CanvasRenderingContext2D,
-    bat: DefenseBattery,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    timeSec: number,
-    dcProgress = 0,
-    rechargeFlashTimer = 0
-  ): void {
-    const empty = bat.ammo <= 0;
-    const flashing = rechargeFlashTimer > 0;
-    const flashBright = flashing && Math.sin(timeSec * 28) > -0.2;
-    const borderCol = flashBright ? '#8EF5AB' : empty ? COLORS.RED_KLAXON : '#FFB000';
-
-    ctx.save();
-    ctx.fillStyle = flashBright
-      ? 'rgba(18, 56, 32, 0.92)'
-      : empty
-        ? 'rgba(34, 8, 6, 0.85)'
-        : 'rgba(28, 19, 4, 0.90)';
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = borderCol;
-    ctx.lineWidth = flashing ? 2.2 : 1.7;
-    ctx.strokeRect(x, y, w, h);
-
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 12px "Share Tech Mono", monospace';
-    ctx.fillStyle = flashBright ? '#FFF6CC' : empty ? COLORS.RED_KLAXON : '#FFB000';
-    ctx.fillText('[S] MK-IV EMP CAPACITOR BANK', x + 7, y + 14);
-
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 12px "JetBrains Mono", monospace';
-    ctx.fillStyle = flashBright ? '#8EF5AB' : empty ? '#FF5538' : '#FFF6CC';
-    ctx.fillText(
-      flashing ? '+1 RECHARGED!' : empty ? 'DEPLETED' : `${bat.ammo}/${bat.maxAmmo} HV`,
-      x + w - 7,
-      y + 14
-    );
-
-    // Segmented Glowing Amber High-Voltage Coils + Live Oscilloscope Arc across active cells!
-    const bankX = x + 7;
-    const bankY = y + 20;
-    const bankW = w - 14;
-    const bankH = 15;
-    const gap = 4;
-    const cellW = (bankW - gap * (bat.maxAmmo - 1)) / Math.max(1, bat.maxAmmo);
-
-    for (let i = 0; i < bat.maxAmmo; i++) {
-      const cx = bankX + i * (cellW + gap);
-      const charged = i < bat.ammo;
-      ctx.fillStyle = charged ? 'rgba(255, 176, 0, 0.34)' : 'rgba(18, 12, 6, 0.9)';
-      ctx.fillRect(cx, bankY, cellW, bankH);
-      ctx.strokeStyle = charged ? (flashBright ? '#8EF5AB' : '#FFB000') : 'rgba(94, 52, 0, 0.6)';
-      ctx.lineWidth = 1.2;
-      ctx.strokeRect(cx, bankY, cellW, bankH);
-
-      if (charged) {
-        // Inner glowing capacitor filament bar
-        ctx.fillStyle = flashBright ? '#FFF6CC' : '#FFE082';
-        ctx.fillRect(cx + 3, bankY + 4.5, cellW - 6, 6);
-      }
-    }
-
-    // Live crackling high-voltage sine waveform across charged capacitor cells
-    if (bat.ammo > 0) {
-      const litSpan = bat.ammo * cellW + Math.max(0, bat.ammo - 1) * gap;
-      ctx.strokeStyle = '#FFF6CC';
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      const segs = 22;
-      for (let k = 0; k <= segs; k++) {
-        const u = k / segs;
-        const px = bankX + u * litSpan;
-        const py =
-          bankY +
-          bankH * 0.5 +
-          Math.sin(u * 26 + timeSec * 28) * 3.5 * Math.sin(u * Math.PI);
-        if (k === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.stroke();
-    }
-
-    // Active EMP Capacitor Recharge Gauge (3 Danger Close kills or 1 Deflection Kill -> +1 HV shell!)
-    const gaugeY = y + h - 6;
-    ctx.font = 'bold 10.5px "JetBrains Mono", monospace';
-    if (bat.ammo >= bat.maxAmmo) {
-      ctx.textAlign = 'left';
-      ctx.fillStyle = '#A6FCC2';
-      ctx.fillText('CAPACITOR FULL // MAX HV CHARGE', x + 7, gaugeY);
-    } else {
-      const filled = Math.max(0, Math.min(3, dcProgress));
-      const pips = `${'■'.repeat(filled)}${'□'.repeat(3 - filled)}`;
-      ctx.textAlign = 'left';
-      ctx.fillStyle = filled > 0 ? '#FFB000' : COLORS.GREEN_MID;
-      ctx.fillText(`3X CHARGE: ${pips}`, x + 7, gaugeY);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = '#A6FCC2';
-      ctx.fillText('OR 1 DEFLECT KILL', x + w - 7, gaugeY);
-    }
-
-    ctx.restore();
-  }
-
-  private drawSubsystemBuffMatrix(
-    ctx: CanvasRenderingContext2D,
-    sim: FlakSimulation,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    timeSec: number
-  ): void {
-    const predOn = sim.predictorBoostTimer > 0;
-    const predFrac = Math.max(0, Math.min(1, sim.predictorBoostTimer / sim.predictorBoostMaxSec));
-    const jammed = sim.getActiveJammerIntensity() > 0.05;
-    const podSteps = sim.waveNumber % 3; // 0 = arrives after this wave if dome down
-
-    ctx.save();
-    ctx.fillStyle = 'rgba(4, 14, 8, 0.94)';
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = predOn ? '#44FF77' : jammed ? '#FFB000' : COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(x, y, w, h);
-
-    // Row 1: 2X BALLISTIC PATH PREDICTOR BUFF WITH LIVE OSCILLOSCOPE TRACE!
-    const r1Y = y + 5;
-    ctx.fillStyle = predOn ? 'rgba(20, 62, 34, 0.65)' : 'rgba(2, 8, 5, 0.85)';
-    ctx.fillRect(x + 5, r1Y, w - 10, 32);
-    ctx.strokeStyle = predOn ? '#44FF77' : 'rgba(35, 100, 56, 0.4)';
-    ctx.lineWidth = 1.1;
-    ctx.strokeRect(x + 5, r1Y, w - 10, 32);
-
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 11.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = predOn ? '#8EF5AB' : COLORS.GREEN_MID;
-    ctx.fillText('2X LEAD + FAST LOAD', x + 10, r1Y + 13);
-
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
-    ctx.fillStyle =
-      sim.liveChain >= 4 ? '#FFF6CC' : predOn ? '#FFB000' : 'rgba(116, 238, 152, 0.80)';
-    ctx.fillText(
-      sim.liveChain >= 4
-        ? `OVERCLK -20%`
-        : predOn
-          ? `ONLINE ${sim.predictorBoostTimer.toFixed(1)}S`
-          : 'STBY [HIT 2X]',
-      x + w - 10,
-      r1Y + 13
-    );
-
-    // Live Oscilloscope Waveform / Draining Phosphor Capacitor Bar
-    const barX = x + 10;
-    const barY = r1Y + 19;
-    const barW = w - 20;
-    ctx.fillStyle = 'rgba(8, 22, 14, 0.95)';
-    ctx.fillRect(barX, barY, barW, 8);
-    if (predOn) {
-      ctx.fillStyle = sim.predictorBoostTimer < 2.5 ? '#FFB000' : '#44FF77';
-      ctx.fillRect(barX, barY, barW * predFrac, 8);
-      // Oscilloscope carrier wave pulse riding the charge bar
-      ctx.strokeStyle = '#FFF6CC';
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      for (let i = 0; i <= 18; i++) {
-        const u = i / 18;
-        const wx = barX + u * barW * predFrac;
-        const wy = barY + 4 + Math.sin(u * 18 - timeSec * 22) * 3.0;
-        if (i === 0) ctx.moveTo(wx, wy);
-        else ctx.lineTo(wx, wy);
-      }
-      ctx.stroke();
-    }
-
-    // Row 2: Two side-by-side subsystem status cells (ECM RADAR | ORBITAL DROP-POD)
-    const r2Y = y + 41;
-    const cellGap = 5;
-    const cellW = (w - 10 - cellGap) * 0.5;
-    const cellH = 26;
-
-    // Left cell: ECM / Radar Integrity
-    const jamFlash = jammed && Math.sin(timeSec * 18) > 0;
-    ctx.fillStyle = jammed ? 'rgba(64, 24, 8, 0.72)' : 'rgba(5, 16, 10, 0.9)';
-    ctx.fillRect(x + 5, r2Y, cellW, cellH);
-    ctx.strokeStyle = jamFlash ? COLORS.RED_KLAXON : jammed ? '#FFB000' : COLORS.GREEN_DIM;
-    ctx.strokeRect(x + 5, r2Y, cellW, cellH);
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 11px "JetBrains Mono", monospace';
-    ctx.fillStyle = jamFlash ? '#FFF6CC' : jammed ? '#FFB000' : '#44FF77';
-    ctx.fillText(jammed ? '⚠ ECM JAMMED' : '● RADAR CLEAR', x + 5 + cellW * 0.5, r2Y + 17);
-
-    // Right cell: Orbital Drop-Pod 3-Wave Supply Cycle
-    const podX = x + 5 + cellW + cellGap;
-    const needPod = sim.getIntactDomeCount() < 4;
-    ctx.fillStyle = 'rgba(5, 16, 10, 0.9)';
-    ctx.fillRect(podX, r2Y, cellW, cellH);
-    ctx.strokeStyle = needPod ? '#FFB000' : COLORS.GREEN_DIM;
-    ctx.strokeRect(podX, r2Y, cellW, cellH);
-    const filledPips = podSteps === 0 ? 3 : podSteps;
-    const pipTxt = `${'■'.repeat(filledPips)}${'□'.repeat(3 - filledPips)}`;
-    ctx.fillStyle = needPod ? '#FFB000' : '#8EF5AB';
-    ctx.fillText(`POD ${pipTxt}`, podX + cellW * 0.5, r2Y + 17);
-
-    ctx.restore();
-  }
-
-  /**
-   * Authentic 1979 Command-Line Destroyed-Unit Kill Log (`KILL_LOG.SYS`)
-   * Prints every neutralized contact with unit ID, grid X coordinate, altitude km & kill method!
-   */
-  private drawKillCommandLineLog(
-    ctx: CanvasRenderingContext2D,
-    sim: FlakSimulation,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    timeSec: number
-  ): void {
-    ctx.save();
-    ctx.fillStyle = 'rgba(2, 6, 4, 0.98)';
-    ctx.fillRect(x, y, w, h);
-    this.drawCornerBrackets(ctx, x, y, w, h, 10, COLORS.GREEN_PRIMARY, 1.8);
-
-    // CLI Title Bar
-    ctx.fillStyle = 'rgba(14, 40, 22, 0.85)';
-    ctx.fillRect(x + 2, y + 2, w - 4, 20);
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 11.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#8EF5AB';
-    ctx.fillText('MU-TH-UR // KILL_LOG.SYS', x + 8, y + 16);
-
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 11px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(`K:${String(sim.totalKills).padStart(3, '0')}`, x + w - 8, y + 16);
-
-    // Column Header Legend
-    const colY = y + 34;
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 10.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#6CD98E';
-    ctx.fillText('UNIT    GRID-X  ALT   KILL', x + 8, colY);
-    ctx.strokeStyle = 'rgba(48, 146, 82, 0.52)';
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
     ctx.lineWidth = 1.0;
     ctx.beginPath();
-    ctx.moveTo(x + 6, colY + 4);
-    ctx.lineTo(x + w - 6, colY + 4);
+    ctx.moveTo(r.x + pad, r.y + 26);
+    ctx.lineTo(r.x + r.width - pad, r.y + 26);
     ctx.stroke();
 
-    // Scrolling CLI Kill Rows (newest at bottom, terminal style!)
-    const listTop = colY + 17;
-    const footerH = 22;
-    const availH = Math.max(24, y + h - footerH - listTop);
-    const lineStep = 16;
-    const maxLines = Math.max(1, Math.floor(availH / lineStep));
-    const recentKills = sim.killLogs.slice(-maxLines);
+    let curY = r.y + 34;
 
-    ctx.font = 'bold 11px "JetBrains Mono", monospace';
-    if (recentKills.length === 0) {
-      ctx.fillStyle = 'rgba(118, 240, 156, 0.72)';
-      ctx.fillText('> AWAITING INTERCEPTS...', x + 8, listTop);
-      ctx.fillText('> GRID LOCK: 1920x1080', x + 8, listTop + lineStep);
-    } else {
-      recentKills.forEach((entry, idx) => {
-        const ly = listTop + idx * lineStep;
-        const isNewest = idx === recentKills.length - 1;
-        ctx.globalAlpha = isNewest ? 1.0 : Math.max(0.62, 0.68 + (idx / recentKills.length) * 0.32);
-        ctx.fillStyle =
-          entry.tone === 'amber'
-            ? '#FFB000'
-            : entry.tone === 'bright'
-              ? '#FFF6CC'
-              : '#44FF77';
-        const gx = String(entry.coordX).padStart(4, '0');
-        const ak = `${String(entry.altKm).padStart(2, '0')}K`;
-        const rowTxt = `>${entry.unitCode.padEnd(6, ' ')} X:${gx} ${ak} [${entry.methodTag}]`;
-        ctx.fillText(rowTxt, x + 7, ly, w - 14);
-      });
-      ctx.globalAlpha = 1.0;
-    }
-
-    // Bottom Live CLI Prompt Cursor Line
-    const promptY = y + h - 7;
-    ctx.strokeStyle = 'rgba(35, 110, 60, 0.45)';
-    ctx.beginPath();
-    ctx.moveTo(x + 6, promptY - 14);
-    ctx.lineTo(x + w - 6, promptY - 14);
-    ctx.stroke();
-
-    const cursorOn = Math.sin(timeSec * 8) > 0;
-    ctx.font = 'bold 11px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#44FF77';
-    ctx.fillText(
-      `NET> CONFIRMED:${String(sim.totalKills).padStart(3, '0')} ${cursorOn ? '█' : ' '}`,
-      x + 8,
-      promptY
-    );
-
-    ctx.restore();
-  }
-
-  private drawHabitatPressureSchematic(
-    ctx: CanvasRenderingContext2D,
-    sim: FlakSimulation,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    timeSec: number
-  ): void {
-    const intact = sim.getIntactDomeCount();
-    const borderCol =
-      intact <= 1 ? COLORS.RED_KLAXON : intact <= 2 ? '#FFB000' : COLORS.GREEN_PRIMARY;
-
-    ctx.save();
-    ctx.fillStyle = 'rgba(2, 7, 4, 0.96)';
-    ctx.fillRect(x, y, w, h);
-    this.drawCornerBrackets(ctx, x, y, w, h, 9, borderCol, 1.7);
-
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 12px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#44FF77';
-    ctx.fillText('HABITAT SEALS', x + 9, y + 16);
-
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 12px "JetBrains Mono", monospace';
-    ctx.fillStyle = borderCol;
-    ctx.fillText(`${intact}/4 INTACT`, x + w - 9, y + 16);
-
-    // 4 Compact Horizontal Geodesic Dome Pressure Bays (H1 | H2 | H3 | H4)
-    const bayGap = 5;
-    const bayW = (w - 16 - bayGap * 3) / 4;
-    const bayH = 52;
-    const bayY = y + 23;
-
-    sim.domes.forEach((d, idx) => {
-      const bx = x + 8 + idx * (bayW + bayGap);
-      const breachBlink = !d.intact && Math.sin(timeSec * 12 + idx) > 0;
-      ctx.fillStyle = d.intact
-        ? 'rgba(14, 42, 24, 0.72)'
-        : breachBlink
-          ? 'rgba(92, 16, 10, 0.78)'
-          : 'rgba(38, 10, 8, 0.75)';
-      ctx.fillRect(bx, bayY, bayW, bayH);
-      ctx.strokeStyle = d.intact ? COLORS.GREEN_PRIMARY : COLORS.RED_KLAXON;
-      ctx.lineWidth = 1.4;
-      ctx.strokeRect(bx, bayY, bayW, bayH);
-
-      // Mini Geodesic Dome Wireframe Silhouette
-      const dcx = bx + bayW * 0.5;
-      const dcy = bayY + 26;
-      const dr = 14;
-      if (d.intact) {
-        ctx.strokeStyle = '#8EF5AB';
-        ctx.lineWidth = 1.6;
-        ctx.beginPath();
-        ctx.arc(dcx, dcy, dr, Math.PI, Math.PI * 2);
-        ctx.closePath();
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(dcx, dcy - dr);
-        ctx.lineTo(dcx, dcy);
-        ctx.stroke();
-      } else {
-        ctx.strokeStyle = COLORS.RED_KLAXON;
-        ctx.lineWidth = 1.6;
-        ctx.beginPath();
-        ctx.moveTo(dcx - dr, dcy);
-        ctx.lineTo(dcx - 5, dcy - 10);
-        ctx.lineTo(dcx + 2, dcy - 4);
-        ctx.lineTo(dcx + dr, dcy);
-        ctx.stroke();
-      }
-
-      ctx.textAlign = 'center';
-      ctx.font = 'bold 11px "JetBrains Mono", monospace';
-      ctx.fillStyle = d.intact ? '#52FF86' : '#FF5538';
-      ctx.fillText(`H${idx + 1}`, dcx, bayY + 38);
-      ctx.font = 'bold 10px "JetBrains Mono", monospace';
-      ctx.fillStyle = d.intact ? '#A6FCC2' : COLORS.RED_KLAXON;
-      ctx.fillText(d.intact ? '101KPA' : 'LOST', dcx, bayY + 49);
-    });
-
-    ctx.restore();
-  }
-
-  // ===========================================================================
-  // RIGHT TELEMETRY STRIP: THREAT DENSITY + LIVE CHAIN + STATS + #01 LEADER
-  // ===========================================================================
-  private drawRightTelemetryStrip(
-    ctx: CanvasRenderingContext2D,
-    params: FlakHudRenderParams,
-    layout: FlakHudLayout
-  ): void {
-    const { rightPanel: rect, hudScale: s } = layout;
-    const { sim, leaderboard, timeSec } = params;
-    const baseW = 222;
-    const baseH = Math.round(rect.height / s);
-
-    ctx.save();
-    ctx.translate(rect.x, rect.y);
-    ctx.scale(s, s);
-
-    ctx.fillStyle = 'rgba(3, 8, 5, 0.94)';
-    ctx.fillRect(0, 0, baseW, baseH);
-    this.drawCornerBrackets(ctx, 0, 0, baseW, baseH, 14, COLORS.GREEN_DIM, 2.2);
-
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 14px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_BRIGHT;
-    ctx.fillText('RADAR TELEMETRY', 12, 22);
-
-    // Dial 1: ATMOSPHERIC THREAT DENSITY
+    // 1. Analog Threat Density Dial (compact, crisp >=12px)
+    const compactH = r.height < 580;
+    const dialR = compactH ? 38 : Math.min(48, Math.floor(innerW * 0.25));
+    const dialCy = curY + dialR + 6;
     const density = sim.getThreatDensityNormalized();
     const densCol =
-      density > 0.72 ? COLORS.RED_KLAXON : density > 0.42 ? '#FFB000' : '#44FF77';
+      density > 0.72
+        ? THEME.ALERT_RED_TEXT
+        : density > 0.42
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_PRIMARY;
+
     this.drawAnalogDial(
       ctx,
-      baseW * 0.5,
-      104,
-      56,
+      cx,
+      dialCy,
+      dialR,
       density,
       'THREAT DENSITY',
       `${sim.threats.length} TRACKED`,
       densCol
     );
+    curY = dialCy + dialR + 36;
 
-    // Live Chain Multiplier & 2x Ballistic Predictor Module
-    const chainTop = 210;
-    const chainH = 142;
+    // 2. Live Chain Multiplier Module (ZERO duplicated 2X Boost meters here!)
+    const chainH = compactH ? 104 : 114;
     const hotChain = sim.liveChain >= 2;
-    const predOn = sim.predictorBoostTimer > 0;
-    const pulse = (hotChain || predOn) && Math.sin(timeSec * 14) > 0;
-    ctx.fillStyle = hotChain ? 'rgba(54, 34, 4, 0.72)' : 'rgba(4, 14, 8, 0.94)';
-    ctx.fillRect(10, chainTop, baseW - 20, chainH);
-    this.drawCornerBrackets(
+    const overclocked = sim.liveChain >= 4;
+    const pulse = hotChain && Math.sin(timeSec * 14) > 0;
+
+    ctx.fillStyle = hotChain ? 'rgba(54, 30, 4, 0.76)' : THEME.BG_ROW_ALT;
+    ctx.fillRect(r.x + pad, curY, innerW, chainH);
+    drawCornerBrackets(
       ctx,
-      10,
-      chainTop,
-      baseW - 20,
+      r.x + pad,
+      curY,
+      innerW,
       chainH,
-      10,
-      hotChain ? '#FFB000' : predOn ? '#44FF77' : COLORS.GREEN_DIM,
-      2.0
+      8,
+      hotChain ? THEME.ACCENT_AMBER : THEME.BORDER_SUBTLE,
+      1.6
     );
 
     ctx.textAlign = 'center';
-    ctx.font = 'bold 13px "Share Tech Mono", monospace';
-    ctx.fillStyle = hotChain ? '#FFE082' : COLORS.GREEN_MID;
-    ctx.fillText('LIVE CHAIN MULTIPLIER', baseW * 0.5, chainTop + 21);
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = hotChain ? THEME.ACCENT_AMBER_HI : THEME.TEXT_SECONDARY;
+    drawEllipsizedText(ctx, 'LIVE CHAIN', cx, curY + 15, innerW - 12);
 
-    ctx.font = 'bold 46px "Share Tech Mono", monospace';
-    ctx.fillStyle = pulse && hotChain ? '#FFF6CC' : hotChain ? '#FFB000' : '#44FF77';
-    ctx.fillText(`x${sim.liveChain}`, baseW * 0.5, chainTop + 72);
+    ctx.font = font('display', compactH ? 32 : 38);
+    ctx.fillStyle =
+      pulse && hotChain ? THEME.ACCENT_AMBER_HI : hotChain ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY;
+    ctx.fillText(`x${sim.liveChain}`, cx, curY + (compactH ? 49 : 53));
 
+    const barX = r.x + pad + 10;
+    const barW = innerW - 20;
+    const barY = curY + (compactH ? 72 : 78);
     const decayFrac = Math.max(0, Math.min(1, sim.liveChainDecayTimer / 3.2));
-    ctx.fillStyle = 'rgba(20, 44, 28, 0.8)';
-    ctx.fillRect(20, chainTop + 84, baseW - 40, 6);
+    ctx.fillStyle = 'rgba(12, 32, 20, 0.9)';
+    ctx.fillRect(barX, barY, barW, 6);
     if (decayFrac > 0.01) {
-      ctx.fillStyle = '#FFB000';
-      ctx.fillRect(20, chainTop + 84, (baseW - 40) * decayFrac, 6);
+      ctx.fillStyle = overclocked ? THEME.ACCENT_AMBER_HI : THEME.ACCENT_AMBER;
+      ctx.fillRect(barX, barY, barW * decayFrac, 6);
     }
 
-    ctx.font = 'bold 12px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#8EF5AB';
-    ctx.fillText(
-      `PEAK: x${sim.highChain} | ACC: ${sim.getAccuracyPercent()}%`,
-      baseW * 0.5,
-      chainTop + 108
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = overclocked ? THEME.ACCENT_AMBER_HI : THEME.TEXT_BRIGHT;
+    drawEllipsizedText(
+      ctx,
+      overclocked
+        ? `${SEMIOTIC_ICONS.STAR} OVERCLK -20% LOAD`
+        : `PEAK x${sim.highChain} · ${sim.getAccuracyPercent()}% ACC`,
+      cx,
+      curY + chainH - 12,
+      innerW - 10
     );
 
-    ctx.font = 'bold 11.5px "Share Tech Mono", monospace';
-    ctx.fillStyle =
-      sim.liveChain >= 4
-        ? '#FFF6CC'
-        : predOn
-          ? pulse
-            ? '#FFF6CC'
-            : '#44FF77'
-          : COLORS.GREEN_MID;
-    ctx.fillText(
-      sim.liveChain >= 4
-        ? `OVERCLOCK x${sim.liveChain} (-20% LOAD)`
-        : predOn
-          ? `LEAD + LOAD: ON (${sim.predictorBoostTimer.toFixed(1)}S)`
-          : 'LEAD + LOAD: SCORE 2X',
-      baseW * 0.5,
-      chainTop + 130
+    curY += chainH + 8;
+
+    // 3. Tactical Status Lamps (ECM Radar + 3-Wave Drop-Pod Cycle with Ron Cobb semiotic icons!)
+    const jammed = sim.getActiveJammerIntensity() > 0.05;
+    const jamFlash = jammed && Math.sin(timeSec * 16) > 0;
+    const lampH = 26;
+
+    // Lamp A: Radar / ECM
+    ctx.fillStyle = jammed ? THEME.ALERT_RED_BG : 'rgba(6, 20, 12, 0.9)';
+    ctx.fillRect(r.x + pad, curY, innerW, lampH);
+    ctx.strokeStyle = jamFlash
+      ? THEME.ALERT_RED_STROKE
+      : jammed
+        ? THEME.ACCENT_AMBER
+        : THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.3;
+    ctx.strokeRect(r.x + pad + 0.5, curY + 0.5, innerW - 1, lampH - 1);
+    ctx.font = font('micro', 12);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = jamFlash
+      ? THEME.ACCENT_AMBER_HI
+      : jammed
+        ? THEME.ALERT_RED_TEXT
+        : THEME.TEXT_PRIMARY;
+    drawEllipsizedText(
+      ctx,
+      jammed
+        ? `${SEMIOTIC_ICONS.HEX} ECM JAMMED`
+        : `${SEMIOTIC_ICONS.DOT_LIVE} RADAR LOCK CLEAR`,
+      cx,
+      curY + lampH * 0.5 + 0.5,
+      innerW - 10
     );
+    curY += lampH + 5;
 
-    // Combat Telemetry & Live #01 FLAK NET LEADER Card
-    const statTop = chainTop + chainH + 12;
-    const statH = Math.max(124, baseH - statTop - 12);
-    ctx.fillStyle = 'rgba(2, 7, 4, 0.95)';
-    ctx.fillRect(10, statTop, baseW - 20, statH);
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.6;
-    ctx.strokeRect(10, statTop, baseW - 20, statH);
+    // Lamp B: Orbital Drop-Pod Supply Cycle
+    const podSteps = sim.waveNumber % 3;
+    const filledPips = podSteps === 0 ? 3 : podSteps;
+    const pipTxt = `${'■'.repeat(filledPips)}${'□'.repeat(3 - filledPips)}`;
+    const needPod = sim.getIntactDomeCount() < 4;
 
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#44FF77';
-    ctx.fillText(`INTERCEPTS : ${sim.totalKills}`, 18, statTop + 24);
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(`DANGER 3X  : ${sim.dangerCloseKills}`, 18, statTop + 46);
-    ctx.fillStyle = '#8EF5AB';
-    ctx.fillText(`DEFLECTIONS: ${sim.deflectionKills}`, 18, statTop + 68);
-    ctx.fillStyle = COLORS.GREEN_MID;
-    ctx.fillText(`SHOTS FIRED: ${sim.shotsFired}`, 18, statTop + 90);
+    ctx.fillStyle = needPod ? THEME.ACCENT_AMBER_BG : 'rgba(6, 20, 12, 0.9)';
+    ctx.fillRect(r.x + pad, curY, innerW, lampH);
+    ctx.strokeStyle = needPod ? THEME.ACCENT_AMBER : THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.3;
+    ctx.strokeRect(r.x + pad + 0.5, curY + 0.5, innerW - 1, lampH - 1);
+    ctx.fillStyle = needPod ? THEME.ACCENT_AMBER_HI : THEME.ACCENT_CYAN;
+    drawEllipsizedText(
+      ctx,
+      `${SEMIOTIC_ICONS.DIAMOND} DROP-POD ${pipTxt}`,
+      cx,
+      curY + lampH * 0.5 + 0.5,
+      innerW - 10
+    );
+    curY += lampH + 8;
 
-    const leader = leaderboard.getReigningLeader();
-    if (leader && statH >= 150) {
-      const lTop = statTop + 106;
-      ctx.strokeStyle = COLORS.AMBER_DIM;
-      ctx.beginPath();
-      ctx.moveTo(18, lTop);
-      ctx.lineTo(baseW - 18, lTop);
-      ctx.stroke();
+    // 4. Compact Combat Counters & #01 Leader Card (fills remaining height cleanly)
+    const remH = r.y + r.height - pad - curY;
+    if (remH >= 88) {
+      ctx.fillStyle = 'rgba(3, 10, 6, 0.94)';
+      ctx.fillRect(r.x + pad, curY, innerW, remH);
+      ctx.strokeStyle = THEME.BORDER_SUBTLE;
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(r.x + pad + 0.5, curY + 0.5, innerW - 1, remH - 1);
 
-      ctx.font = 'bold 12px "Share Tech Mono", monospace';
-      ctx.fillStyle = '#FFB000';
-      ctx.fillText('#01 FLAK NET LEADER', 18, lTop + 20);
-      ctx.font = 'bold 13px "JetBrains Mono", monospace';
-      ctx.fillStyle = '#FFF6CC';
-      ctx.fillText(`${leader.callsign}`, 18, lTop + 40, baseW - 36);
-      ctx.fillStyle = '#44FF77';
-      ctx.fillText(`${leader.score.toLocaleString()} PTS`, 18, lTop + 59);
+      const statRows: Array<{ label: string; val: string; col: string }> = [
+        { label: 'INTERCEPTS', val: String(sim.totalKills), col: THEME.TEXT_PRIMARY },
+        { label: 'DANGER 3X', val: String(sim.dangerCloseKills), col: THEME.ACCENT_AMBER },
+        { label: 'DEFLECTS', val: String(sim.deflectionKills), col: THEME.TEXT_BRIGHT },
+        { label: 'ACCURACY', val: `${sim.getAccuracyPercent()}%`, col: THEME.TEXT_SECONDARY },
+      ];
+
+      ctx.font = font('micro', 12);
+      const rowStep = remH < 140 ? 20 : 22;
+      let sy = curY + 16;
+      for (const row of statRows) {
+        if (sy + 8 > curY + remH) break;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = THEME.TEXT_SECONDARY;
+        ctx.fillText(row.label, r.x + pad + 8, sy);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = row.col;
+        ctx.fillText(row.val, r.x + r.width - pad - 8, sy);
+        sy += rowStep;
+      }
+
+      // Reigning #01 Leader block at bottom of rail when height permits
+      const leader = leaderboard.getReigningLeader();
+      const leadStart = sy + 6;
+      if (leader && curY + remH - leadStart >= 56) {
+        ctx.strokeStyle = THEME.BORDER_SUBTLE;
+        ctx.beginPath();
+        ctx.moveTo(r.x + pad + 8, leadStart);
+        ctx.lineTo(r.x + r.width - pad - 8, leadStart);
+        ctx.stroke();
+
+        ctx.textAlign = 'left';
+        ctx.font = font('micro', 12);
+        ctx.fillStyle = THEME.ACCENT_AMBER;
+        drawEllipsizedText(
+          ctx,
+          `${SEMIOTIC_ICONS.STAR} #01 RECORD`,
+          r.x + pad + 8,
+          leadStart + 15,
+          innerW - 16
+        );
+        ctx.font = font('data', 13);
+        ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+        drawEllipsizedText(ctx, leader.callsign, r.x + pad + 8, leadStart + 33, innerW - 16);
+        ctx.font = font('micro', 12);
+        ctx.fillStyle = THEME.TEXT_PRIMARY;
+        drawEllipsizedText(
+          ctx,
+          `${leader.score.toLocaleString()} PTS`,
+          r.x + pad + 8,
+          leadStart + 50,
+          innerW - 16
+        );
+      }
     }
 
     ctx.restore();
@@ -1035,106 +520,537 @@ export class FlakHudRenderer {
     ctx.save();
     if (clamped > 0.01) {
       ctx.fillStyle =
-        accent === COLORS.RED_KLAXON
-          ? 'rgba(255, 51, 24, 0.28)'
-          : 'rgba(255, 176, 0, 0.26)';
+        accent === THEME.ALERT_RED_TEXT
+          ? 'rgba(255, 51, 24, 0.24)'
+          : 'rgba(255, 176, 0, 0.22)';
       ctx.beginPath();
       ctx.moveTo(cx, cy);
-      ctx.arc(cx, cy, r - 4, startAng, valAng);
+      ctx.arc(cx, cy, r - 3, startAng, valAng);
       ctx.closePath();
       ctx.fill();
     }
 
-    ctx.strokeStyle = COLORS.AMBER_DIM;
-    ctx.lineWidth = 4.2;
+    ctx.strokeStyle = 'rgba(94, 52, 0, 0.85)';
+    ctx.lineWidth = 3.8;
     ctx.beginPath();
     ctx.arc(cx, cy, r, startAng, endAng);
     ctx.stroke();
 
     if (clamped > 0.01) {
       ctx.strokeStyle = accent;
-      ctx.lineWidth = 5.0;
+      ctx.lineWidth = 4.4;
       ctx.beginPath();
       ctx.arc(cx, cy, r, startAng, valAng);
       ctx.stroke();
     }
 
-    const ticks = 8;
-    for (let i = 0; i <= ticks; i++) {
-      const f = i / ticks;
+    for (let i = 0; i <= 8; i++) {
+      const f = i / 8;
       const a = startAng + f * sweep;
-      const len = i % 2 === 0 ? 8 : 5;
-      ctx.strokeStyle = f <= clamped + 0.02 ? '#FFE08A' : COLORS.GREEN_DIM;
-      ctx.lineWidth = i % 2 === 0 ? 2.0 : 1.4;
+      const len = i % 2 === 0 ? 7 : 4;
+      ctx.strokeStyle = f <= clamped + 0.02 ? THEME.ACCENT_AMBER_HI : THEME.BORDER_SUBTLE;
+      ctx.lineWidth = i % 2 === 0 ? 1.8 : 1.2;
       ctx.beginPath();
       ctx.moveTo(cx + Math.cos(a) * (r - 2), cy + Math.sin(a) * (r - 2));
       ctx.lineTo(cx + Math.cos(a) * (r - 2 - len), cy + Math.sin(a) * (r - 2 - len));
       ctx.stroke();
     }
 
-    ctx.strokeStyle = '#FFF2CC';
-    ctx.lineWidth = 3.2;
+    ctx.strokeStyle = THEME.ACCENT_AMBER_HI;
+    ctx.lineWidth = 2.8;
     ctx.beginPath();
-    ctx.moveTo(cx - Math.cos(valAng) * 5, cy - Math.sin(valAng) * 5);
-    ctx.lineTo(cx + Math.cos(valAng) * (r - 5), cy + Math.sin(valAng) * (r - 5));
+    ctx.moveTo(cx - Math.cos(valAng) * 4, cy - Math.sin(valAng) * 4);
+    ctx.lineTo(cx + Math.cos(valAng) * (r - 4), cy + Math.sin(valAng) * (r - 4));
     ctx.stroke();
 
     ctx.fillStyle = accent;
     ctx.beginPath();
-    ctx.arc(cx, cy, 4.2, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 3.8, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.textAlign = 'center';
-    ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.fillText(label, cx, cy + r + 15);
+    ctx.textBaseline = 'middle';
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = THEME.TEXT_SECONDARY;
+    ctx.fillText(label, cx, cy + r + 11);
 
-    ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
+    ctx.font = font('data', 12);
     ctx.fillStyle = accent;
-    ctx.fillText(subText, cx, cy + r + 31);
+    ctx.fillText(subText, cx, cy + r + 26);
     ctx.restore();
   }
 
   // ===========================================================================
-  // BOTTOM MU-TH-UR TELEMETRY LOG BAR
+  // SINGLE-LINE BOTTOM TELEMETRY TICKER
   // ===========================================================================
-  private drawBottomTelemetryBar(
+  private drawBottomTickerBar(
     ctx: CanvasRenderingContext2D,
     params: FlakHudRenderParams,
     layout: FlakHudLayout
   ): void {
-    const r = layout.bottomLog;
+    const r = layout.bottomTicker;
     const { sim } = params;
+    const latest = sim.logs[0];
+
     ctx.save();
-    ctx.fillStyle = 'rgba(3, 8, 5, 0.95)';
+    ctx.fillStyle = 'rgba(3, 10, 6, 0.94)';
     ctx.fillRect(r.x, r.y, r.width, r.height);
-    this.drawCornerBrackets(ctx, r.x, r.y, r.width, r.height, 10, COLORS.GREEN_DIM, 1.8);
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.width - 1, r.height - 1);
 
-    ctx.textAlign = 'left';
-    const maxLines = 3;
-    const fontPx = Math.max(11.5, Math.min(13.5, Math.round(r.height * 0.21)));
-    ctx.font = `bold ${fontPx}px "JetBrains Mono", monospace`;
+    ctx.font = font('micro', 12);
+    ctx.textBaseline = 'middle';
+    const midY = r.y + r.height * 0.5 + 0.5;
 
-    for (let i = 0; i < Math.min(maxLines, sim.logs.length); i++) {
-      const entry = sim.logs[i];
-      const ly = r.y + 19 + i * (fontPx + 6);
-      ctx.fillStyle =
-        entry.tone === 'red'
-          ? COLORS.RED_KLAXON
-          : entry.tone === 'amber'
-            ? '#FFB000'
-            : entry.tone === 'bright'
-              ? '#8EF5AB'
-              : '#44FF77';
-      ctx.globalAlpha = i === 0 ? 1.0 : i === 1 ? 0.72 : 0.45;
-      ctx.fillText(`LOG> [${entry.timestamp}] ${entry.text}`, r.x + 12, ly, r.width - 24);
+    if (latest) {
+      const col =
+        latest.tone === 'red'
+          ? THEME.ALERT_RED_TEXT
+          : latest.tone === 'amber'
+            ? THEME.ACCENT_AMBER_HI
+            : latest.tone === 'bright'
+              ? THEME.TEXT_BRIGHT
+              : THEME.TEXT_PRIMARY;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = col;
+      drawEllipsizedText(
+        ctx,
+        `NET> [${latest.timestamp}] ${latest.text}`,
+        r.x + 10,
+        midY,
+        r.width - 20
+      );
+    } else {
+      ctx.textAlign = 'left';
+      ctx.fillStyle = THEME.TEXT_SECONDARY;
+      drawEllipsizedText(
+        ctx,
+        'NET> SURFACE-TO-ORBIT RADAR BUS ONLINE — AWAITING CONTACTS',
+        r.x + 10,
+        midY,
+        r.width - 20
+      );
     }
 
     ctx.restore();
   }
 
   // ===========================================================================
-  // TITLE / READY SCREEN OVERLAY
+  // BOTTOM BREECH / TOUCH EMP BUTTON / HABITAT SEALS DOCK (~74px, 1:1 CSS PX)
+  // ===========================================================================
+  private drawBottomBreechDomeDock(
+    ctx: CanvasRenderingContext2D,
+    params: FlakHudRenderParams,
+    layout: FlakHudLayout
+  ): void {
+    const r = layout.bottomDock;
+    const { sim, timeSec } = params;
+    const gap = 6;
+    const flakW = Math.round((r.width - gap * 2) * 0.34);
+    const empW = Math.round((r.width - gap * 2) * 0.36);
+    const domeW = Math.max(120, r.width - gap * 2 - flakW - empW);
+
+    const flakRect: ViewportRect = { x: r.x, y: r.y, width: flakW, height: r.height };
+    const empRect: ViewportRect = {
+      x: flakRect.x + flakRect.width + gap,
+      y: r.y,
+      width: empW,
+      height: r.height,
+    };
+    const domeRect: ViewportRect = {
+      x: empRect.x + empRect.width + gap,
+      y: r.y,
+      width: domeW,
+      height: r.height,
+    };
+
+    // Bay 1: Twin M90 Proximity Flak Breech Chambers ([A] & [D] — LMB / A / D = FLAK)
+    this.drawDockFlakBay(ctx, sim, flakRect, timeSec);
+
+    // Bay 2: Mk-IV EMP Capacitor Bank + Crisp Interactive Touch/Trackpad [EMP FIRE] Button!
+    this.drawDockEmpBay(ctx, params, empRect);
+
+    // Bay 3: 4-Cell Habitat Seals Schematic (H1..H4)
+    this.drawDockHabitatBay(ctx, sim, domeRect, timeSec);
+  }
+
+  private drawDockFlakBay(
+    ctx: CanvasRenderingContext2D,
+    sim: FlakSimulation,
+    rect: ViewportRect,
+    timeSec: number
+  ): void {
+    const batA = sim.batteries[0];
+    const batD = sim.batteries[2];
+    const overclocked = sim.liveChain >= 4;
+
+    ctx.save();
+    ctx.fillStyle = THEME.BG_PANEL;
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    drawCornerBrackets(
+      ctx,
+      rect.x,
+      rect.y,
+      rect.width,
+      rect.height,
+      9,
+      overclocked ? THEME.ACCENT_AMBER : THEME.BORDER_SUBTLE,
+      1.6
+    );
+
+    const pad = 6;
+    const rowGap = 4;
+    const rowH = Math.floor((rect.height - pad * 2 - rowGap) * 0.5);
+
+    if (batA) {
+      this.drawCompactFlakChamber(
+        ctx,
+        batA,
+        rect.x + pad,
+        rect.y + pad,
+        rect.width - pad * 2,
+        rowH,
+        timeSec,
+        overclocked
+      );
+    }
+    if (batD) {
+      this.drawCompactFlakChamber(
+        ctx,
+        batD,
+        rect.x + pad,
+        rect.y + pad + rowH + rowGap,
+        rect.width - pad * 2,
+        rowH,
+        timeSec,
+        overclocked
+      );
+    }
+
+    ctx.restore();
+  }
+
+  private drawCompactFlakChamber(
+    ctx: CanvasRenderingContext2D,
+    bat: DefenseBattery,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    timeSec: number,
+    overclocked: boolean
+  ): void {
+    const empty = bat.ammo <= 0;
+    const firing = bat.recoil > 1.5;
+    const borderCol = empty
+      ? Math.sin(timeSec * 14) > 0
+        ? THEME.ALERT_RED_STROKE
+        : THEME.BORDER_SUBTLE
+      : firing
+        ? THEME.ACCENT_AMBER_HI
+        : overclocked
+          ? THEME.ACCENT_AMBER
+          : THEME.BORDER_SUBTLE;
+
+    ctx.fillStyle = firing
+      ? 'rgba(46, 34, 8, 0.72)'
+      : overclocked && !empty
+        ? 'rgba(26, 18, 4, 0.90)'
+        : 'rgba(4, 14, 8, 0.94)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = borderCol;
+    ctx.lineWidth = firing || empty || overclocked ? 1.5 : 1.1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+    const midY = y + h * 0.5 + 0.5;
+    ctx.textBaseline = 'middle';
+    ctx.font = font('micro', 12);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = empty
+      ? THEME.ALERT_RED_TEXT
+      : overclocked
+        ? THEME.ACCENT_AMBER_HI
+        : THEME.TEXT_PRIMARY;
+    ctx.fillText(`[${bat.id}] FLAK`, x + 7, midY);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = empty ? THEME.ALERT_RED_TEXT : THEME.TEXT_BRIGHT;
+    ctx.fillText(`${bat.ammo}/${bat.maxAmmo}`, x + w - 7, midY);
+
+    // Physical cartridge breech slots in center
+    const slotsX = x + 76;
+    const slotsW = Math.max(42, w - 118);
+    const gap = 4;
+    const slotW = (slotsW - gap * (bat.maxAmmo - 1)) / Math.max(1, bat.maxAmmo);
+    const slotH = Math.max(12, h - 8);
+    const slotY = Math.round(y + (h - slotH) * 0.5);
+
+    for (let i = 0; i < bat.maxAmmo; i++) {
+      const sx = slotsX + i * (slotW + gap);
+      ctx.fillStyle = 'rgba(2, 8, 5, 0.96)';
+      ctx.fillRect(sx, slotY, slotW, slotH);
+
+      if (i < bat.ammo) {
+        ctx.fillStyle = 'rgba(68, 255, 119, 0.30)';
+        ctx.fillRect(sx + 1, slotY + 1, slotW - 2, slotH - 2);
+        ctx.fillStyle = THEME.TEXT_PRIMARY;
+        ctx.fillRect(sx + 3, slotY + 4, slotW - 6, Math.max(4, slotH - 6));
+        ctx.fillStyle = THEME.ACCENT_AMBER;
+        ctx.fillRect(sx + 5, slotY + 2, Math.max(3, slotW - 10), 3);
+        ctx.strokeStyle = THEME.TEXT_BRIGHT;
+        ctx.lineWidth = 1.0;
+        ctx.strokeRect(sx + 0.5, slotY + 0.5, slotW - 1, slotH - 1);
+      } else if (i === bat.ammo && bat.reloadProgress > 0) {
+        const fillW = Math.max(2, (slotW - 2) * bat.reloadProgress);
+        ctx.fillStyle = 'rgba(255, 176, 0, 0.72)';
+        ctx.fillRect(sx + 1, slotY + 2, fillW, slotH - 4);
+        ctx.strokeStyle = THEME.ACCENT_AMBER;
+        ctx.lineWidth = 1.0;
+        ctx.strokeRect(sx + 0.5, slotY + 0.5, slotW - 1, slotH - 1);
+      } else {
+        ctx.strokeStyle = THEME.BORDER_SUBTLE;
+        ctx.lineWidth = 1.0;
+        ctx.strokeRect(sx + 0.5, slotY + 0.5, slotW - 1, slotH - 1);
+      }
+    }
+  }
+
+  private drawDockEmpBay(
+    ctx: CanvasRenderingContext2D,
+    params: FlakHudRenderParams,
+    rect: ViewportRect
+  ): void {
+    const { sim, timeSec, empTouchArmed, hoveredButtonId } = params;
+    const bat = sim.batteries[1];
+    if (!bat) return;
+
+    const empty = bat.ammo <= 0;
+    const flashing = sim.empRechargeFlashTimer > 0;
+    const flashBright = flashing && Math.sin(timeSec * 24) > -0.2;
+    const borderCol = flashBright
+      ? THEME.TEXT_BRIGHT
+      : empTouchArmed
+        ? THEME.ACCENT_AMBER_HI
+        : empty
+          ? THEME.ALERT_RED_STROKE
+          : THEME.ACCENT_AMBER;
+
+    ctx.save();
+    ctx.fillStyle = flashBright
+      ? 'rgba(14, 52, 28, 0.92)'
+      : empty
+        ? 'rgba(34, 8, 6, 0.90)'
+        : 'rgba(28, 18, 4, 0.92)';
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    drawCornerBrackets(ctx, rect.x, rect.y, rect.width, rect.height, 9, borderCol, 1.8);
+
+    // Right side: Crisp Interactive Touch/Trackpad [EMP FIRE] Button!
+    const btnW = Math.min(138, Math.max(106, Math.round(rect.width * 0.38)));
+    const btnH = rect.height - 12;
+    const btnRect: ViewportRect = {
+      x: rect.x + rect.width - btnW - 6,
+      y: rect.y + 6,
+      width: btnW,
+      height: btnH,
+    };
+    const canFire =
+      !empty && sim.phase === 'ACTIVE_WAVE' && !sim.paused && !sim.isDemoMode;
+
+    drawChromeButton(
+      ctx,
+      btnRect,
+      empTouchArmed
+        ? `${SEMIOTIC_ICONS.DIAMOND} EMP ARMED`
+        : empty
+          ? 'EMP EMPTY'
+          : `${SEMIOTIC_ICONS.DIAMOND} EMP FIRE`,
+      {
+        id: 'flak-emp-arm',
+        accent: empty ? 'red' : empTouchArmed ? 'green' : 'amber',
+        active: empTouchArmed || canFire,
+        disabled: !canFire,
+        hovered: hoveredButtonId === 'flak-emp-arm',
+        fontPx: 13,
+        subLabel: empTouchArmed ? 'TAP SKY!' : empty ? '3X DC / DFL' : 'RMB/SPC/S',
+      },
+      this.buttons
+    );
+
+    // Left side: HV Capacitor Cells + Recharge Progress
+    const leftX = rect.x + 8;
+    const leftW = Math.max(80, btnRect.x - 8 - leftX);
+
+    ctx.textBaseline = 'middle';
+    ctx.font = font('micro', 12);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = flashBright
+      ? THEME.ACCENT_AMBER_HI
+      : empty
+        ? THEME.ALERT_RED_TEXT
+        : THEME.ACCENT_AMBER;
+    drawEllipsizedText(
+      ctx,
+      flashing ? '+1 EMP RECHARGED!' : `${SEMIOTIC_ICONS.DIAMOND} MK-IV EMP`,
+      leftX,
+      rect.y + 15,
+      leftW - 44
+    );
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = flashBright
+      ? THEME.TEXT_BRIGHT
+      : empty
+        ? THEME.ALERT_RED_TEXT
+        : THEME.ACCENT_AMBER_HI;
+    ctx.fillText(`${bat.ammo}/${bat.maxAmmo}`, leftX + leftW, rect.y + 15);
+
+    // Segmented Glowing HV Capacitor Coils
+    const cellY = rect.y + 26;
+    const cellH = 18;
+    const gap = 4;
+    const cellW = (leftW - gap * (bat.maxAmmo - 1)) / Math.max(1, bat.maxAmmo);
+
+    for (let i = 0; i < bat.maxAmmo; i++) {
+      const cx = leftX + i * (cellW + gap);
+      const charged = i < bat.ammo;
+      ctx.fillStyle = charged ? 'rgba(255, 176, 0, 0.34)' : 'rgba(18, 12, 6, 0.92)';
+      ctx.fillRect(cx, cellY, cellW, cellH);
+      ctx.strokeStyle = charged
+        ? flashBright
+          ? THEME.TEXT_BRIGHT
+          : THEME.ACCENT_AMBER
+        : 'rgba(94, 52, 0, 0.72)';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(cx + 0.5, cellY + 0.5, cellW - 1, cellH - 1);
+
+      if (charged) {
+        ctx.fillStyle = flashBright ? THEME.TEXT_BRIGHT : THEME.ACCENT_AMBER_HI;
+        ctx.fillRect(cx + 3, cellY + 5, Math.max(2, cellW - 6), cellH - 10);
+      }
+    }
+
+    // High-voltage carrier arc across charged cells
+    if (bat.ammo > 0) {
+      const litSpan = bat.ammo * cellW + Math.max(0, bat.ammo - 1) * gap;
+      ctx.strokeStyle = THEME.ACCENT_AMBER_HI;
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      for (let k = 0; k <= 18; k++) {
+        const u = k / 18;
+        const px = leftX + u * litSpan;
+        const py =
+          cellY +
+          cellH * 0.5 +
+          Math.sin(u * 22 + timeSec * 26) * 3.2 * Math.sin(u * Math.PI);
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+
+    // Bottom Recharge Progress Readout (12px crisp JetBrains Mono)
+    const gaugeY = rect.y + rect.height - 13;
+    ctx.font = font('micro', 12);
+    ctx.textAlign = 'left';
+    if (bat.ammo >= bat.maxAmmo) {
+      ctx.fillStyle = THEME.TEXT_BRIGHT;
+      drawEllipsizedText(ctx, 'HV CAPACITOR FULL', leftX, gaugeY, leftW);
+    } else {
+      const filled = Math.max(0, Math.min(3, sim.dangerCloseRechargeProgress));
+      const pips = `${'■'.repeat(filled)}${'□'.repeat(3 - filled)}`;
+      ctx.fillStyle = filled > 0 ? THEME.ACCENT_AMBER_HI : THEME.TEXT_SECONDARY;
+      drawEllipsizedText(ctx, `3X DC ${pips} · 1 DFL=+1`, leftX, gaugeY, leftW);
+    }
+
+    ctx.restore();
+  }
+
+  private drawDockHabitatBay(
+    ctx: CanvasRenderingContext2D,
+    sim: FlakSimulation,
+    rect: ViewportRect,
+    timeSec: number
+  ): void {
+    const intact = sim.getIntactDomeCount();
+    const borderCol =
+      intact <= 1
+        ? THEME.ALERT_RED_STROKE
+        : intact <= 2
+          ? THEME.ACCENT_AMBER
+          : THEME.BORDER_SUBTLE;
+
+    ctx.save();
+    ctx.fillStyle = THEME.BG_PANEL;
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    drawCornerBrackets(ctx, rect.x, rect.y, rect.width, rect.height, 9, borderCol, 1.6);
+
+    ctx.textBaseline = 'middle';
+    ctx.font = font('micro', 12);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = THEME.TEXT_PRIMARY;
+    drawEllipsizedText(ctx, 'HABITAT SEALS', rect.x + 8, rect.y + 14, rect.width - 70);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle =
+      intact <= 1
+        ? THEME.ALERT_RED_TEXT
+        : intact <= 2
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_BRIGHT;
+    ctx.fillText(`${intact}/4`, rect.x + rect.width - 8, rect.y + 14);
+
+    // 4 Horizontal Geodesic Habitat Cells (H1..H4)
+    const gap = 4;
+    const cellW = (rect.width - 14 - gap * 3) / 4;
+    const cellH = rect.height - 28;
+    const cellY = rect.y + 23;
+
+    sim.domes.forEach((d, idx) => {
+      const bx = rect.x + 7 + idx * (cellW + gap);
+      const breachBlink = !d.intact && Math.sin(timeSec * 12 + idx) > 0;
+      ctx.fillStyle = d.intact
+        ? 'rgba(12, 38, 22, 0.78)'
+        : breachBlink
+          ? 'rgba(92, 16, 10, 0.82)'
+          : 'rgba(42, 10, 8, 0.78)';
+      ctx.fillRect(bx, cellY, cellW, cellH);
+      ctx.strokeStyle = d.intact ? THEME.TEXT_PRIMARY : THEME.ALERT_RED_STROKE;
+      ctx.lineWidth = 1.3;
+      ctx.strokeRect(bx + 0.5, cellY + 0.5, cellW - 1, cellH - 1);
+
+      const dcx = bx + cellW * 0.5;
+      const dcy = cellY + Math.min(20, cellH * 0.44);
+      const dr = Math.min(11, cellW * 0.24);
+      if (d.intact) {
+        ctx.strokeStyle = THEME.TEXT_BRIGHT;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(dcx, dcy, dr, Math.PI, Math.PI * 2);
+        ctx.closePath();
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = THEME.ALERT_RED_STROKE;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(dcx - dr, dcy);
+        ctx.lineTo(dcx - dr * 0.35, dcy - 7);
+        ctx.lineTo(dcx + dr * 0.2, dcy - 3);
+        ctx.lineTo(dcx + dr, dcy);
+        ctx.stroke();
+      }
+
+      ctx.font = font('micro', 12);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = d.intact ? THEME.TEXT_BRIGHT : THEME.ALERT_RED_TEXT;
+      ctx.fillText(d.intact ? `H${idx + 1}` : 'LOST', dcx, cellY + cellH - 10);
+    });
+
+    ctx.restore();
+  }
+
+  // ===========================================================================
+  // TITLE / READY SCREEN OVERLAY (Clean Scannable Card, >=13px, Zero Leaks!)
   // ===========================================================================
   private drawTitleOverlay(
     ctx: CanvasRenderingContext2D,
@@ -1145,106 +1061,159 @@ export class FlakHudRenderer {
     const leader = params.leaderboard.getReigningLeader();
     const uplinkStatus = params.leaderboard.getStatus();
 
-    const boxW = Math.min(720, vp.width - 36);
-    const boxH = Math.min(508, vp.height - 20);
-    const bx = vp.x + (vp.width - boxW) * 0.5;
-    const by = vp.y + (vp.height - boxH) * 0.5;
+    const boxW = Math.min(720, vp.width - 28);
+    const boxH = Math.min(460, vp.height - 16);
+    const bx = Math.round(vp.x + (vp.width - boxW) * 0.5);
+    const by = Math.round(vp.y + (vp.height - boxH) * 0.5);
 
     ctx.save();
-    ctx.fillStyle = 'rgba(2, 8, 5, 0.94)';
+    ctx.fillStyle = 'rgba(3, 10, 6, 0.95)';
     ctx.fillRect(bx, by, boxW, boxH);
-    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 20, '#FFB000', 2.8);
+    drawCornerBrackets(ctx, bx, by, boxW, boxH, 18, THEME.ACCENT_AMBER, 2.4);
 
     drawRankedTitleRibbon(
       ctx,
-      bx + 26,
+      bx + 22,
       by + 12,
-      boxW - 52,
+      boxW - 44,
       24,
-      '★ OFFICIAL RANKED MODE — HIGH SCORE RECORDED TO FLAK_SCORES ★',
+      `${SEMIOTIC_ICONS.STAR} OFFICIAL RANKED MODE — RECORD LOGGED TO ORBITAL RELAY ${SEMIOTIC_ICONS.STAR}`,
       params.timeSec,
       true
     );
 
     ctx.textAlign = 'center';
-    ctx.font = 'bold 31px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.RED_KLAXON;
-    ctx.fillText('ORBITAL INTERCEPT // FLAK NET', bx + boxW * 0.5, by + 72);
+    ctx.textBaseline = 'middle';
+    ctx.font = font('display', boxW < 540 ? 22 : 28);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+    drawEllipsizedText(ctx, 'ORBITAL INTERCEPT // FLAK NET', bx + boxW * 0.5, by + 62, boxW - 36);
 
-    const leadY = by + 88;
-    ctx.fillStyle = 'rgba(32, 22, 4, 0.92)';
-    ctx.fillRect(bx + 26, leadY, boxW - 52, 44);
-    ctx.strokeStyle = '#FFB000';
-    ctx.lineWidth = 1.8;
-    ctx.strokeRect(bx + 26, leadY, boxW - 52, 44);
+    // Reigning Leader Strip
+    const leadY = by + 84;
+    ctx.fillStyle = THEME.ACCENT_AMBER_BG;
+    ctx.fillRect(bx + 22, leadY, boxW - 44, 38);
+    ctx.strokeStyle = THEME.ACCENT_AMBER;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(bx + 22.5, leadY + 0.5, boxW - 45, 37);
 
-    ctx.font = 'bold 15px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#FFB000';
+    ctx.font = font('data', 14);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
     const leaderText = leader
-      ? `#01 FLAK NET LEADER: ${leader.callsign} — ${leader.score.toLocaleString()} PTS (WAVE ${String(leader.wave).padStart(2, '0')} | x${leader.maxChain})`
+      ? `#01 RECORD: ${leader.callsign} — ${leader.score.toLocaleString()} PTS (W-${String(leader.wave).padStart(2, '0')} | x${leader.maxChain})`
       : uplinkStatus === 'LOADING'
-        ? 'SYNCING MU-TH-UR FLAK_SCORES UPLINK...'
-        : '#01 FLAK NET LEADER: UNCLAIMED — SET THE FIRST RECORD';
-    ctx.fillText(leaderText, bx + boxW * 0.5, leadY + 28, boxW - 68);
+        ? 'SYNCING ORBITAL LEADERBOARD...'
+        : '#01 RECORD: UNCLAIMED — SET THE FIRST HIGH SCORE';
+    drawEllipsizedText(ctx, leaderText, bx + boxW * 0.5, leadY + 19.5, boxW - 60);
 
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-    const lines = [
-      { c: '#44FF77', t: '[LEFT-CLICK / A / D]  M90 FLAK — Airburst; aim BESIDE Heavy Meteors to deflect!' },
-      { c: '#FFB000', t: '[RIGHT-CLICK / SPACE] MK-IV EMP MORTAR — Massive wave, stuns Boss & MIRVs' },
-      { c: '#FFE082', t: '[DANGER CLOSE // 3X]  Intercept <24KM for 3X; 3 Danger Kills or 1 Deflect = +1 EMP!' },
-      { c: '#8EF5AB', t: '[CHAINS & OVERCLOCK]  Chain hits (up to x16) for Lead Circles & Fast Reloads!' },
+    // 4 Tactile Keycap + Unified Weapon Briefing Rows
+    const briefRows: Array<{
+      cap: string;
+      text: string;
+      capAccent: string;
+      textCol: string;
+    }> = [
+      {
+        cap: 'LMB / A / D',
+        text: 'M90 Flak — Airburst shells; aim beside Heavy Meteors to deflect!',
+        capAccent: THEME.TEXT_PRIMARY,
+        textCol: THEME.TEXT_BRIGHT,
+      },
+      {
+        cap: 'RMB / SPACE / S',
+        text: 'Mk-IV EMP — Massive pulse; stuns Boss salvos & scrambles MIRVs.',
+        capAccent: THEME.ACCENT_AMBER,
+        textCol: THEME.ACCENT_AMBER_HI,
+      },
+      {
+        cap: '3X DANGER CLOSE',
+        text: 'Intercept below 24KM for 3X; 3 Danger Kills or 1 Deflect = +1 EMP.',
+        capAccent: THEME.ACCENT_AMBER,
+        textCol: THEME.TEXT_BRIGHT,
+      },
+      {
+        cap: 'CHAINS & OVERCLK',
+        text: 'Chain up to x16 for 2X Lead Pips & -20% autoloader reload time.',
+        capAccent: THEME.ACCENT_CYAN,
+        textCol: THEME.TEXT_BRIGHT,
+      },
     ];
-    let ly = leadY + 74;
-    for (const l of lines) {
-      ctx.fillStyle = l.c;
-      ctx.fillText(l.t, bx + 28, ly, boxW - 56);
-      ly += 30;
-    }
 
-    const innerW = boxW - 56;
-    const btnY1 = by + boxH - 114;
-    const btnY2 = by + boxH - 60;
-    const gap = 14;
-    const demoW = Math.round((innerW - gap) * 0.58);
+    const footerBtnY2 = by + boxH - 52;
+    const footerBtnY1 = footerBtnY2 - 50;
+    const rowsStartY = leadY + 52;
+    const rowsAvailH = Math.max(96, footerBtnY1 - 10 - rowsStartY);
+    const rowStep = Math.min(34, Math.floor(rowsAvailH / briefRows.length));
+
+    briefRows.forEach((row, idx) => {
+      const ry = rowsStartY + idx * rowStep + 12;
+      const capW = drawKeycap(ctx, row.cap, bx + 24, ry, {
+        height: 22,
+        fontPx: 12,
+        padX: 7,
+        accent: row.capAccent,
+        textColor: row.capAccent === THEME.TEXT_PRIMARY ? THEME.TEXT_BRIGHT : row.capAccent,
+        centerY: true,
+      });
+      const textX = bx + 24 + Math.max(capW, 138) + 10;
+      const textW = Math.max(100, bx + boxW - 24 - textX);
+      ctx.font = font('prose', 13);
+      ctx.fillStyle = row.textCol;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      drawEllipsizedText(ctx, row.text, textX, ry + 0.5, textW);
+    });
+
+    // Primary & Secondary Launch Actions
+    const innerW = boxW - 44;
+    const gap = 12;
+    const demoW = Math.round((innerW - gap) * 0.54);
     const manW = innerW - gap - demoW;
 
-    this.addButton(
+    drawChromeButton(
       ctx,
-      'flak-start',
-      { x: bx + 28, y: btnY1, width: innerW, height: 44 },
-      '► ENGAGE RANKED FLAK NET [ENTER] ◄',
-      true,
-      params.hoveredButtonId,
-      '#FFB000',
-      16.5
+      { x: bx + 22, y: footerBtnY1, width: innerW, height: 42 },
+      `${SEMIOTIC_ICONS.PLAY} ENGAGE RANKED FLAK NET [ENTER]`,
+      {
+        id: 'flak-start',
+        accent: 'amber',
+        active: true,
+        hovered: params.hoveredButtonId === 'flak-start',
+        fontPx: 15,
+      },
+      this.buttons
     );
-    this.addButton(
+
+    drawChromeButton(
       ctx,
-      'flak-demo',
-      { x: bx + 28, y: btnY2, width: demoW, height: 42 },
-      '[T] DEMO // TACTICAL BRIEFING',
-      false,
-      params.hoveredButtonId,
-      '#FFB000',
-      14.5
+      { x: bx + 22, y: footerBtnY2, width: demoW, height: 38 },
+      '[T] LAUNCH TACTICAL DEMO',
+      {
+        id: 'flak-demo',
+        accent: 'cyan',
+        hovered: params.hoveredButtonId === 'flak-demo',
+        fontPx: 13,
+      },
+      this.buttons
     );
-    this.addButton(
+
+    drawChromeButton(
       ctx,
-      'flak-manifest',
-      { x: bx + 28 + demoW + gap, y: btnY2, width: manW, height: 42 },
-      'GLOBAL LEADERBOARD',
-      false,
-      params.hoveredButtonId,
-      '#44FF77',
-      14.5
+      { x: bx + 22 + demoW + gap, y: footerBtnY2, width: manW, height: 38 },
+      `${SEMIOTIC_ICONS.STAR} LEADERBOARD`,
+      {
+        id: 'flak-manifest',
+        accent: 'green',
+        hovered: params.hoveredButtonId === 'flak-manifest',
+        fontPx: 13,
+      },
+      this.buttons
     );
 
     ctx.restore();
   }
 
   // ===========================================================================
-  // END-OF-WAVE AUDIT TALLY OVERLAY
+  // END-OF-WAVE AUDIT TALLY OVERLAY (Detailed Stats + Click/Space Fast-Forward!)
   // ===========================================================================
   private drawWaveAuditBanner(
     ctx: CanvasRenderingContext2D,
@@ -1254,301 +1223,194 @@ export class FlakHudRenderer {
     const audit = params.sim.waveAudit;
     if (!audit) return;
     const vp = layout.scopeViewport;
+    const sim = params.sim;
 
-    const w = Math.min(540, vp.width - 40);
-    const h = audit.dropPodRestoringDomeLabel ? 248 : 210;
-    const x = vp.x + (vp.width - w) * 0.5;
-    const y = vp.y + (vp.height - h) * 0.34;
+    const w = Math.min(560, vp.width - 32);
+    const h = audit.dropPodRestoringDomeLabel ? 292 : 258;
+    const x = Math.round(vp.x + (vp.width - w) * 0.5);
+    const y = Math.round(vp.y + (vp.height - h) * 0.42);
 
     ctx.save();
-    ctx.fillStyle = 'rgba(2, 9, 5, 0.92)';
+    ctx.fillStyle = 'rgba(3, 11, 6, 0.94)';
     ctx.fillRect(x, y, w, h);
-    this.drawCornerBrackets(ctx, x, y, w, h, 16, '#FFB000', 2.4);
+    drawCornerBrackets(ctx, x, y, w, h, 16, THEME.ACCENT_AMBER, 2.2);
 
+    ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
-    ctx.font = 'bold 24px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#8EF5AB';
-    ctx.fillText(
+    ctx.font = font('display', 20);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
+    drawEllipsizedText(
+      ctx,
       `WAVE ${String(audit.completedWave).padStart(2, '0')} CLEARED // SECTOR AUDIT`,
       x + w * 0.5,
-      y + 38
+      y + 28,
+      w - 32
     );
 
+    // Combat Summary Strip (crisp wave debrief stats)
+    const stripY = y + 48;
+    ctx.fillStyle = THEME.BG_ROW_ALT;
+    ctx.fillRect(x + 20, stripY, w - 40, 26);
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.0;
+    ctx.strokeRect(x + 20.5, stripY + 0.5, w - 41, 25);
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = THEME.TEXT_SECONDARY;
+    drawEllipsizedText(
+      ctx,
+      `KILLS ${sim.totalKills}  ·  ACC ${sim.getAccuracyPercent()}%  ·  PEAK x${sim.highChain}  ·  3X DC ${sim.dangerCloseKills}  ·  DFL ${sim.deflectionKills}`,
+      x + w * 0.5,
+      stripY + 13.5,
+      w - 52
+    );
+
+    // Tally Rows
+    ctx.font = font('data', 14);
     ctx.textAlign = 'left';
-    ctx.font = 'bold 16px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#44FF77';
+    ctx.fillStyle = THEME.TEXT_PRIMARY;
     ctx.fillText(
       `SURVIVING DOMES (${audit.talliedDomes}/${audit.survivingDomes}):`,
-      x + 28,
-      y + 82
+      x + 24,
+      y + 100
     );
     ctx.textAlign = 'right';
-    ctx.fillStyle = '#FFF6CC';
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
     ctx.fillText(
       `+${(audit.talliedDomes * audit.domeBonusPerUnit).toLocaleString()}`,
-      x + w - 28,
-      y + 82
+      x + w - 24,
+      y + 100
     );
 
     ctx.textAlign = 'left';
-    ctx.fillStyle = '#FFB000';
+    ctx.fillStyle = THEME.ACCENT_AMBER;
     ctx.fillText(
       `UNUSED EMP ROUNDS (${audit.talliedEmp}/${audit.unusedEmpRounds}):`,
-      x + 28,
-      y + 116
+      x + 24,
+      y + 128
     );
     ctx.textAlign = 'right';
-    ctx.fillStyle = '#FFF6CC';
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
     ctx.fillText(
       `+${(audit.talliedEmp * audit.empBonusPerUnit).toLocaleString()}`,
-      x + w - 28,
-      y + 116
+      x + w - 24,
+      y + 128
     );
 
-    ctx.strokeStyle = COLORS.GREEN_DIM;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.moveTo(x + 28, y + 136);
-    ctx.lineTo(x + w - 28, y + 136);
+    ctx.moveTo(x + 24, y + 148);
+    ctx.lineTo(x + w - 24, y + 148);
     ctx.stroke();
 
     ctx.textAlign = 'left';
-    ctx.font = 'bold 18px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#8EF5AB';
-    ctx.fillText('TOTAL WAVE AUDIT BONUS:', x + 28, y + 168);
+    ctx.font = font('head', 16);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
+    ctx.fillText('TOTAL WAVE AUDIT BONUS:', x + 24, y + 172);
     ctx.textAlign = 'right';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(`+${audit.totalWaveBonus.toLocaleString()}`, x + w - 28, y + 168);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
+    ctx.fillText(`+${audit.totalWaveBonus.toLocaleString()}`, x + w - 24, y + 172);
 
     if (audit.dropPodRestoringDomeLabel) {
       ctx.textAlign = 'center';
-      ctx.font = 'bold 15px "Share Tech Mono", monospace';
-      ctx.fillStyle = '#8EF5AB';
-      ctx.fillText(
-        `► ORBITAL DROP-POD RESTORING ${audit.dropPodRestoringDomeLabel} ◄`,
+      ctx.font = font('data', 13);
+      ctx.fillStyle = THEME.ACCENT_CYAN;
+      drawEllipsizedText(
+        ctx,
+        `${SEMIOTIC_ICONS.DIAMOND} ORBITAL DROP-POD RESTORING ${audit.dropPodRestoringDomeLabel}`,
         x + w * 0.5,
-        y + 214
+        y + 206,
+        w - 40
       );
     }
 
-    ctx.restore();
-  }
-
-  // ===========================================================================
-  // GAME OVER & FAST PRE-FILLED CALLSIGN SUBMISSION MODAL
-  // ===========================================================================
-  private drawGameOverOverlay(ctx: CanvasRenderingContext2D, params: FlakHudRenderParams): void {
-    const { width: w, height: h, sim, timeSec } = params;
-    ctx.save();
-    ctx.fillStyle = 'rgba(2, 5, 3, 0.78)';
-    ctx.fillRect(0, 0, w, h);
-
-    const bw = Math.min(620, w - 36);
-    const bh = 420;
-    const bx = (w - bw) * 0.5;
-    const by = (h - bh) * 0.5;
-
-    ctx.fillStyle = 'rgba(4, 10, 6, 0.97)';
-    ctx.fillRect(bx, by, bw, bh);
-    this.drawCornerBrackets(ctx, bx, by, bw, bh, 20, COLORS.RED_KLAXON, 2.8);
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 28px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.RED_KLAXON;
-    ctx.fillText('COLONY ATMOSPHERE LOST // ALL DOMES BREACHED', bx + bw * 0.5, by + 44, bw - 36);
-
-    ctx.fillStyle = 'rgba(18, 28, 20, 0.75)';
-    ctx.fillRect(bx + 26, by + 64, bw - 52, 92);
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.6;
-    ctx.strokeRect(bx + 26, by + 64, bw - 52, 92);
-
-    ctx.font = 'bold 26px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(`FINAL SCORE: ${sim.score.toLocaleString()}`, bx + bw * 0.5, by + 102);
-
-    ctx.font = 'bold 14.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#8EF5AB';
-    ctx.fillText(
-      `WAVE ${String(sim.waveNumber).padStart(2, '0')}  |  MAX CHAIN x${sim.highChain}  |  ACCURACY ${sim.getAccuracyPercent()}%  |  KILLS ${sim.totalKills}`,
-      bx + bw * 0.5,
-      by + 136,
-      bw - 68
-    );
-
-    const lockedOut = sim.gameOverLockoutTimer > 0;
-    const csTop = by + 174;
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = lockedOut ? '#FFB000' : params.callsignEditing ? '#44FF77' : '#8EF5AB';
-    const csPrompt = lockedOut
-      ? `KEYLOCK ACTIVE (${sim.gameOverLockoutTimer.toFixed(1)}S) — RELEASE FIRING KEYS...`
-      : params.callsignEditing && !params.scoreSubmitted
-        ? 'EDITING CALLSIGN — TYPE NAME, [ENTER] SUBMIT, [ESC] DONE:'
-        : params.scoreSubmitted
-          ? 'OPERATOR CALLSIGN TRANSMITTED TO MU-TH-UR FLAK_SCORES:'
-          : 'CLICK CALLSIGN (OR [C]) TO EDIT · [ENTER] SUBMIT · [SPACE/R] REDEPLOY:';
-    ctx.fillText(csPrompt, bx + 28, csTop, bw - 56);
-
-    const inputRect: ViewportRect = { x: bx + 28, y: csTop + 12, width: bw - 56, height: 46 };
-    ctx.fillStyle =
-      params.callsignEditing && !params.scoreSubmitted && !lockedOut
-        ? 'rgba(12, 42, 22, 0.96)'
-        : 'rgba(2, 12, 7, 0.96)';
-    ctx.fillRect(inputRect.x, inputRect.y, inputRect.width, inputRect.height);
-    ctx.strokeStyle = lockedOut
-      ? COLORS.GREEN_DIM
-      : params.scoreSubmitted
-        ? '#8EF5AB'
-        : params.callsignEditing
-          ? '#44FF77'
-          : '#FFB000';
-    ctx.lineWidth = params.callsignEditing ? 2.6 : 2.1;
-    ctx.strokeRect(inputRect.x, inputRect.y, inputRect.width, inputRect.height);
-
-    const cursorBlink =
-      !lockedOut && !params.scoreSubmitted && params.callsignEditing && Math.sin(timeSec * 8) > 0;
-    ctx.font = 'bold 22px "JetBrains Mono", monospace';
-    ctx.fillStyle = lockedOut ? COLORS.GREEN_MID : '#FFF6CC';
-    ctx.fillText(
-      `> ${params.callsignDraft}${cursorBlink ? '█' : ''}`,
-      inputRect.x + 14,
-      inputRect.y + 31
-    );
-
-    if (!lockedOut && !params.scoreSubmitted) {
-      this.buttons.push({
-        id: 'flak-callsign-focus',
-        rect: inputRect,
-        label: 'EDIT CALLSIGN',
-      });
-    }
-
-    if (params.submitResultBanner) {
-      ctx.textAlign = 'center';
-      ctx.font = 'bold 14px "JetBrains Mono", monospace';
-      ctx.fillStyle = '#8EF5AB';
-      ctx.fillText(params.submitResultBanner, bx + bw * 0.5, csTop + 82, bw - 56);
-    }
-
-    const btnY = by + bh - 122;
-    if (!params.scoreSubmitted) {
-      this.addButton(
-        ctx,
-        lockedOut ? 'flak-locked' : 'flak-submit-score',
-        { x: bx + 28, y: btnY, width: bw - 56, height: 44 },
-        lockedOut
-          ? `KEYLOCK ACTIVE (${sim.gameOverLockoutTimer.toFixed(1)}S)...`
-          : params.submittingScore
-            ? 'TRANSMITTING TELEMETRY TO MU-TH-UR...'
-            : '► TRANSMIT SCORE TO GLOBAL FLAK_SCORES [ENTER] ◄',
-        !lockedOut,
-        params.hoveredButtonId,
-        lockedOut ? COLORS.GREEN_DIM : '#FFB000',
-        15.5
-      );
-    } else {
-      this.addButton(
-        ctx,
-        'flak-manifest',
-        { x: bx + 28, y: btnY, width: bw - 56, height: 44 },
-        'VIEW GLOBAL FLAK_SCORES LEADERBOARD',
-        false,
-        params.hoveredButtonId,
-        '#8EF5AB',
-        15.5
-      );
-    }
-
-    const bottomBtnY = by + bh - 64;
-    const halfW = (bw - 56 - 14) * 0.5;
-    this.addButton(
+    // Interactive Fast-Forward / Continue Button
+    const skipBtnW = Math.min(300, w - 48);
+    drawChromeButton(
       ctx,
-      lockedOut ? 'flak-locked-restart' : 'flak-restart',
-      { x: bx + 28, y: bottomBtnY, width: halfW, height: 42 },
-      lockedOut ? 'REDEPLOY WAVE 01 (LOCKED)' : 'REDEPLOY WAVE 01 [SPACE / R]',
-      false,
-      params.hoveredButtonId,
-      lockedOut ? COLORS.GREEN_DIM : '#44FF77',
-      14.5
-    );
-    this.addButton(
-      ctx,
-      'flak-exit-os',
-      { x: bx + 28 + halfW + 14, y: bottomBtnY, width: halfW, height: 42 },
-      'EXIT TO MU-TH-UR OS',
-      false,
-      params.hoveredButtonId,
-      '#FFB000',
-      15.5
+      {
+        x: Math.round(x + (w - skipBtnW) * 0.5),
+        y: y + h - 46,
+        width: skipBtnW,
+        height: 34,
+      },
+      audit.done
+        ? `${SEMIOTIC_ICONS.PLAY} NEXT WAVE [SPACE / CLICK]`
+        : `${SEMIOTIC_ICONS.PLAY} FAST-FORWARD TALLY [SPACE / CLICK]`,
+      {
+        id: 'flak-audit-skip',
+        accent: audit.done ? 'green' : 'amber',
+        active: audit.done,
+        hovered: params.hoveredButtonId === 'flak-audit-skip',
+        fontPx: 13,
+      },
+      this.buttons
     );
 
     ctx.restore();
   }
 
   // ===========================================================================
-  // GLOBAL LEADERBOARD MODAL (`flak_scores`) WITH ★ JUST ADDED HIGHLIGHT!
+  // UNIFIED SHARED POST-RUN DEBRIEF MODAL (PostRunFlow)
   // ===========================================================================
-  private drawManifestModal(ctx: CanvasRenderingContext2D, params: FlakHudRenderParams): void {
-    const { width: w, height: h, leaderboard, lastSubmittedRun, timeSec } = params;
+  private drawGameOverDebrief(ctx: CanvasRenderingContext2D, params: FlakHudRenderParams): void {
+    const { width: w, height: h, sim } = params;
+    drawGameOverDebriefModal(
+      ctx,
+      w,
+      h,
+      {
+        title: 'COLONY ATMOSPHERE LOST // ALL DOMES BREACHED',
+        subtitle: `ORBITAL INTERCEPT DEBRIEF · 3X DANGER: ${sim.dangerCloseKills} · DEFLECTIONS: ${sim.deflectionKills}`,
+        outcomeTone: 'red',
+        timeSec: params.timeSec,
+        keylockRemainingSec: sim.gameOverLockoutTimer,
+        stats: [
+          { label: 'FINAL SCORE', value: sim.score.toLocaleString(), accent: 'amber' },
+          { label: 'WAVE REACHED', value: `W-${String(sim.waveNumber).padStart(2, '0')}`, accent: 'green' },
+          { label: 'MAX CHAIN', value: `x${sim.highChain}`, accent: 'cyan' },
+          { label: 'ACC / KILLS', value: `${sim.getAccuracyPercent()}% (${sim.totalKills})`, accent: 'green' },
+        ],
+        isRanked: !sim.isDemoMode,
+        score: sim.score,
+        callsignDraft: params.callsignDraft,
+        callsignEditing: params.callsignEditing,
+        scoreSubmitted: params.scoreSubmitted,
+        submittingScore: params.submittingScore,
+        statusBanner: params.submitResultBanner,
+        statusBannerTone: params.submitResultTone,
+        hoveredButtonId: params.hoveredButtonId,
+        playAgainLabel: `${SEMIOTIC_ICONS.REPLAY} PLAY AGAIN [R]`,
+        submitLabel: `${SEMIOTIC_ICONS.PLAY} TRANSMIT SCORE [ENTER]`,
+      },
+      this.buttons
+    );
+  }
+
+  // ===========================================================================
+  // UNIFIED SHARED GLOBAL LEADERBOARD MODAL (PostRunFlow)
+  // ===========================================================================
+  private drawGlobalLeaderboardModal(
+    ctx: CanvasRenderingContext2D,
+    params: FlakHudRenderParams
+  ): void {
+    const { width: w, height: h, leaderboard, lastSubmittedRun, sim } = params;
     const { entries, showingArchiveFallback } = leaderboard.getEntries();
-    const status = leaderboard.getStatus();
-
-    ctx.save();
-    ctx.fillStyle = 'rgba(2, 6, 4, 0.84)';
-    ctx.fillRect(0, 0, w, h);
-
-    const bw = Math.min(780, w - 36);
-    const bh = Math.min(620, h - 44);
-    const bx = (w - bw) * 0.5;
-    const by = (h - bh) * 0.5;
-
-    ctx.fillStyle = 'rgba(3, 9, 5, 0.98)';
-    ctx.fillRect(bx, by, bw, bh);
-    this.drawCornerBrackets(ctx, bx, by, bw, bh, 20, '#44FF77', 2.6);
-
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 21px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#8EF5AB';
-    ctx.fillText('MU-TH-UR // FLAK_SCORES GLOBAL TELEMETRY', bx + 22, by + 34);
-
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 13px "JetBrains Mono", monospace';
-    ctx.fillStyle =
-      status === 'LIVE' && !showingArchiveFallback ? '#44FF77' : '#FFB000';
-    ctx.fillText(
-      status === 'LIVE' && !showingArchiveFallback
-        ? '● UPLINK: LIVE FIRESTORE'
-        : '● LOCAL ARCHIVE FALLBACK',
-      bx + bw - 22,
-      by + 33
-    );
-
-    const headY = by + 64;
-    ctx.fillStyle = 'rgba(18, 44, 26, 0.72)';
-    ctx.fillRect(bx + 18, headY - 18, bw - 36, 26);
-
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.textAlign = 'left';
-    ctx.fillText('RK', bx + 26, headY);
-    ctx.fillText('CALLSIGN', bx + 84, headY);
-    ctx.textAlign = 'right';
-    ctx.fillText('SCORE', bx + bw * 0.65, headY);
-    ctx.fillText('WAVE', bx + bw * 0.76, headY);
-    ctx.fillText('CHAIN', bx + bw * 0.87, headY);
-    ctx.fillText('ACC', bx + bw - 26, headY);
-
-    const availRowsH = bh - 196;
-    const maxRows = Math.min(14, Math.max(6, Math.floor(availRowsH / 28)));
-    const visibleEntries = entries.slice(0, maxRows);
+    const rawStatus = leaderboard.getStatus();
+    const uplinkStatus =
+      rawStatus === 'LIVE' && !showingArchiveFallback
+        ? 'LIVE'
+        : rawStatus === 'LOADING'
+          ? 'SYNCING'
+          : 'LOCAL';
 
     let matchedJustIdx = -1;
     if (lastSubmittedRun) {
       if (lastSubmittedRun.docId) {
-        matchedJustIdx = visibleEntries.findIndex((e) => e.id === lastSubmittedRun.docId);
+        matchedJustIdx = entries.findIndex((e) => e.id === lastSubmittedRun.docId);
       }
       if (matchedJustIdx === -1) {
-        matchedJustIdx = visibleEntries.findIndex(
+        matchedJustIdx = entries.findIndex(
           (e) =>
             e.callsign.toUpperCase() === lastSubmittedRun.callsign.toUpperCase() &&
             e.score === lastSubmittedRun.score &&
@@ -1557,313 +1419,79 @@ export class FlakHudRenderer {
       }
     }
 
-    const pulseNew = 0.5 + 0.5 * Math.sin(timeSec * 8.5);
-    let ry = headY + 28;
-    visibleEntries.forEach((e, i) => {
-      const isJustAdded = i === matchedJustIdx;
-      if (isJustAdded) {
-        ctx.fillStyle = `rgba(68, 255, 119, ${(0.18 + pulseNew * 0.14).toFixed(3)})`;
-        ctx.fillRect(bx + 16, ry - 18, bw - 32, 27);
-        ctx.strokeStyle = '#44FF77';
-        ctx.lineWidth = 2.2;
-        ctx.strokeRect(bx + 16, ry - 18, bw - 32, 27);
-      } else if (i % 2 === 1) {
-        ctx.fillStyle = 'rgba(16, 36, 22, 0.35)';
-        ctx.fillRect(bx + 18, ry - 18, bw - 36, 26);
-      }
+    const rows: ManifestRowData[] = entries.slice(0, 12).map((e, i) => ({
+      rank: i + 1,
+      callsign: e.callsign,
+      score: e.score,
+      stats: [`W-${String(e.wave).padStart(2, '0')}`, `x${e.maxChain}`, `${e.accuracy}%`],
+      isJustAdded: i === matchedJustIdx,
+      isLocalFallback: e.isArchiveFallback,
+    }));
 
-      ctx.font = 'bold 14px "JetBrains Mono", monospace';
-      ctx.fillStyle = isJustAdded ? '#FFFFFF' : i === 0 ? '#FFB000' : i < 3 ? '#8EF5AB' : '#44FF77';
-      ctx.textAlign = 'left';
-      ctx.fillText(
-        isJustAdded ? `►#${String(i + 1).padStart(2, '0')}` : `#${String(i + 1).padStart(2, '0')}`,
-        isJustAdded ? bx + 20 : bx + 26,
-        ry
-      );
-      ctx.fillText(e.callsign, bx + 84, ry);
-
-      if (isJustAdded) {
-        const callW = ctx.measureText(e.callsign).width;
-        const badgeX = Math.min(bx + 258, bx + 92 + callW);
-        const badgeW = 98;
-        ctx.fillStyle = 'rgba(10, 44, 22, 0.96)';
-        ctx.fillRect(badgeX, ry - 14, badgeW, 18);
-        ctx.strokeStyle = '#44FF77';
-        ctx.lineWidth = 1.6;
-        ctx.strokeRect(badgeX, ry - 14, badgeW, 18);
-        ctx.font = 'bold 12px "Share Tech Mono", monospace';
-        ctx.fillStyle = '#FFFFFF';
-        ctx.textAlign = 'center';
-        ctx.fillText('★ JUST ADDED', badgeX + badgeW * 0.5, ry - 1);
-        ctx.font = 'bold 14px "JetBrains Mono", monospace';
-      }
-
-      ctx.textAlign = 'right';
-      ctx.fillStyle = isJustAdded ? '#FFFFFF' : i === 0 ? '#FFB000' : '#44FF77';
-      ctx.fillText(e.score.toLocaleString(), bx + bw * 0.65, ry);
-      ctx.fillStyle = isJustAdded ? '#7BFF9E' : '#8EF5AB';
-      ctx.fillText(`W-${String(e.wave).padStart(2, '0')}`, bx + bw * 0.76, ry);
-      ctx.fillText(`x${e.maxChain}`, bx + bw * 0.87, ry);
-      ctx.fillText(`${e.accuracy}%`, bx + bw - 26, ry);
-      ry += 28;
-    });
-
-    // Bottom ★ YOUR JUST-COMPLETED RUN banner (matching Lunar Lander & Perimeter!)
-    const bannerY = by + bh - 96;
+    let justAddedBanner: string | null = null;
     if (lastSubmittedRun) {
       const dispRank = matchedJustIdx >= 0 ? matchedJustIdx + 1 : lastSubmittedRun.rank;
       const rankTag = `#${String(dispRank).padStart(2, '0')}`;
-      ctx.fillStyle = 'rgba(26, 78, 42, 0.55)';
-      ctx.fillRect(bx + 22, bannerY, bw - 44, 28);
-      ctx.strokeStyle = '#44FF77';
-      ctx.lineWidth = 1.6;
-      ctx.strokeRect(bx + 22, bannerY, bw - 44, 28);
-      ctx.textAlign = 'center';
-      ctx.font = 'bold 14px "Share Tech Mono", monospace';
-      ctx.fillStyle = '#7BFF9E';
-      ctx.fillText(
-        `★ YOUR JUST-COMPLETED RUN: RANK ${rankTag} — ${lastSubmittedRun.callsign} // ${lastSubmittedRun.score.toLocaleString()} PTS (W-${String(lastSubmittedRun.wave).padStart(2, '0')} | x${lastSubmittedRun.maxChain}) ★`,
-        w * 0.5,
-        bannerY + 19,
-        bw - 60
-      );
+      justAddedBanner = `${SEMIOTIC_ICONS.STAR} RECORD LOGGED: RANK ${rankTag} — ${lastSubmittedRun.callsign} // ${lastSubmittedRun.score.toLocaleString()} PTS (W-${String(lastSubmittedRun.wave).padStart(2, '0')} | x${lastSubmittedRun.maxChain}) ${SEMIOTIC_ICONS.STAR}`;
     }
 
-    const btnGap = 12;
-    const halfW = (bw - 44 - btnGap) * 0.5;
-    this.addButton(
+    drawGlobalManifestModal(
       ctx,
-      'flak-restart',
-      { x: bx + 22, y: by + bh - 54, width: halfW, height: 38 },
-      'REDEPLOY WAVE 01',
-      false,
-      params.hoveredButtonId,
-      '#44FF77',
-      15.5
+      w,
+      h,
+      {
+        title: 'ORBITAL INTERCEPT // LEADERBOARD',
+        uplinkStatus,
+        timeSec: params.timeSec,
+        columns: [
+          { header: 'WAVE', widthFrac: 1, align: 'right' },
+          { header: 'CHAIN', widthFrac: 1, align: 'right' },
+          { header: 'ACC', widthFrac: 1, align: 'right' },
+        ],
+        rows,
+        justAddedBanner,
+        showPlayAgain: sim.phase === 'GAME_OVER' || sim.phase === 'TITLE',
+        playAgainLabel: `${SEMIOTIC_ICONS.PLAY} PLAY AGAIN [R / ENTER]`,
+        closeLabel: '[ESC] CLOSE',
+        hoveredButtonId: params.hoveredButtonId,
+      },
+      this.buttons
     );
-    this.addButton(
-      ctx,
-      'flak-close-modal',
-      { x: bx + 22 + halfW + btnGap, y: by + bh - 54, width: halfW, height: 38 },
-      '[ESC] CLOSE MANIFEST',
-      true,
-      params.hoveredButtonId,
-      '#FFB000',
-      15.5
-    );
-
-    ctx.restore();
   }
 
   // ===========================================================================
-  // STANDARDIZED MU-TH-UR 6000 SYSTEM & COMMAND MENU [TAB] (Unified Programs 1-3!)
+  // UNIFIED [H] / [?] 1-GLANCE CONTROLS QUICK-CARD (ControlsOverlay)
   // ===========================================================================
-  private drawOsdMenuModal(ctx: CanvasRenderingContext2D, params: FlakHudRenderParams): void {
-    const { width: w, height: h, sim, hoveredButtonId } = params;
-    ctx.save();
-    ctx.fillStyle = 'rgba(2, 6, 4, 0.78)';
-    ctx.fillRect(0, 0, w, h);
-
-    const boxW = Math.min(700, w - 48);
-    const boxH = Math.min(368, h - 40);
-    const bx = (w - boxW) * 0.5;
-    const by = (h - boxH) * 0.5;
-
-    ctx.fillStyle = 'rgba(4, 11, 7, 0.97)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 18, COLORS.AMBER_CAUTION, 2.6);
-
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 21.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
-    ctx.fillText('MU-TH-UR 6000 // SYSTEM & COMMAND MENU [TAB]', bx + 22, by + 34);
-
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    ctx.moveTo(bx + 22, by + 42);
-    ctx.lineTo(bx + boxW - 22, by + 42);
-    ctx.stroke();
-
-    // Top 3-Button Mission Command Strip
-    const cmdY = by + 54;
-    const cmdGap = 10;
-    const cmdW = (boxW - 44 - cmdGap * 2) / 3;
-    this.addButton(
+  private drawControlsQuickCard(ctx: CanvasRenderingContext2D, params: FlakHudRenderParams): void {
+    drawControlsCardModal(
       ctx,
-      'flak-close-modal',
-      { x: bx + 22, y: cmdY, width: cmdW, height: 36 },
-      '[TAB] RESUME INTERCEPT',
-      true,
-      hoveredButtonId,
-      COLORS.GREEN_BRIGHT,
-      14.5
-    );
-    this.addButton(
-      ctx,
-      'flak-restart',
-      { x: bx + 22 + cmdW + cmdGap, y: cmdY, width: cmdW, height: 36 },
-      'RESTART WAVE 01',
-      false,
-      hoveredButtonId,
-      COLORS.AMBER_CAUTION,
-      14.5
-    );
-    this.addButton(
-      ctx,
-      'flak-manifest',
-      { x: bx + 22 + (cmdW + cmdGap) * 2, y: cmdY, width: cmdW, height: 36 },
-      'GLOBAL LEADERBOARD',
-      false,
-      hoveredButtonId,
-      '#8EF5AB',
-      14.5
-    );
-
-    // Standardized Hardware & System Toggle Rows
-    const rowStartY = cmdY + 50;
-    const rowStep = 50;
-    const switches = [
+      params.width,
+      params.height,
       {
-        id: 'flak-pause',
-        name: 'RADAR SIMULATION PAUSE [P]',
-        status: sim.paused ? '❚❚ PAUSED' : '● LIVE SIMULATION',
-        active: sim.paused,
-        accent: sim.paused ? '#FFB000' : COLORS.GREEN_BRIGHT,
+        programTitle: 'FLAK NET',
+        leftColumnTitle: 'WEAPONS & FIRE-CONTROL',
+        rightColumnTitle: 'TACTICAL & SYSTEM KEYS',
+        leftControls: [
+          { keys: 'LMB / A / D', action: 'Fire M90 Proximity Flak' },
+          { keys: 'RMB / SPACE / S', action: 'Fire Mk-IV EMP Mortar' },
+          { keys: 'AIM BESIDE', action: 'Deflect Heavy Meteor (Billiard)' },
+          { keys: 'EMP FIRE BTN', action: 'Touch / Trackpad Arm & Tap Sky' },
+        ],
+        rightControls: [
+          { keys: 'P', action: 'Pause / Resume Simulation' },
+          { keys: 'H / ?', action: 'Toggle Controls Quick-Card' },
+          { keys: 'M', action: 'Mute / Unmute Audio Bus' },
+          { keys: 'ESC', action: 'Unified System & Pause Menu' },
+          { keys: 'SPACE / CLICK', action: 'Fast-Forward Wave Audit Tally' },
+        ],
+        coreRules: [
+          'Intercept below 24KM (Danger Close) for 3X score; 3 Danger Kills or 1 Meteor Deflection Kill recharges +1 EMP round.',
+          'Chain kills up to x16 to engage the 2X Ballistic Lead Predictor and -20% Overclock autoloader speed.',
+          'Snipe MIRV Bio-Pods above 48KM before split, destroy Ion Jammers to clear radar, and EMP-stun Boss salvos.',
+        ],
+        hoveredButtonId: params.hoveredButtonId,
       },
-      {
-        id: 'flak-mute',
-        name: 'INTERCOM & AUDIO BUS',
-        status: params.audioMuted ? '▲ BUS MUTED [OFF]' : '● BUS ACTIVE [ON]',
-        active: !params.audioMuted,
-        accent: params.audioMuted ? COLORS.RED_KLAXON : COLORS.GREEN_BRIGHT,
-      },
-      {
-        id: 'flak-fullscreen',
-        name: 'FULLSCREEN DISPLAY MODE',
-        status: params.isFullscreen ? '● FULLSCREEN [ON]' : '○ WINDOWED [OFF]',
-        active: params.isFullscreen,
-        accent: params.isFullscreen ? COLORS.GREEN_BRIGHT : COLORS.AMBER_BRIGHT,
-      },
-      {
-        id: 'flak-manifest',
-        name: 'MU-TH-UR FLAK_SCORES MANIFEST',
-        status: 'VIEW GLOBAL LEADERBOARD',
-        active: false,
-        accent: COLORS.GREEN_PRIMARY,
-      },
-    ];
-
-    switches.forEach((sw, idx) => {
-      const sy = rowStartY + idx * rowStep;
-      ctx.fillStyle = 'rgba(8, 22, 13, 0.72)';
-      ctx.fillRect(bx + 22, sy, boxW - 44, 42);
-      ctx.strokeStyle = COLORS.GREEN_DIM;
-      ctx.lineWidth = 1.4;
-      ctx.strokeRect(bx + 22, sy, boxW - 44, 42);
-
-      ctx.textAlign = 'left';
-      ctx.font = 'bold 16px "Share Tech Mono", monospace';
-      ctx.fillStyle = COLORS.GREEN_PRIMARY;
-      ctx.fillText(sw.name, bx + 34, sy + 27);
-
-      this.addButton(
-        ctx,
-        sw.id,
-        { x: bx + boxW - 268, y: sy + 4, width: 234, height: 34 },
-        sw.status,
-        sw.active,
-        hoveredButtonId,
-        sw.accent,
-        14
-      );
-    });
-
-    // Standardized 2-Column Footer Row
-    const footGap = 12;
-    const footBtnW = Math.floor((boxW - 44 - footGap) * 0.5);
-    this.addButton(
-      ctx,
-      'flak-close-modal',
-      { x: bx + 22, y: by + boxH - 48, width: footBtnW, height: 38 },
-      '[TAB / ESC] CLOSE MENU',
-      true,
-      hoveredButtonId,
-      COLORS.GREEN_BRIGHT,
-      15.5
+      this.buttons
     );
-    this.addButton(
-      ctx,
-      'flak-exit-os',
-      { x: bx + 22 + footBtnW + footGap, y: by + boxH - 48, width: footBtnW, height: 38 },
-      '[EXIT TO MU-TH-UR OS]',
-      false,
-      hoveredButtonId,
-      '#FFB000',
-      15.5
-    );
-
-    ctx.restore();
-  }
-
-  private addButton(
-    ctx: CanvasRenderingContext2D,
-    id: string,
-    rect: ViewportRect,
-    label: string,
-    active: boolean,
-    hoveredButtonId: string | null,
-    accent: string,
-    fontPx: number
-  ): void {
-    this.buttons.push({ id, rect, label });
-    const hov = hoveredButtonId === id;
-    ctx.save();
-    ctx.fillStyle = hov
-      ? 'rgba(255, 176, 0, 0.28)'
-      : active
-        ? 'rgba(255, 176, 0, 0.16)'
-        : 'rgba(6, 16, 10, 0.94)';
-    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-    ctx.strokeStyle = hov ? '#FFFFFF' : accent;
-    ctx.lineWidth = hov || active ? 2.1 : 1.6;
-    ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-
-    ctx.textAlign = 'center';
-    ctx.font = `bold ${fontPx}px "Share Tech Mono", monospace`;
-    ctx.fillStyle = hov ? '#FFFFFF' : accent;
-    ctx.fillText(label, rect.x + rect.width * 0.5, rect.y + rect.height * 0.65);
-    ctx.restore();
-  }
-
-  private drawCornerBrackets(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    len: number,
-    color: string,
-    lineWidth: number
-  ): void {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = lineWidth;
-    ctx.beginPath();
-    ctx.moveTo(x, y + len);
-    ctx.lineTo(x, y);
-    ctx.lineTo(x + len, y);
-
-    ctx.moveTo(x + w - len, y);
-    ctx.lineTo(x + w, y);
-    ctx.lineTo(x + w, y + len);
-
-    ctx.moveTo(x, y + h - len);
-    ctx.lineTo(x, y + h);
-    ctx.lineTo(x + len, y + h);
-
-    ctx.moveTo(x + w - len, y + h);
-    ctx.lineTo(x + w, y + h);
-    ctx.lineTo(x + w, y + h - len);
-    ctx.stroke();
   }
 }

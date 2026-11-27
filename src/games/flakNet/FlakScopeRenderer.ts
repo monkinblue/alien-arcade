@@ -1,4 +1,10 @@
-import { COLORS } from '../../constants';
+import {
+  drawCornerBrackets,
+  drawEllipsizedText,
+  font,
+  SEMIOTIC_ICONS,
+  THEME,
+} from '../../render/chrome';
 import type { Vec2, ViewportRect } from '../../types';
 import type { DemoTelemetryState } from './FlakDemoDirector';
 import type { FlakSimulation } from './FlakSimulation';
@@ -19,6 +25,8 @@ export interface FlakScopeRenderParams {
   cursorVirtual: Vec2 | null;
   cursorInsideScope: boolean;
   demoState?: DemoTelemetryState | null;
+  /** True when player clicked the bottom-dock [EMP FIRE] touch/trackpad button */
+  empTouchArmed?: boolean;
 }
 
 /**
@@ -69,10 +77,35 @@ export function virtualScopeToScreen(
   };
 }
 
+interface ScreenTextTarget {
+  x: number;
+  y: number;
+}
+
 export class FlakScopeRenderer {
   public render(ctx: CanvasRenderingContext2D, params: FlakScopeRenderParams): void {
-    const { sim, viewport, timeSec, cursorVirtual, cursorInsideScope, demoState } = params;
+    const {
+      sim,
+      viewport,
+      timeSec,
+      cursorVirtual,
+      cursorInsideScope,
+      demoState,
+      empTouchArmed = false,
+    } = params;
     const proj = computeScopeProjection(viewport);
+
+    // Subtle localized screen-shake on EMP detonation or Colony Dome impact
+    const shakeX =
+      sim.screenShake > 0.2
+        ? (Math.sin(timeSec * 82) + Math.cos(timeSec * 129)) * sim.screenShake * 0.6
+        : 0;
+    const shakeY =
+      sim.screenShake > 0.2
+        ? (Math.cos(timeSec * 94) - Math.sin(timeSec * 111)) * sim.screenShake * 0.5
+        : 0;
+    const shakeScreenX = shakeX * proj.scale;
+    const shakeScreenY = shakeY * proj.scale;
 
     ctx.save();
     ctx.beginPath();
@@ -83,38 +116,36 @@ export class FlakScopeRenderer {
     ctx.fillStyle = '#020704';
     ctx.fillRect(viewport.x, viewport.y, viewport.width, viewport.height);
 
-    // Subtle localized screen-shake on EMP detonation or Colony Dome impact
-    const shakeX =
-      sim.screenShake > 0.2 ? (Math.sin(timeSec * 82) + Math.cos(timeSec * 129)) * sim.screenShake * 0.6 : 0;
-    const shakeY =
-      sim.screenShake > 0.2 ? (Math.cos(timeSec * 94) - Math.sin(timeSec * 111)) * sim.screenShake * 0.5 : 0;
-
-    ctx.translate(proj.offsetX + shakeX * proj.scale, proj.offsetY + shakeY * proj.scale);
+    // =========================================================================
+    // PASS 1: SCALED 1920x1080 VIRTUAL VECTOR GEOMETRY (ZERO SCALED TEXT!)
+    // =========================================================================
+    ctx.save();
+    ctx.translate(proj.offsetX + shakeScreenX, proj.offsetY + shakeScreenY);
     ctx.scale(proj.scale, proj.scale);
 
-    // 1. Atmospheric Radar Grid, Range Arcs, Sweeping Phosphor Beam & Altitude Bands
-    this.drawRadarBackdrop(ctx, sim, timeSec);
+    // 1. Atmospheric Radar Grid, Range Arcs, Sweeping Phosphor Beam & Altitude Band Lines
+    this.drawRadarBackdropGeometry(ctx, sim, timeSec);
 
-    // 2. Live Dotted Ballistic Prediction Arcs (always-on baseline trajectories; intensified during 2x+ Boost!)
+    // 2. Live Dotted Ballistic Prediction Arcs
     this.drawBallisticPredictions(ctx, sim, timeSec);
 
     // 3. LV-426 Jagged Basalt Mountain Horizon, 4 Colony Domes & 3 Surface Batteries
-    this.drawHorizonAndInstallations(ctx, sim, timeSec);
+    this.drawHorizonAndInstallationsGeometry(ctx, sim, timeSec);
 
-    // 4. Orbital Drop-Pod (if restoring a breached dome on every 3rd wave)
+    // 4. Orbital Drop-Pod Geometry
     if (sim.dropPod) {
-      this.drawOrbitalDropPod(ctx, sim, timeSec);
+      this.drawOrbitalDropPodGeometry(ctx, sim, timeSec);
     }
 
     // 5. Outgoing Flak & EMP Mortar Shells + Target Crosshairs
     this.drawInterceptorShells(ctx, sim);
 
-    // 6. Incoming Curved Orbital Threats with Thermal Atmospheric Re-Entry Transition
-    this.drawThreats(ctx, sim, timeSec);
+    // 6. Incoming Curved Orbital Threats Vector Geometry
+    this.drawThreatsGeometry(ctx, sim, timeSec);
 
-    // 6b. Every-5-Rounds Orbital Siege Dreadnought Boss Event!
+    // 6b. Every-5-Rounds Orbital Siege Dreadnought Boss Geometry
     if (sim.boss) {
-      this.drawOrbitalBoss(ctx, sim, timeSec);
+      this.drawOrbitalBossGeometry(ctx, sim, timeSec);
     }
 
     // 7. Expanding Physical Shockwave Blasts (Flak Airbursts & Massive EMP Rings)
@@ -123,44 +154,90 @@ export class FlakScopeRenderer {
     // 8. Shrapnel & Thermal Sparks
     this.drawParticles(ctx, sim);
 
-    // 9. Floating Amber CRT Score & Multiplier Telemetry Popups
-    this.drawScorePopups(ctx, sim);
-
-    // 9b. Interactive 5-Stage Tactical Demo Callout Ticker Banner (top of scope)
-    if (demoState?.active && sim.phase === 'ACTIVE_WAVE') {
-      this.drawDemoTacticalTicker(ctx, demoState, timeSec);
-    }
-
-    // 9c. Active 2x Ballistic Predictor Boost Top Banner inside Radar Scope
-    if (sim.predictorBoostTimer > 0 && sim.phase === 'ACTIVE_WAVE') {
-      this.drawPredictorBoostBanner(ctx, sim, timeSec, demoState?.active ? 80 : 18);
-    }
-
-    // 10. Precision Vector Lead-Computing Reticle (or Amber AI Targeter during Tactical Demo!)
+    // 9. Precision Vector Lead-Computing Reticle Geometry (or Amber AI Targeter in Demo)
     if (demoState?.active && sim.phase === 'ACTIVE_WAVE' && !sim.paused) {
-      this.drawLeadComputingReticle(ctx, sim, demoState.aiCursor, timeSec, demoState);
+      this.drawReticleGeometry(ctx, sim, demoState.aiCursor, timeSec, demoState, false);
     } else if (cursorVirtual && cursorInsideScope && sim.phase === 'ACTIVE_WAVE' && !sim.paused) {
-      this.drawLeadComputingReticle(ctx, sim, cursorVirtual, timeSec, null);
+      this.drawReticleGeometry(ctx, sim, cursorVirtual, timeSec, null, empTouchArmed);
     }
 
     // Red-amber hull concussion rim flash on dome hit
     if (sim.domeHitFlashTimer > 0) {
-      const a = Math.min(0.32, sim.domeHitFlashTimer * 0.36);
+      const a = Math.min(0.3, sim.domeHitFlashTimer * 0.34);
       ctx.fillStyle = `rgba(255, 51, 24, ${a.toFixed(3)})`;
       ctx.fillRect(0, 0, FLAK_CONSTANTS.VIRTUAL_W, FLAK_CONSTANTS.VIRTUAL_H);
     }
 
     ctx.restore();
 
+    // =========================================================================
+    // PASS 2: UNSCALED SCREEN-SPACE TYPOGRAPHY & BEZEL GAUGES (ALL >=12-13px!)
+    // =========================================================================
+    const toScreen = (vx: number, vy: number): ScreenTextTarget => {
+      const pt = virtualScopeToScreen(vx, vy, viewport);
+      return { x: pt.x + shakeScreenX, y: pt.y + shakeScreenY };
+    };
+
+    // 2.1 Altitude Ticks, MIRV Separation & Danger Close Band Labels
+    this.drawAltitudeAndBandLabelsScreenSpace(ctx, viewport, proj, toScreen);
+
+    // 2.2 Colony Dome & Surface Battery Labels
+    this.drawInstallationLabelsScreenSpace(ctx, sim, viewport, toScreen);
+
+    // 2.3 Orbital Drop-Pod Label
+    if (sim.dropPod) {
+      this.drawDropPodLabelScreenSpace(ctx, sim, viewport, toScreen);
+    }
+
+    // 2.4 Threat Telemetry Tags & Wave-1 Micro-Hints (crisp >=13px screen-space!)
+    this.drawThreatLabelsScreenSpace(ctx, sim, viewport, proj.scale, toScreen);
+
+    // 2.5 Floating Score & Multiplier Popups (crisp screen-space!)
+    this.drawScorePopupsScreenSpace(ctx, sim, viewport, toScreen);
+
+    // 2.6 Reticle Telemetry Tag & Deflection Callout (screen-space, auto left-flipped!)
+    if (demoState?.active && sim.phase === 'ACTIVE_WAVE' && !sim.paused) {
+      this.drawReticleLabelsScreenSpace(ctx, sim, demoState.aiCursor, viewport, toScreen, demoState, false);
+    } else if (cursorVirtual && cursorInsideScope && sim.phase === 'ACTIVE_WAVE' && !sim.paused) {
+      this.drawReticleLabelsScreenSpace(ctx, sim, cursorVirtual, viewport, toScreen, null, empTouchArmed);
+    }
+
+    // 2.7 Top-of-Scope Overlays (stacked cleanly in screen-space with zero overlap!)
+    let topStackY = viewport.y + 8;
+
+    if (demoState?.active && sim.phase === 'ACTIVE_WAVE') {
+      topStackY = this.drawDemoTacticalTickerScreenSpace(ctx, viewport, demoState, timeSec, topStackY);
+    }
+
+    // Single Consolidated Diegetic Scope-Bezel 2X Boost Gauge (only 2X meter in the entire game!)
+    if (sim.phase === 'ACTIVE_WAVE' || sim.phase === 'WAVE_AUDIT') {
+      topStackY = this.drawBezelPredictorGaugeScreenSpace(ctx, viewport, sim, timeSec, topStackY);
+    }
+
+    // Orbital Siege Dreadnought Boss Integrity Telemetry Bar
+    if (sim.boss) {
+      this.drawBossTelemetryBarScreenSpace(ctx, viewport, sim, topStackY);
+    }
+
+    ctx.restore();
+
     // Crisp Radar Scope Border Frame
     ctx.save();
-    ctx.strokeStyle = sim.domeHitFlashTimer > 0 ? COLORS.RED_KLAXON : COLORS.GREEN_DIM;
-    ctx.lineWidth = 2.0;
+    ctx.strokeStyle =
+      sim.domeHitFlashTimer > 0
+        ? THEME.ALERT_RED_STROKE
+        : empTouchArmed
+          ? THEME.ACCENT_AMBER
+          : THEME.BORDER_SUBTLE;
+    ctx.lineWidth = sim.domeHitFlashTimer > 0 || empTouchArmed ? 2.4 : 1.8;
     ctx.strokeRect(viewport.x + 1, viewport.y + 1, viewport.width - 2, viewport.height - 2);
     ctx.restore();
   }
 
-  private drawRadarBackdrop(
+  // ===========================================================================
+  // PASS 1: VECTOR GEOMETRY HELPERS
+  // ===========================================================================
+  private drawRadarBackdropGeometry(
     ctx: CanvasRenderingContext2D,
     sim: FlakSimulation,
     timeSec: number
@@ -169,7 +246,7 @@ export class FlakScopeRenderer {
     const H = FLAK_CONSTANTS.VIRTUAL_H;
     const hy = FLAK_CONSTANTS.HORIZON_Y;
 
-    // Subtle atmospheric radial depth gradient (cold upper orbit -> warm ionized lower horizon)
+    // Subtle atmospheric radial depth gradient
     const skyGrad = ctx.createRadialGradient(W * 0.5, hy, 80, W * 0.5, hy, W * 0.72);
     skyGrad.addColorStop(0, 'rgba(18, 56, 30, 0.24)');
     skyGrad.addColorStop(0.55, 'rgba(9, 30, 17, 0.14)');
@@ -177,12 +254,11 @@ export class FlakScopeRenderer {
     ctx.fillStyle = skyGrad;
     ctx.fillRect(0, 0, W, H);
 
-    // Concentric wide-angle Surface-to-Orbit Radar Range Arcs centered at Battery S (960, 978)
     ctx.save();
+    // Concentric wide-angle Surface-to-Orbit Radar Range Arcs centered at Battery S
     ctx.strokeStyle = 'rgba(27, 94, 52, 0.32)';
     ctx.lineWidth = 1.4;
-    const radii = [240, 480, 720, 960, 1180];
-    for (const r of radii) {
+    for (const r of [240, 480, 720, 960, 1180]) {
       ctx.beginPath();
       ctx.arc(W * 0.5, hy, r, Math.PI, Math.PI * 2);
       ctx.stroke();
@@ -198,7 +274,7 @@ export class FlakScopeRenderer {
       ctx.stroke();
     }
 
-    // Live Sweeping Surface-to-Orbit Radar Phosphor Line + Soft Wedge
+    // Live Sweeping Surface-to-Orbit Radar Phosphor Line
     const sweepA = sim.radarSweepAngle;
     const sweepLen = 1220;
     ctx.strokeStyle = 'rgba(68, 255, 119, 0.22)';
@@ -208,49 +284,34 @@ export class FlakScopeRenderer {
     ctx.lineTo(W * 0.5 + Math.cos(sweepA) * sweepLen, hy + Math.sin(sweepA) * sweepLen);
     ctx.stroke();
 
-    // Altitude Scale Ticks along left & right scope margins
-    ctx.font = 'bold 15px "JetBrains Mono", monospace';
-    ctx.fillStyle = 'rgba(59, 224, 104, 0.42)';
-    const altMarks = [
-      { y: 120, lbl: '90KM' },
-      { y: 300, lbl: '68KM' },
-      { y: FLAK_CONSTANTS.MIRV_SPLIT_Y, lbl: '48KM' },
-      { y: FLAK_CONSTANTS.DANGER_CLOSE_Y, lbl: '24KM' },
-      { y: 840, lbl: '10KM' },
-    ];
-    for (const m of altMarks) {
-      ctx.strokeStyle = 'rgba(59, 224, 104, 0.34)';
+    // Altitude Scale Tick Marks along left & right scope margins
+    const altYs = [120, 300, FLAK_CONSTANTS.MIRV_SPLIT_Y, FLAK_CONSTANTS.DANGER_CLOSE_Y, 840];
+    ctx.strokeStyle = 'rgba(68, 255, 119, 0.36)';
+    ctx.lineWidth = 1.6;
+    for (const y of altYs) {
       ctx.beginPath();
-      ctx.moveTo(0, m.y);
-      ctx.lineTo(18, m.y);
-      ctx.moveTo(W - 18, m.y);
-      ctx.lineTo(W, m.y);
+      ctx.moveTo(0, y);
+      ctx.lineTo(18, y);
+      ctx.moveTo(W - 18, y);
+      ctx.lineTo(W, y);
       ctx.stroke();
-      ctx.textAlign = 'left';
-      ctx.fillText(m.lbl, 24, m.y + 5);
-      ctx.textAlign = 'right';
-      ctx.fillText(m.lbl, W - 24, m.y + 5);
     }
 
-    // MIRV Split Altitude Band (subtle telemetry line)
+    // MIRV Split Altitude Band (dashed threshold line)
     ctx.setLineDash([8, 14]);
-    ctx.strokeStyle = 'rgba(59, 224, 104, 0.22)';
-    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = 'rgba(82, 184, 114, 0.30)';
+    ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.moveTo(86, FLAK_CONSTANTS.MIRV_SPLIT_Y);
     ctx.lineTo(W - 86, FLAK_CONSTANTS.MIRV_SPLIT_Y);
     ctx.stroke();
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 13px "Share Tech Mono", monospace';
-    ctx.fillStyle = 'rgba(68, 255, 119, 0.44)';
-    ctx.fillText('MIRV SEPARATION THRESHOLD // 48KM', W - 92, FLAK_CONSTANTS.MIRV_SPLIT_Y - 7);
 
-    // DANGER CLOSE // 3X Lower-Atmosphere Thermal Ignition Band!
+    // DANGER CLOSE // 3X Lower-Atmosphere Thermal Ignition Band
     const dcY = FLAK_CONSTANTS.DANGER_CLOSE_Y;
-    const dcPulse = 0.38 + 0.14 * Math.sin(timeSec * 3.5);
+    const dcPulse = 0.42 + 0.16 * Math.sin(timeSec * 3.5);
     ctx.setLineDash([16, 10]);
     ctx.strokeStyle = `rgba(255, 176, 0, ${dcPulse.toFixed(2)})`;
-    ctx.lineWidth = 2.0;
+    ctx.lineWidth = 2.2;
     ctx.beginPath();
     ctx.moveTo(86, dcY);
     ctx.lineTo(W - 86, dcY);
@@ -259,17 +320,10 @@ export class FlakScopeRenderer {
 
     // Faint warm lower-atmosphere glow below DANGER_CLOSE_Y
     const dcBandGrad = ctx.createLinearGradient(0, dcY, 0, hy);
-    dcBandGrad.addColorStop(0, 'rgba(255, 176, 0, 0.045)');
+    dcBandGrad.addColorStop(0, 'rgba(255, 176, 0, 0.05)');
     dcBandGrad.addColorStop(1, 'rgba(255, 112, 24, 0.015)');
     ctx.fillStyle = dcBandGrad;
     ctx.fillRect(0, dcY, W, hy - dcY);
-
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 15px "Share Tech Mono", monospace';
-    ctx.fillStyle = 'rgba(255, 176, 0, 0.72)';
-    ctx.fillText('▼ DANGER CLOSE // 3X THERMAL INTERCEPT BAND ▼', 92, dcY - 8);
-    ctx.textAlign = 'right';
-    ctx.fillText('THERMAL PLASMA IGNITION // 3X SCORE', W - 92, dcY - 8);
 
     ctx.restore();
   }
@@ -281,8 +335,6 @@ export class FlakScopeRenderer {
   ): void {
     const tRem = sim.predictorBoostTimer;
     const boostOn = tRem > 0;
-
-    // Always-on crisp baseline trajectory arcs (0.68 alpha); supercharged to 1.0 during 2x+ Boost!
     const arcAlpha = !boostOn
       ? 0.68
       : tRem < 1.5
@@ -302,7 +354,6 @@ export class FlakScopeRenderer {
       for (let i = 0; i < t.predictedArc.length; i++) {
         const pt = t.predictedArc[i];
         if (jammed) {
-          // Fuzz/scramble prediction arc near active Ion Storm Jammer!
           const jx = Math.sin(timeSec * 38 + i * 2.9 + t.id) * 26;
           const jy = Math.cos(timeSec * 29 + i * 3.7) * 10;
           ctx.lineTo(pt.x + jx, pt.y + jy);
@@ -313,31 +364,29 @@ export class FlakScopeRenderer {
 
       ctx.setLineDash(jammed ? [5, 13] : boostOn ? [10, 8] : [7, 11]);
       if (jammed) {
-        ctx.strokeStyle = 'rgba(142, 245, 171, 0.38)';
+        ctx.strokeStyle = 'rgba(158, 247, 184, 0.42)';
         ctx.lineWidth = 1.6;
       } else if (isLockedDome) {
-        // Warning amber lock-on trajectory onto Colony Dome!
-        const pulse = (boostOn ? 0.62 : 0.48) + 0.24 * Math.sin(timeSec * 10 + t.id);
+        const pulse = (boostOn ? 0.64 : 0.5) + 0.24 * Math.sin(timeSec * 10 + t.id);
         ctx.strokeStyle = `rgba(255, 176, 0, ${pulse.toFixed(2)})`;
-        ctx.lineWidth = boostOn ? 2.3 : 1.85;
+        ctx.lineWidth = boostOn ? 2.4 : 1.9;
       } else {
-        // Standard radar computer dotted phosphor trajectory (#1B5E34 -> brighter under boost)
-        ctx.strokeStyle = boostOn ? 'rgba(68, 224, 118, 0.56)' : 'rgba(46, 152, 86, 0.42)';
-        ctx.lineWidth = boostOn ? 1.8 : 1.45;
+        ctx.strokeStyle = boostOn ? 'rgba(68, 255, 119, 0.58)' : 'rgba(82, 184, 114, 0.46)';
+        ctx.lineWidth = boostOn ? 1.9 : 1.5;
       }
       ctx.stroke();
 
-      // Predicted ground impact marker on horizon (unless jammed!)
+      // Predicted ground impact marker on horizon
       if (!jammed && t.predictedImpactX > 20 && t.predictedImpactX < FLAK_CONSTANTS.VIRTUAL_W - 20) {
         ctx.setLineDash([]);
         const ix = t.predictedImpactX;
         const iy = FLAK_CONSTANTS.HORIZON_Y;
         ctx.strokeStyle = isLockedDome
-          ? '#FFB000'
+          ? THEME.ACCENT_AMBER
           : boostOn
-            ? 'rgba(68, 255, 119, 0.58)'
-            : 'rgba(59, 224, 104, 0.42)';
-        ctx.lineWidth = isLockedDome ? 2.2 : 1.5;
+            ? 'rgba(68, 255, 119, 0.6)'
+            : 'rgba(82, 184, 114, 0.46)';
+        ctx.lineWidth = isLockedDome ? 2.2 : 1.6;
         const sz = isLockedDome ? 11 : 7;
         ctx.beginPath();
         ctx.moveTo(ix - sz, iy - sz);
@@ -357,7 +406,7 @@ export class FlakScopeRenderer {
     ctx.restore();
   }
 
-  private drawHorizonAndInstallations(
+  private drawHorizonAndInstallationsGeometry(
     ctx: CanvasRenderingContext2D,
     sim: FlakSimulation,
     timeSec: number
@@ -380,7 +429,7 @@ export class FlakScopeRenderer {
       ctx.fillStyle = 'rgba(6, 22, 12, 0.94)';
       ctx.fill();
 
-      ctx.strokeStyle = '#3BE068';
+      ctx.strokeStyle = THEME.TEXT_PRIMARY;
       ctx.lineWidth = 2.6;
       ctx.beginPath();
       for (let i = 0; i < sim.horizonProfile.length; i++) {
@@ -390,8 +439,7 @@ export class FlakScopeRenderer {
       }
       ctx.stroke();
 
-      // Secondary technical ground baseline beneath installations
-      ctx.strokeStyle = 'rgba(35, 140, 64, 0.42)';
+      ctx.strokeStyle = 'rgba(28, 92, 49, 0.55)';
       ctx.lineWidth = 1.4;
       ctx.beginPath();
       ctx.moveTo(0, hy + 18);
@@ -405,12 +453,11 @@ export class FlakScopeRenderer {
       const r = d.radius;
       if (d.intact) {
         const savedGlow = d.savedFlashTimer > 0 || d.restoreFlashTimer > 0;
-        const mainCol = savedGlow ? '#8EF5AB' : '#44FF77';
+        const mainCol = savedGlow ? THEME.TEXT_BRIGHT : THEME.TEXT_PRIMARY;
         const fillCol = savedGlow
-          ? 'rgba(142, 245, 171, 0.24)'
+          ? 'rgba(158, 247, 184, 0.24)'
           : 'rgba(26, 98, 52, 0.34)';
 
-        // Pressurized geodesic dome shell
         ctx.fillStyle = fillCol;
         ctx.beginPath();
         ctx.arc(d.x, d.y, r, Math.PI, Math.PI * 2);
@@ -424,7 +471,6 @@ export class FlakScopeRenderer {
         ctx.closePath();
         ctx.stroke();
 
-        // Geodesic rib struts & pressurized interior deck lines
         ctx.strokeStyle = 'rgba(68, 255, 119, 0.55)';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
@@ -435,28 +481,20 @@ export class FlakScopeRenderer {
         ctx.lineTo(d.x, d.y - r - 11);
         ctx.stroke();
 
-        // Blinking amber aviation beacon atop dome spire
         const blink = Math.sin(timeSec * 5 + d.x * 0.02) > 0.25;
-        ctx.fillStyle = blink ? '#FFB000' : 'rgba(255, 176, 0, 0.35)';
+        ctx.fillStyle = blink ? THEME.ACCENT_AMBER : 'rgba(255, 176, 0, 0.35)';
         ctx.beginPath();
         ctx.arc(d.x, d.y - r - 12, 3.6, 0, Math.PI * 2);
         ctx.fill();
 
-        // Reinforced bunker foundation pad
         ctx.fillStyle = '#0B2816';
         ctx.fillRect(d.x - r - 6, d.y, (r + 6) * 2, 12);
         ctx.strokeStyle = mainCol;
         ctx.lineWidth = 2.0;
         ctx.strokeRect(d.x - r - 6, d.y, (r + 6) * 2, 12);
-
-        ctx.textAlign = 'center';
-        ctx.font = 'bold 16px "Share Tech Mono", monospace';
-        ctx.fillStyle = savedGlow ? '#FFF6CC' : '#8EF5AB';
-        ctx.fillText(d.label, d.x, d.y + 34);
       } else {
-        // Breached Colony Dome Ruin
         const flash = d.breachFlashTimer > 0 && Math.sin(timeSec * 24) > 0;
-        ctx.strokeStyle = flash ? '#FF6644' : '#8A2418';
+        ctx.strokeStyle = flash ? THEME.ALERT_RED_TEXT : THEME.ALERT_RED_STROKE;
         ctx.lineWidth = 2.4;
         ctx.beginPath();
         ctx.moveTo(d.x - r, d.y);
@@ -467,11 +505,6 @@ export class FlakScopeRenderer {
         ctx.lineTo(d.x + r * 0.68, d.y - 22);
         ctx.lineTo(d.x + r, d.y);
         ctx.stroke();
-
-        ctx.textAlign = 'center';
-        ctx.font = 'bold 15px "Share Tech Mono", monospace';
-        ctx.fillStyle = COLORS.RED_KLAXON;
-        ctx.fillText(`${d.label} [LOST]`, d.x, d.y + 34);
       }
       ctx.restore();
     }
@@ -479,13 +512,12 @@ export class FlakScopeRenderer {
     // 3. 3 Surface Defense Batteries (A: Left Flak, S: Center EMP Mortar, D: Right Flak)
     for (const b of sim.batteries) {
       const isEmp = b.weaponType === 'MK4_EMP';
-      const accent = isEmp ? '#FFB000' : '#44FF77';
+      const accent = isEmp ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY;
       const ready = b.ammo > 0;
 
       ctx.save();
-      // Armored bunker pedestal
       ctx.fillStyle = isEmp ? 'rgba(42, 26, 6, 0.92)' : 'rgba(10, 32, 18, 0.92)';
-      ctx.strokeStyle = ready ? accent : COLORS.GREEN_DIM;
+      ctx.strokeStyle = ready ? accent : THEME.BORDER_SUBTLE;
       ctx.lineWidth = 2.6;
       ctx.beginPath();
       ctx.moveTo(b.x - 36, b.y + 10);
@@ -502,13 +534,12 @@ export class FlakScopeRenderer {
       ctx.rotate(b.aimAngle);
       const barrelLen = (isEmp ? 36 : 42) - b.recoil;
       if (isEmp) {
-        // Wide heavy EMP Mortar tube + glowing capacitor rings
         ctx.fillStyle = '#241706';
-        ctx.strokeStyle = ready ? '#FFB000' : '#6E4C08';
+        ctx.strokeStyle = ready ? THEME.ACCENT_AMBER : '#6E4C08';
         ctx.lineWidth = 2.4;
         ctx.fillRect(0, -8, barrelLen, 16);
         ctx.strokeRect(0, -8, barrelLen, 16);
-        ctx.strokeStyle = '#FFF6CC';
+        ctx.strokeStyle = THEME.ACCENT_AMBER_HI;
         ctx.lineWidth = 2.0;
         ctx.beginPath();
         ctx.moveTo(12, -10);
@@ -517,8 +548,7 @@ export class FlakScopeRenderer {
         ctx.lineTo(22, 10);
         ctx.stroke();
       } else {
-        // Twin M90 Proximity Flak Rail Barrels
-        ctx.strokeStyle = ready ? '#8EF5AB' : COLORS.GREEN_MID;
+        ctx.strokeStyle = ready ? THEME.TEXT_BRIGHT : THEME.TEXT_SECONDARY;
         ctx.lineWidth = 3.2;
         ctx.beginPath();
         ctx.moveTo(0, -4.5);
@@ -528,9 +558,8 @@ export class FlakScopeRenderer {
         ctx.stroke();
       }
 
-      // Muzzle Flash Vector Flare
       if (b.muzzleFlashTimer > 0) {
-        ctx.fillStyle = isEmp ? '#FFF6CC' : '#FFE08A';
+        ctx.fillStyle = THEME.ACCENT_AMBER_HI;
         ctx.beginPath();
         ctx.moveTo(barrelLen, 0);
         ctx.lineTo(barrelLen + 26, -11);
@@ -547,7 +576,7 @@ export class FlakScopeRenderer {
       const pipGap = 5;
       const totalW = pipCount * pipW + (pipCount - 1) * pipGap;
       const startX = b.x - totalW * 0.5;
-      const pipY = b.y + 18;
+      const pipY = b.y + 16;
       for (let i = 0; i < pipCount; i++) {
         const px = startX + i * (pipW + pipGap);
         if (i < b.ammo) {
@@ -556,7 +585,7 @@ export class FlakScopeRenderer {
         } else if (i === b.ammo && !isEmp && b.reloadProgress > 0) {
           ctx.fillStyle = 'rgba(20, 52, 30, 0.85)';
           ctx.fillRect(px, pipY, pipW, 8);
-          ctx.fillStyle = '#FFB000';
+          ctx.fillStyle = THEME.ACCENT_AMBER;
           ctx.fillRect(px, pipY, pipW * b.reloadProgress, 8);
         } else {
           ctx.strokeStyle = 'rgba(68, 255, 119, 0.35)';
@@ -564,18 +593,13 @@ export class FlakScopeRenderer {
           ctx.strokeRect(px, pipY, pipW, 8);
         }
       }
-
-      ctx.textAlign = 'center';
-      ctx.font = 'bold 16px "Share Tech Mono", monospace';
-      ctx.fillStyle = accent;
-      ctx.fillText(isEmp ? '[S] MK-IV EMP' : `[${b.id}] M90 FLAK`, b.x, b.y + 48);
       ctx.restore();
     }
 
     ctx.restore();
   }
 
-  private drawOrbitalDropPod(
+  private drawOrbitalDropPodGeometry(
     ctx: CanvasRenderingContext2D,
     sim: FlakSimulation,
     timeSec: number
@@ -584,44 +608,37 @@ export class FlakScopeRenderer {
     if (!pod) return;
 
     ctx.save();
-    // Retro-braking thruster trail
-    ctx.strokeStyle = 'rgba(142, 245, 171, 0.75)';
+    ctx.strokeStyle = 'rgba(76, 238, 255, 0.78)';
     ctx.lineWidth = 3.0;
     ctx.beginPath();
     ctx.moveTo(pod.x, pod.y);
     ctx.lineTo(pod.x + 48, pod.y - 84);
     ctx.stroke();
 
-    // Drop-pod diamond capsule + amber retro-plume
-    ctx.fillStyle = '#8EF5AB';
+    // Ron Cobb diamond resupply capsule + inner cross
+    ctx.fillStyle = THEME.ACCENT_CYAN;
     ctx.beginPath();
     ctx.moveTo(pod.x, pod.y - 16);
-    ctx.lineTo(pod.x + 12, pod.y);
+    ctx.lineTo(pod.x + 13, pod.y);
     ctx.lineTo(pod.x, pod.y + 14);
-    ctx.lineTo(pod.x - 12, pod.y);
+    ctx.lineTo(pod.x - 13, pod.y);
     ctx.closePath();
     ctx.fill();
 
     const flame = 18 + Math.sin(timeSec * 55) * 6;
-    ctx.strokeStyle = '#FFB000';
+    ctx.strokeStyle = THEME.ACCENT_AMBER;
     ctx.lineWidth = 4.0;
     ctx.beginPath();
     ctx.moveTo(pod.x, pod.y + 14);
     ctx.lineTo(pod.x, pod.y + 14 + flame);
     ctx.stroke();
-
-    ctx.font = 'bold 15px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#8EF5AB';
-    ctx.textAlign = 'left';
-    ctx.fillText('ORBITAL DROP-POD // RESTORE', pod.x + 18, pod.y - 4);
     ctx.restore();
   }
 
   private drawInterceptorShells(ctx: CanvasRenderingContext2D, sim: FlakSimulation): void {
     ctx.save();
     for (const s of sim.shells) {
-      // Target detonation marker crosshair
-      ctx.strokeStyle = s.isEmp ? 'rgba(255, 176, 0, 0.85)' : 'rgba(142, 245, 171, 0.75)';
+      ctx.strokeStyle = s.isEmp ? 'rgba(255, 176, 0, 0.85)' : 'rgba(158, 247, 184, 0.78)';
       ctx.lineWidth = 2.0;
       const sz = s.isEmp ? 12 : 8;
       ctx.beginPath();
@@ -631,9 +648,8 @@ export class FlakScopeRenderer {
       ctx.lineTo(s.targetX - sz, s.targetY + sz);
       ctx.stroke();
 
-      // Outgoing luminous shell trail
       if (s.trail.length > 1) {
-        ctx.strokeStyle = s.isEmp ? '#FFB000' : '#8EF5AB';
+        ctx.strokeStyle = s.isEmp ? THEME.ACCENT_AMBER : THEME.TEXT_BRIGHT;
         ctx.lineWidth = s.isEmp ? 4.0 : 2.6;
         ctx.beginPath();
         for (let i = 0; i < s.trail.length; i++) {
@@ -644,8 +660,7 @@ export class FlakScopeRenderer {
         ctx.stroke();
       }
 
-      // Bright shell warhead core
-      ctx.fillStyle = '#FFF6CC';
+      ctx.fillStyle = THEME.ACCENT_AMBER_HI;
       ctx.beginPath();
       ctx.arc(s.x, s.y, s.isEmp ? 6.5 : 4.2, 0, Math.PI * 2);
       ctx.fill();
@@ -653,17 +668,13 @@ export class FlakScopeRenderer {
     ctx.restore();
   }
 
-  private drawThreats(
+  private drawThreatsGeometry(
     ctx: CanvasRenderingContext2D,
     sim: FlakSimulation,
     timeSec: number
   ): void {
     ctx.save();
-    let shownMeteorHint = false;
-    let shownDcHint = false;
     for (const t of sim.threats) {
-      // Atmospheric Re-Entry Thermal Transition:
-      // Upper orbit -> Cold P39 Green (#44FF77); Lower atmosphere (Danger Close) -> Blinding Amber/White Plasma!
       const thermalT = Math.max(
         0,
         Math.min(
@@ -675,7 +686,7 @@ export class FlakScopeRenderer {
       const isHot = t.y >= FLAK_CONSTANTS.DANGER_CLOSE_Y;
       const coreCol = this.thermalColor(t, thermalT, timeSec);
 
-      // 1. Re-Entry Trail (cold dim green upper orbit -> blazing white-amber plasma streak in lower atm!)
+      // 1. Re-Entry Trail
       if (t.trail.length > 1) {
         for (let i = 1; i < t.trail.length; i++) {
           const frac = i / t.trail.length;
@@ -694,22 +705,21 @@ export class FlakScopeRenderer {
         }
       }
 
-      // 2. Threat Vector Geometry by Signature
+      // 2. Threat Vector Geometry by Signature (Ron Cobb distinct silhouettes for Amber-CRT safety!)
       ctx.save();
       ctx.translate(t.x, t.y);
 
       if (t.kind === 'KINETIC_ROD') {
         ctx.rotate(t.angle);
-        // Blazing thermal bow-shock arc in lower atmosphere
         if (isHot) {
-          ctx.strokeStyle = '#FFF6CC';
+          ctx.strokeStyle = THEME.ACCENT_AMBER_HI;
           ctx.lineWidth = 2.6;
           ctx.beginPath();
           ctx.arc(4, 0, 14, -Math.PI * 0.42, Math.PI * 0.42);
           ctx.stroke();
         }
         ctx.strokeStyle = coreCol;
-        ctx.fillStyle = isHot ? '#FFF6CC' : coreCol;
+        ctx.fillStyle = isHot ? THEME.ACCENT_AMBER_HI : coreCol;
         ctx.lineWidth = 2.4;
         ctx.beginPath();
         ctx.moveTo(15, 0);
@@ -720,12 +730,11 @@ export class FlakScopeRenderer {
         ctx.fill();
         ctx.stroke();
       } else if (t.kind === 'HEAVY_METEOR') {
-        // Rotating armored jagged polygonal meteor vector
         ctx.save();
         ctx.rotate(t.angle);
         ctx.fillStyle =
           t.hitFlashTimer > 0
-            ? 'rgba(255, 246, 204, 0.72)'
+            ? 'rgba(255, 228, 143, 0.72)'
             : isHot
               ? 'rgba(255, 140, 24, 0.28)'
               : 'rgba(14, 52, 28, 0.65)';
@@ -745,8 +754,7 @@ export class FlakScopeRenderer {
         ctx.fill();
         ctx.stroke();
 
-        // Inner armor cross-rib lines (marks it instantly as high-mass deflectable rock!)
-        ctx.strokeStyle = isHot ? '#FFF6CC' : 'rgba(142, 245, 171, 0.55)';
+        ctx.strokeStyle = isHot ? THEME.ACCENT_AMBER_HI : 'rgba(158, 247, 184, 0.58)';
         ctx.lineWidth = 1.6;
         ctx.beginPath();
         ctx.moveTo(-t.radius * 0.5, -t.radius * 0.3);
@@ -756,9 +764,8 @@ export class FlakScopeRenderer {
         ctx.stroke();
         ctx.restore();
 
-        // Deflected glowing motion halo ring if currently flying off-course from a shockwave!
         if (t.deflectedTimer > 0) {
-          ctx.strokeStyle = '#FFF6CC';
+          ctx.strokeStyle = THEME.ACCENT_AMBER_HI;
           ctx.lineWidth = 1.8;
           ctx.setLineDash([5, 5]);
           ctx.beginPath();
@@ -767,9 +774,9 @@ export class FlakScopeRenderer {
           ctx.setLineDash([]);
         }
       } else if (t.kind === 'MIRV_POD') {
-        // High-altitude pulsing amber diamond carrying multiple warheads
+        // Distinct double-walled diamond silhouette
         const pulse = 1 + Math.sin(timeSec * 12) * 0.1;
-        ctx.strokeStyle = '#FFB000';
+        ctx.strokeStyle = THEME.ACCENT_AMBER;
         ctx.fillStyle = 'rgba(255, 176, 0, 0.22)';
         ctx.lineWidth = 2.8;
         ctx.beginPath();
@@ -781,16 +788,15 @@ export class FlakScopeRenderer {
         ctx.fill();
         ctx.stroke();
 
-        // 3 Internal sub-munition cores
-        ctx.fillStyle = '#FFF6CC';
+        ctx.fillStyle = THEME.ACCENT_AMBER_HI;
         for (const ox of [-6, 0, 6]) {
           ctx.beginPath();
           ctx.arc(ox, ox === 0 ? -4 : 4, 2.8, 0, Math.PI * 2);
           ctx.fill();
         }
       } else if (t.kind === 'ION_JAMMER') {
-        // Pulsing Ion Storm Jammer hex + horizontal interference bars + radius ring
-        ctx.strokeStyle = 'rgba(142, 245, 171, 0.24)';
+        // Distinct rotating hexagon + horizontal interference scan bars
+        ctx.strokeStyle = 'rgba(76, 238, 255, 0.26)';
         ctx.lineWidth = 1.5;
         ctx.setLineDash([10, 12]);
         ctx.beginPath();
@@ -798,8 +804,7 @@ export class FlakScopeRenderer {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Horizontal CRT static interference waves radiating from jammer
-        ctx.strokeStyle = '#8EF5AB';
+        ctx.strokeStyle = THEME.ACCENT_CYAN;
         ctx.lineWidth = 2.0;
         for (let wIdx = -2; wIdx <= 2; wIdx++) {
           const wy = wIdx * 9 + Math.sin(timeSec * 24 + wIdx) * 3;
@@ -810,7 +815,7 @@ export class FlakScopeRenderer {
           ctx.stroke();
         }
 
-        ctx.strokeStyle = '#FFF6CC';
+        ctx.strokeStyle = THEME.ACCENT_AMBER_HI;
         ctx.lineWidth = 2.6;
         ctx.beginPath();
         for (let k = 0; k < 6; k++) {
@@ -825,75 +830,18 @@ export class FlakScopeRenderer {
       }
 
       ctx.restore();
-
-      // 3. Crisp Diegetic Telemetry Tag next to Threat (altitude km, armor HP, or signature)
-      if (t.y > 16) {
-        const altKm = Math.max(
-          0,
-          ((FLAK_CONSTANTS.HORIZON_Y - t.y) / FLAK_CONSTANTS.HORIZON_Y) * 98
-        );
-        ctx.textAlign = 'left';
-        ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-        ctx.fillStyle = isHot
-          ? '#FFF6CC'
-          : t.kind === 'MIRV_POD'
-            ? '#FFB000'
-            : t.kind === 'ION_JAMMER'
-              ? '#8EF5AB'
-              : 'rgba(110, 255, 152, 0.85)';
-
-        let tag = `${altKm.toFixed(1)}KM`;
-        if (t.kind === 'HEAVY_METEOR') {
-          tag = `HVY [${'█'.repeat(Math.max(1, t.hp))}] ${altKm.toFixed(0)}KM`;
-        } else if (t.kind === 'MIRV_POD') {
-          tag = `MIRV // ${altKm.toFixed(0)}KM`;
-        } else if (t.kind === 'ION_JAMMER') {
-          tag = 'ION JAMMER';
-        } else if (isHot) {
-          tag = `3X ${altKm.toFixed(1)}KM`;
-        }
-        ctx.fillText(tag, t.x + t.radius + 8, t.y + 4);
-
-        // Wave-1 diegetic micro-hints (unobtrusive, one per mechanic, disappear once executed)
-        if (sim.waveNumber === 1) {
-          if (
-            !shownMeteorHint &&
-            t.kind === 'HEAVY_METEOR' &&
-            sim.deflectionKills === 0 &&
-            t.deflectedTimer <= 0 &&
-            t.y > 90 &&
-            t.y < 660
-          ) {
-            shownMeteorHint = true;
-            ctx.font = 'bold 12px "Share Tech Mono", monospace';
-            ctx.fillStyle = '#FFB000';
-            ctx.fillText('◄ AIM BESIDE TO DEFLECT!', t.x + t.radius + 8, t.y + 20);
-          } else if (
-            !shownDcHint &&
-            t.kind === 'KINETIC_ROD' &&
-            sim.dangerCloseKills === 0 &&
-            t.y > 470 &&
-            t.y < FLAK_CONSTANTS.DANGER_CLOSE_Y + 32
-          ) {
-            shownDcHint = true;
-            ctx.font = 'bold 12px "Share Tech Mono", monospace';
-            ctx.fillStyle = '#FFE082';
-            ctx.fillText('▼ WAIT BELOW 24KM FOR 3X!', t.x + t.radius + 8, t.y + 20);
-          }
-        }
-      }
     }
     ctx.restore();
   }
 
   private thermalColor(t: OrbitalThreat, thermalT: number, timeSec: number): string {
-    if (t.kind === 'MIRV_POD') return '#FFB000';
+    if (t.kind === 'MIRV_POD') return THEME.ACCENT_AMBER;
     if (t.kind === 'ION_JAMMER') {
-      return Math.sin(timeSec * 18) > 0 ? '#8EF5AB' : '#44FF77';
+      return Math.sin(timeSec * 18) > 0 ? THEME.ACCENT_CYAN : THEME.TEXT_BRIGHT;
     }
-    if (thermalT < 0.22) return '#44FF77';
-    if (thermalT < 0.65) return '#FFB000';
-    return '#FFF6CC';
+    if (thermalT < 0.22) return THEME.TEXT_PRIMARY;
+    if (thermalT < 0.65) return THEME.ACCENT_AMBER;
+    return THEME.ACCENT_AMBER_HI;
   }
 
   private drawShockwaveBlasts(
@@ -907,7 +855,6 @@ export class FlakScopeRenderer {
       const fade = Math.max(0, 1 - Math.pow(p, 1.35));
 
       if (b.isEmp) {
-        // Massive Mk-IV EMP Shockwave Blast: white-hot core flash + emerald/amber double wavefront + EM arcs
         const grad = ctx.createRadialGradient(
           b.x,
           b.y,
@@ -916,8 +863,8 @@ export class FlakScopeRenderer {
           b.y,
           b.currentRadius
         );
-        grad.addColorStop(0, `rgba(255, 246, 204, ${(0.55 * fade).toFixed(2)})`);
-        grad.addColorStop(0.42, `rgba(142, 245, 171, ${(0.32 * fade).toFixed(2)})`);
+        grad.addColorStop(0, `rgba(255, 228, 143, ${(0.55 * fade).toFixed(2)})`);
+        grad.addColorStop(0.42, `rgba(158, 247, 184, ${(0.32 * fade).toFixed(2)})`);
         grad.addColorStop(0.82, `rgba(255, 176, 0, ${(0.24 * fade).toFixed(2)})`);
         grad.addColorStop(1, 'rgba(68, 255, 119, 0)');
         ctx.fillStyle = grad;
@@ -925,15 +872,13 @@ export class FlakScopeRenderer {
         ctx.arc(b.x, b.y, b.currentRadius, 0, Math.PI * 2);
         ctx.fill();
 
-        // Outer EMP shockwave crest ring
-        ctx.strokeStyle = `rgba(255, 246, 204, ${(0.95 * fade).toFixed(2)})`;
+        ctx.strokeStyle = `rgba(255, 228, 143, ${(0.95 * fade).toFixed(2)})`;
         ctx.lineWidth = 4.2 * fade + 1.4;
         ctx.beginPath();
         ctx.arc(b.x, b.y, b.currentRadius, 0, Math.PI * 2);
         ctx.stroke();
 
-        // Secondary trailing harmonic oscilloscope ring
-        ctx.strokeStyle = `rgba(142, 245, 171, ${(0.78 * fade).toFixed(2)})`;
+        ctx.strokeStyle = `rgba(158, 247, 184, ${(0.78 * fade).toFixed(2)})`;
         ctx.lineWidth = 2.4;
         ctx.beginPath();
         const segs = 40;
@@ -948,15 +893,7 @@ export class FlakScopeRenderer {
         }
         ctx.stroke();
       } else {
-        // M90 Proximity Flak Airburst: blinding flash core + radial pressure ring
-        const grad = ctx.createRadialGradient(
-          b.x,
-          b.y,
-          4,
-          b.x,
-          b.y,
-          b.currentRadius
-        );
+        const grad = ctx.createRadialGradient(b.x, b.y, 4, b.x, b.y, b.currentRadius);
         grad.addColorStop(0, `rgba(255, 250, 224, ${(0.68 * fade).toFixed(2)})`);
         grad.addColorStop(0.45, `rgba(255, 176, 0, ${(0.36 * fade).toFixed(2)})`);
         grad.addColorStop(1, 'rgba(255, 140, 0, 0)');
@@ -965,14 +902,12 @@ export class FlakScopeRenderer {
         ctx.arc(b.x, b.y, b.currentRadius, 0, Math.PI * 2);
         ctx.fill();
 
-        // Crisp pressure-wave outer perimeter ring (shows exact shockwave deflection boundary!)
-        ctx.strokeStyle = `rgba(255, 224, 138, ${(0.92 * fade).toFixed(2)})`;
+        ctx.strokeStyle = `rgba(255, 228, 143, ${(0.92 * fade).toFixed(2)})`;
         ctx.lineWidth = 3.0 * fade + 1.0;
         ctx.beginPath();
         ctx.arc(b.x, b.y, b.currentRadius, 0, Math.PI * 2);
         ctx.stroke();
 
-        // Inner vaporization core ring during peak flash
         if (p < 0.45) {
           ctx.strokeStyle = `rgba(255, 255, 255, ${((1 - p / 0.45) * 0.85).toFixed(2)})`;
           ctx.lineWidth = 2.0;
@@ -996,31 +931,13 @@ export class FlakScopeRenderer {
     ctx.restore();
   }
 
-  private drawScorePopups(ctx: CanvasRenderingContext2D, sim: FlakSimulation): void {
-    ctx.save();
-    ctx.textAlign = 'center';
-    for (const pop of sim.popups) {
-      const p = pop.age / pop.duration;
-      const alpha = p < 0.15 ? p / 0.15 : Math.max(0, 1 - (p - 0.15) / 0.85);
-      ctx.globalAlpha = alpha;
-      ctx.font = 'bold 21px "Share Tech Mono", monospace';
-      ctx.fillStyle = pop.color;
-      ctx.fillText(pop.text, pop.x, pop.y);
-      if (pop.subText) {
-        ctx.font = 'bold 14.5px "JetBrains Mono", monospace';
-        ctx.fillStyle = '#FFB000';
-        ctx.fillText(pop.subText, pop.x, pop.y + 18);
-      }
-    }
-    ctx.restore();
-  }
-
-  private drawLeadComputingReticle(
+  private drawReticleGeometry(
     ctx: CanvasRenderingContext2D,
     sim: FlakSimulation,
     cursor: Vec2,
     timeSec: number,
-    demoState: DemoTelemetryState | null = null
+    demoState: DemoTelemetryState | null,
+    empTouchArmed: boolean
   ): void {
     const info = sim.getReticleInfo(cursor);
     const isAi = Boolean(demoState?.active);
@@ -1029,14 +946,15 @@ export class FlakScopeRenderer {
 
     ctx.save();
 
-    // 1. Faint vector fire-control line from active battery (or EMP battery during AI EMP lock) to reticle
+    // 1. Faint vector fire-control line from active battery to reticle
     const lineOrigin =
-      isAi && demoState?.aiWeaponMode === 'EMP'
+      empTouchArmed || (isAi && demoState?.aiWeaponMode === 'EMP')
         ? sim.batteries[1]
         : info.activeFlakBattery;
     if (lineOrigin) {
-      ctx.strokeStyle = isAi ? 'rgba(255, 176, 0, 0.34)' : 'rgba(68, 255, 119, 0.22)';
-      ctx.lineWidth = isAi ? 1.8 : 1.4;
+      ctx.strokeStyle =
+        empTouchArmed || isAi ? 'rgba(255, 176, 0, 0.38)' : 'rgba(68, 255, 119, 0.24)';
+      ctx.lineWidth = empTouchArmed || isAi ? 1.8 : 1.4;
       ctx.setLineDash([6, 10]);
       ctx.beginPath();
       ctx.moveTo(lineOrigin.x, lineOrigin.y - 16);
@@ -1045,9 +963,10 @@ export class FlakScopeRenderer {
       ctx.setLineDash([]);
     }
 
-    // 2. Lead-Computing Intercept Ghost Pips (ONLY active during 2x+ Ballistic Predictor Boost!)
+    // 2. Lead-Computing Intercept Ghost Pips (during 2X+ Ballistic Predictor Boost)
     if (sim.predictorBoostTimer > 0) {
-      const pipFade = sim.predictorBoostTimer < 1.5 ? Math.max(0.2, sim.predictorBoostTimer / 1.5) : 1.0;
+      const pipFade =
+        sim.predictorBoostTimer < 1.5 ? Math.max(0.2, sim.predictorBoostTimer / 1.5) : 1.0;
       ctx.save();
       ctx.globalAlpha = pipFade;
       for (const t of sim.threats) {
@@ -1055,13 +974,13 @@ export class FlakScopeRenderer {
         if (distToCursor > 360) continue;
         if (sim.isPositionJammed(t.x, t.y) && t.kind !== 'ION_JAMMER') continue;
 
-        const tof = info.flakTofSec;
+        const tof = empTouchArmed ? info.empTofSec : info.flakTofSec;
         const g = FLAK_CONSTANTS.GRAVITY * t.gravityScale;
         const lx = t.x + t.vx * tof + 0.5 * t.orbitalDriftAx * tof * tof;
         const ly = t.y + t.vy * tof + 0.5 * g * tof * tof;
         if (ly > FLAK_CONSTANTS.HORIZON_Y - 12 || ly < 10) continue;
 
-        ctx.strokeStyle = 'rgba(255, 176, 0, 0.52)';
+        ctx.strokeStyle = 'rgba(255, 176, 0, 0.54)';
         ctx.lineWidth = 1.5;
         ctx.setLineDash([4, 5]);
         ctx.beginPath();
@@ -1070,7 +989,7 @@ export class FlakScopeRenderer {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        ctx.strokeStyle = 'rgba(255, 224, 138, 0.78)';
+        ctx.strokeStyle = 'rgba(255, 228, 143, 0.82)';
         ctx.lineWidth = 1.8;
         ctx.beginPath();
         ctx.arc(lx, ly, 10, 0, Math.PI * 2);
@@ -1079,25 +998,23 @@ export class FlakScopeRenderer {
       ctx.restore();
     }
 
-    // 2b. Live Billiard Deflection Vector Preview when hovering off-center beside a Heavy Meteor!
+    // 2b. Live Billiard Deflection Vector Preview Geometry
     const deflectPrev = sim.getDeflectionPreview({ x: cx, y: cy });
     if (deflectPrev && deflectPrev.arc.length >= 2) {
       const billiard = deflectPrev.hitsOtherThreat;
       const pulse = 0.78 + 0.22 * Math.sin(timeSec * 16);
-      const col = billiard ? '#FFF6CC' : '#FFB000';
+      const col = billiard ? THEME.ACCENT_AMBER_HI : THEME.ACCENT_AMBER;
 
       ctx.save();
-      // Subtle Flak radial shockwave boundary around reticle showing exact shove reach
       ctx.strokeStyle = billiard
-        ? `rgba(255, 246, 204, ${(0.48 * pulse).toFixed(2)})`
-        : 'rgba(255, 176, 0, 0.34)';
+        ? `rgba(255, 228, 143, ${(0.5 * pulse).toFixed(2)})`
+        : 'rgba(255, 176, 0, 0.36)';
       ctx.lineWidth = billiard ? 1.8 : 1.4;
       ctx.setLineDash([7, 7]);
       ctx.beginPath();
       ctx.arc(cx, cy, FLAK_CONSTANTS.FLAK_BLAST_RADIUS, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Predicted post-shove curved billiard trajectory out of the meteor
       ctx.strokeStyle = col;
       ctx.lineWidth = billiard ? 2.8 : 2.1;
       ctx.setLineDash(billiard ? [9, 5] : [8, 7]);
@@ -1109,7 +1026,6 @@ export class FlakScopeRenderer {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Vector arrowhead at tip of predicted deflection arc
       const tip = deflectPrev.arc[deflectPrev.arc.length - 1];
       const prev = deflectPrev.arc[deflectPrev.arc.length - 2];
       const ang = Math.atan2(tip.y - prev.y, tip.x - prev.x);
@@ -1121,29 +1037,16 @@ export class FlakScopeRenderer {
       ctx.lineTo(tip.x - Math.cos(ang + 0.45) * headLen, tip.y - Math.sin(ang + 0.45) * headLen);
       ctx.closePath();
       ctx.fill();
-
-      // Crisp diegetic deflection callout tag at midpoint/tip
-      ctx.textAlign = 'center';
-      ctx.font = billiard
-        ? 'bold 14.5px "Share Tech Mono", monospace'
-        : 'bold 12.5px "Share Tech Mono", monospace';
-      ctx.fillStyle = col;
-      ctx.fillText(
-        billiard ? '★ BILLIARD KILL! ★' : 'DEFLECT VECTOR →',
-        Math.max(90, Math.min(FLAK_CONSTANTS.VIRTUAL_W - 90, tip.x)),
-        Math.max(28, tip.y - 12)
-      );
       ctx.restore();
     }
 
-    // 3. Main Oscilloscope Fire-Control Reticle (or Amber AI Targeter during Tactical Demo!)
+    // 3. Main Reticle Ring & Crosshair Geometry
     if (isAi && demoState) {
       const mode = demoState.aiWeaponMode;
       const aiPulse = 0.72 + 0.28 * Math.sin(timeSec * 14);
-      const primaryCol = mode === 'EMP' ? '#FFF6CC' : '#FFB000';
+      const primaryCol = mode === 'EMP' ? THEME.ACCENT_AMBER_HI : THEME.ACCENT_AMBER;
       const r = mode === 'EMP' ? 32 : 26;
 
-      // Rotating Amber Diamond Targeter Frame
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate(Math.PI * 0.25 + timeSec * (mode === 'DEFLECT_AIM' ? 1.3 : 0.7));
@@ -1153,7 +1056,6 @@ export class FlakScopeRenderer {
       ctx.strokeRect(-dHalf, -dHalf, dHalf * 2, dHalf * 2);
       ctx.restore();
 
-      // Segmented Outer AI Lock Ring
       ctx.strokeStyle = `rgba(255, 176, 0, ${aiPulse.toFixed(2)})`;
       ctx.lineWidth = 2.4;
       const rot = -timeSec * 1.1;
@@ -1164,8 +1066,7 @@ export class FlakScopeRenderer {
         ctx.stroke();
       }
 
-      // Precision Amber Crosshair Ticks + Hot Center Pip
-      ctx.strokeStyle = '#FFF6CC';
+      ctx.strokeStyle = THEME.ACCENT_AMBER_HI;
       ctx.lineWidth = 2.0;
       ctx.beginPath();
       ctx.moveTo(cx - 42, cy);
@@ -1178,51 +1079,43 @@ export class FlakScopeRenderer {
       ctx.lineTo(cx, cy + 42);
       ctx.stroke();
 
-      ctx.fillStyle = '#FFF6CC';
+      ctx.fillStyle = THEME.ACCENT_AMBER_HI;
       ctx.beginPath();
       ctx.arc(cx, cy, 3.4, 0, Math.PI * 2);
       ctx.fill();
-
-      // AI Targeter Telemetry Tag
-      const modeTag =
-        mode === 'EMP'
-          ? 'MK-IV EMP LOCK'
-          : mode === 'HOLD'
-            ? 'HOLDING (3X WAIT)'
-            : mode === 'DEFLECT_AIM'
-              ? 'OFF-CENTER SHOVE'
-              : 'M90 BALLISTIC LEAD';
-      const tofStr =
-        mode === 'EMP' ? info.empTofSec.toFixed(2) : info.flakTofSec.toFixed(2);
-      const tagX = cx > FLAK_CONSTANTS.VIRTUAL_W - 340 ? cx - 38 : cx + 38;
-      ctx.textAlign = cx > FLAK_CONSTANTS.VIRTUAL_W - 340 ? 'right' : 'left';
-      ctx.font = 'bold 14px "Share Tech Mono", monospace';
-      ctx.fillStyle = '#FFB000';
-      ctx.fillText(`AI TARGETER // ${modeTag}`, tagX, cy - 8);
-      ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
-      ctx.fillStyle = '#FFF6CC';
-      ctx.fillText(`AUTO-SOLVER 60HZ // TOF ${tofStr}S`, tagX, cy + 13);
-
       ctx.restore();
       return;
     }
 
-    const readyCol = info.activeFlakBattery ? '#44FF77' : '#FFB000';
-    const r = 24;
-    ctx.strokeStyle = readyCol;
-    ctx.lineWidth = 2.2;
+    // Touch / Trackpad EMP Armed Blast Radius Preview Ring
+    if (empTouchArmed) {
+      const empPulse = 0.55 + 0.35 * Math.sin(timeSec * 12);
+      ctx.strokeStyle = `rgba(255, 176, 0, ${empPulse.toFixed(2)})`;
+      ctx.lineWidth = 2.2;
+      ctx.setLineDash([12, 8]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, FLAK_CONSTANTS.EMP_CORE_RADIUS, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
-    // 4 Corner precision arcs
-    const rot = timeSec * 0.65;
+    const readyCol = empTouchArmed
+      ? THEME.ACCENT_AMBER
+      : info.activeFlakBattery
+        ? THEME.TEXT_PRIMARY
+        : THEME.ACCENT_AMBER;
+    const r = empTouchArmed ? 30 : 24;
+    ctx.strokeStyle = readyCol;
+    ctx.lineWidth = empTouchArmed ? 2.6 : 2.2;
+
+    const rot = timeSec * (empTouchArmed ? -1.2 : 0.65);
     for (let k = 0; k < 4; k++) {
       const a0 = rot + k * (Math.PI * 0.5) + 0.25;
-      const a1 = a0 + 0.95;
       ctx.beginPath();
-      ctx.arc(cx, cy, r, a0, a1);
+      ctx.arc(cx, cy, r, a0, a0 + 0.95);
       ctx.stroke();
     }
 
-    // Inner precision crosshair ticks
     ctx.beginPath();
     ctx.moveTo(cx - 34, cy);
     ctx.lineTo(cx - 10, cy);
@@ -1234,118 +1127,15 @@ export class FlakScopeRenderer {
     ctx.lineTo(cx, cy + 34);
     ctx.stroke();
 
-    // Center pip
-    ctx.fillStyle = '#FFF6CC';
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
     ctx.beginPath();
     ctx.arc(cx, cy, 2.8, 0, Math.PI * 2);
     ctx.fill();
 
-    // Reticle Live Telemetry Tag (Battery lock + Time-of-Flight + EMP Ready indicator)
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = readyCol;
-    const batLabel = info.activeFlakBattery ? `BAT-${info.activeFlakBattery.id}` : 'RELOADING';
-    ctx.fillText(`${batLabel} // TOF ${info.flakTofSec.toFixed(2)}S`, cx + 32, cy - 6);
-
-    ctx.fillStyle = info.empReady ? '#FFB000' : 'rgba(255, 176, 0, 0.42)';
-    ctx.fillText(
-      info.empReady ? `[RMB] EMP READY (${info.empTofSec.toFixed(2)}S)` : '[RMB] EMP EMPTY',
-      cx + 32,
-      cy + 14
-    );
-
     ctx.restore();
   }
 
-  private drawDemoTacticalTicker(
-    ctx: CanvasRenderingContext2D,
-    demo: DemoTelemetryState,
-    timeSec: number
-  ): void {
-    const bx = 22;
-    const by = 10;
-    const bw = FLAK_CONSTANTS.VIRTUAL_W - 44;
-    const bh = 62;
-    const exitPulse = 0.65 + 0.35 * Math.sin(timeSec * 6.5);
-
-    ctx.save();
-    ctx.fillStyle = 'rgba(14, 10, 2, 0.76)';
-    ctx.fillRect(bx, by, bw, bh);
-    ctx.strokeStyle = 'rgba(255, 176, 0, 0.88)';
-    ctx.lineWidth = 2.0;
-    ctx.strokeRect(bx, by, bw, bh);
-
-    // Stage progress pips (1..5) + Stage Title on top-left
-    const pips = `${'■'.repeat(demo.stageIndex)}${'□'.repeat(Math.max(0, demo.totalStages - demo.stageIndex))}`;
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 16.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(
-      `MU-TH-UR TACTICAL BRIEFING [${pips}] ${demo.stageTitle}`,
-      bx + 18,
-      by + 24
-    );
-
-    // Pulsing Instant Exit Prompt on top-right
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 16.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = `rgba(255, 246, 204, ${exitPulse.toFixed(2)})`;
-    ctx.fillText('[SPACE / ESC / CLICK] EXIT DEMO', bx + bw - 18, by + 24);
-
-    // Live MU-TH-UR Tactical AI Callout Ticker on bottom-left
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 15.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#8EF5AB';
-    ctx.fillText(demo.calloutText, bx + 18, by + 49, bw - 560);
-
-    // Milestone confirmation badge on bottom-right once stage objective executes!
-    if (demo.milestoneBanner) {
-      ctx.textAlign = 'right';
-      ctx.font = 'bold 15px "Share Tech Mono", monospace';
-      ctx.fillStyle = '#FFF6CC';
-      ctx.fillText(`✓ ${demo.milestoneBanner}`, bx + bw - 18, by + 49);
-    }
-
-    ctx.restore();
-  }
-
-  private drawPredictorBoostBanner(
-    ctx: CanvasRenderingContext2D,
-    sim: FlakSimulation,
-    timeSec: number,
-    by = 18
-  ): void {
-    const bw = 568;
-    const bh = 38;
-    const bx = (FLAK_CONSTANTS.VIRTUAL_W - bw) * 0.5;
-    const frac = Math.max(0, Math.min(1, sim.predictorBoostTimer / sim.predictorBoostMaxSec));
-    const lowWarn = sim.predictorBoostTimer < 2.5;
-    const overclocked = sim.liveChain >= 4;
-    const pulse = (lowWarn || overclocked) && Math.sin(timeSec * 18) > 0;
-
-    ctx.save();
-    ctx.fillStyle = overclocked ? 'rgba(28, 22, 5, 0.88)' : 'rgba(4, 18, 9, 0.84)';
-    ctx.fillRect(bx, by, bw, bh);
-    ctx.strokeStyle = overclocked ? '#FFB000' : pulse ? '#FFB000' : '#44FF77';
-    ctx.lineWidth = 2.0;
-    ctx.strokeRect(bx, by, bw, bh);
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 16px "Share Tech Mono", monospace';
-    ctx.fillStyle = overclocked ? (pulse ? '#FFF6CC' : '#FFB000') : pulse ? '#FFF6CC' : '#8EF5AB';
-    const bannerLabel = overclocked
-      ? `► x${sim.liveChain} OVERCLOCK // LEAD PIPS + FAST AUTOLOADER (${sim.predictorBoostTimer.toFixed(1)}S) ◄`
-      : `► 2X BOOST // LEAD PIPS + FAST AUTOLOADER (${sim.predictorBoostTimer.toFixed(1)}S) ◄`;
-    ctx.fillText(bannerLabel, bx + bw * 0.5, by + 21);
-
-    ctx.fillStyle = 'rgba(18, 46, 28, 0.8)';
-    ctx.fillRect(bx + 14, by + 28, bw - 28, 5);
-    ctx.fillStyle = lowWarn || overclocked ? '#FFB000' : '#44FF77';
-    ctx.fillRect(bx + 14, by + 28, (bw - 28) * frac, 5);
-    ctx.restore();
-  }
-
-  private drawOrbitalBoss(
+  private drawOrbitalBossGeometry(
     ctx: CanvasRenderingContext2D,
     sim: FlakSimulation,
     timeSec: number
@@ -1357,19 +1147,23 @@ export class FlakScopeRenderer {
     const isStunned = boss.empStunTimer > 0;
     const isCharging = boss.chargeTimer > 0;
     const isDying = boss.dyingTimer > 0;
-    const jitterX = isDying ? Math.sin(timeSec * 85) * 9 : isStunned ? Math.sin(timeSec * 62) * 3 : 0;
+    const jitterX = isDying
+      ? Math.sin(timeSec * 85) * 9
+      : isStunned
+        ? Math.sin(timeSec * 62) * 3
+        : 0;
     const jitterY = isDying ? Math.cos(timeSec * 72) * 7 : 0;
     const bx = boss.x + jitterX;
     const by = boss.y + jitterY;
 
-    // 1. Telegraph Laser Lock Sightlines down to targeted Colony Domes during salvo charge!
+    // 1. Telegraph Laser Lock Sightlines down to targeted Colony Domes
     if (isCharging && !isDying) {
       const chargeFrac = 1 - boss.chargeTimer / Math.max(0.01, boss.chargeDuration);
       const pulse = 0.45 + 0.45 * Math.sin(timeSec * 36);
       ctx.save();
       ctx.setLineDash([12, 8]);
       ctx.lineWidth = 2.0 + chargeFrac * 2.2;
-      ctx.strokeStyle = `rgba(255, 68, 34, ${(0.35 + pulse * 0.55).toFixed(2)})`;
+      ctx.strokeStyle = `rgba(255, 51, 24, ${(0.35 + pulse * 0.55).toFixed(2)})`;
       for (const dId of boss.targetDomeIds) {
         const dome = sim.domes.find((d) => d.id === dId && d.intact);
         if (!dome) continue;
@@ -1378,12 +1172,17 @@ export class FlakScopeRenderer {
         ctx.lineTo(dome.x, dome.y - dome.radius);
         ctx.stroke();
 
-        // Locking brackets on targeted dome
         ctx.setLineDash([]);
-        ctx.strokeStyle = '#FF4422';
+        ctx.strokeStyle = THEME.ALERT_RED_STROKE;
         ctx.lineWidth = 2.4;
         ctx.beginPath();
-        ctx.arc(dome.x, dome.y - 10, dome.radius + 14 + (1 - chargeFrac) * 28, Math.PI, Math.PI * 2);
+        ctx.arc(
+          dome.x,
+          dome.y - 10,
+          dome.radius + 14 + (1 - chargeFrac) * 28,
+          Math.PI,
+          Math.PI * 2
+        );
         ctx.stroke();
         ctx.setLineDash([12, 8]);
       }
@@ -1391,18 +1190,18 @@ export class FlakScopeRenderer {
       ctx.restore();
     }
 
-    // 2. Massive 1979 Vector Warship Chassis Silhouette (Armored Dreadnought Carrier)
+    // 2. Massive 1979 Vector Warship Chassis Silhouette
     ctx.save();
     ctx.translate(bx, by);
     const hullCol = isDying
-      ? '#FFF6CC'
+      ? THEME.ACCENT_AMBER_HI
       : boss.hitFlashTimer > 0
-        ? '#FFF6CC'
+        ? THEME.ACCENT_AMBER_HI
         : isStunned
-          ? '#8EF5AB'
+          ? THEME.TEXT_BRIGHT
           : isCharging
-            ? '#FF4422'
-            : '#FFB000';
+            ? THEME.ALERT_RED_STROKE
+            : THEME.ACCENT_AMBER;
 
     ctx.fillStyle = isDying
       ? 'rgba(255, 176, 0, 0.32)'
@@ -1410,7 +1209,6 @@ export class FlakScopeRenderer {
         ? 'rgba(24, 96, 62, 0.45)'
         : 'rgba(28, 12, 6, 0.88)';
 
-    // Outer armored crescent/wing wireframe hull
     ctx.beginPath();
     ctx.moveTo(-184, 8);
     ctx.lineTo(-148, -32);
@@ -1431,8 +1229,7 @@ export class FlakScopeRenderer {
     ctx.lineWidth = 3.2;
     ctx.stroke();
 
-    // Inner structural ribs & sensor spine
-    ctx.strokeStyle = isStunned ? '#44FF77' : 'rgba(255, 176, 0, 0.55)';
+    ctx.strokeStyle = isStunned ? THEME.TEXT_PRIMARY : 'rgba(255, 176, 0, 0.55)';
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.moveTo(-136, -18);
@@ -1445,9 +1242,8 @@ export class FlakScopeRenderer {
     ctx.lineTo(68, 28);
     ctx.stroke();
 
-    // EMP Stun crackling plasma arcs across chassis
     if (isStunned) {
-      ctx.strokeStyle = '#8EF5AB';
+      ctx.strokeStyle = THEME.TEXT_BRIGHT;
       ctx.lineWidth = 2.0;
       for (let a = 0; a < 3; a++) {
         ctx.beginPath();
@@ -1460,12 +1256,11 @@ export class FlakScopeRenderer {
       }
     }
 
-    // 3. Three Targetable Weapon Hardpoints (PORT RAIL | REACTOR CORE | STBD RAIL)
+    // 3. Three Targetable Weapon Hardpoints
     for (const hp of boss.hardpoints) {
       ctx.save();
       ctx.translate(hp.offsetX, hp.offsetY);
       if (hp.destroyed) {
-        // Charred smoking crater X
         ctx.strokeStyle = 'rgba(255, 80, 40, 0.45)';
         ctx.lineWidth = 2.2;
         ctx.beginPath();
@@ -1479,12 +1274,12 @@ export class FlakScopeRenderer {
           hp.hitFlashTimer > 0
             ? '#FFFFFF'
             : isCharging
-              ? '#FF4422'
+              ? THEME.ALERT_RED_STROKE
               : hp.id === 'CORE'
-                ? '#FFF6CC'
-                : '#FFB000';
+                ? THEME.ACCENT_AMBER_HI
+                : THEME.ACCENT_AMBER;
         const r = hp.radius * 0.72;
-        ctx.fillStyle = isCharging ? 'rgba(255, 68, 34, 0.38)' : 'rgba(255, 176, 0, 0.22)';
+        ctx.fillStyle = isCharging ? 'rgba(255, 51, 24, 0.38)' : 'rgba(255, 176, 0, 0.22)';
         ctx.beginPath();
         ctx.arc(0, 0, r, 0, Math.PI * 2);
         ctx.fill();
@@ -1492,10 +1287,9 @@ export class FlakScopeRenderer {
         ctx.lineWidth = 2.6;
         ctx.stroke();
 
-        // Pulsing target bracket corners around active hardpoints so players immediately know where to shoot!
         const bPulse = 4 + Math.sin(timeSec * 12) * 3;
         const br = r + bPulse;
-        ctx.strokeStyle = hp.id === 'CORE' ? '#FFF6CC' : '#FF4422';
+        ctx.strokeStyle = hp.id === 'CORE' ? THEME.ACCENT_AMBER_HI : THEME.ALERT_RED_STROKE;
         ctx.lineWidth = 2.0;
         const leg = 8;
         ctx.beginPath();
@@ -1513,54 +1307,701 @@ export class FlakScopeRenderer {
         ctx.lineTo(br, br - leg);
         ctx.stroke();
 
-        // Micro HP bar beneath hardpoint
         const frac = Math.max(0, hp.hp / Math.max(1, hp.maxHp));
         ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
         ctx.fillRect(-20, r + 8, 40, 6);
-        ctx.fillStyle = hp.id === 'CORE' ? '#FFF6CC' : '#FFB000';
+        ctx.fillStyle = hp.id === 'CORE' ? THEME.ACCENT_AMBER_HI : THEME.ACCENT_AMBER;
         ctx.fillRect(-19, r + 9, 38 * frac, 4);
       }
       ctx.restore();
     }
-    ctx.restore();
 
-    // 4. Top-Center BOSS INTEGRITY TELEMETRY BAR (pushed below Predictor banner if both active)
-    const barW = 660;
-    const barH = 44;
-    const barX = (FLAK_CONSTANTS.VIRTUAL_W - barW) * 0.5;
-    const barY = sim.predictorBoostTimer > 0 ? 64 : 18;
+    ctx.restore();
+    ctx.restore();
+  }
+
+  // ===========================================================================
+  // PASS 2: UNSCALED SCREEN-SPACE TYPOGRAPHY (>=12-13px CSS PX EVERYWHERE!)
+  // ===========================================================================
+  private drawHaloText(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    color: string
+  ): void {
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = THEME.HALO_DARK;
+    ctx.lineWidth = 3.2;
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+  }
+
+  private drawAltitudeAndBandLabelsScreenSpace(
+    ctx: CanvasRenderingContext2D,
+    viewport: ViewportRect,
+    proj: ScopeProjection,
+    toScreen: (vx: number, vy: number) => ScreenTextTarget
+  ): void {
+    ctx.save();
+    ctx.textBaseline = 'middle';
+
+    // Altitude edge scale ticks (12px crisp JetBrains Mono)
+    ctx.font = font('micro', 12);
+    const altMarks = [
+      { y: 120, lbl: '90KM' },
+      { y: 300, lbl: '68KM' },
+      { y: FLAK_CONSTANTS.MIRV_SPLIT_Y, lbl: '48KM' },
+      { y: FLAK_CONSTANTS.DANGER_CLOSE_Y, lbl: '24KM' },
+      { y: 840, lbl: '10KM' },
+    ];
+    const leftEdgeX = Math.max(viewport.x + 8, proj.offsetX + 12);
+    const rightEdgeX = Math.min(viewport.x + viewport.width - 8, proj.offsetX + proj.drawW - 12);
+
+    for (const m of altMarks) {
+      const pt = toScreen(0, m.y);
+      ctx.textAlign = 'left';
+      this.drawHaloText(ctx, m.lbl, leftEdgeX, pt.y, THEME.TEXT_SECONDARY);
+      ctx.textAlign = 'right';
+      this.drawHaloText(ctx, m.lbl, rightEdgeX, pt.y, THEME.TEXT_SECONDARY);
+    }
+
+    // MIRV Separation Threshold Label (13px screen-space)
+    const mirvPt = toScreen(FLAK_CONSTANTS.VIRTUAL_W - 92, FLAK_CONSTANTS.MIRV_SPLIT_Y);
+    ctx.font = font('data', 13);
+    ctx.textAlign = 'right';
+    this.drawHaloText(
+      ctx,
+      `${SEMIOTIC_ICONS.DIAMOND} MIRV SPLIT // 48KM`,
+      Math.min(rightEdgeX - 46, mirvPt.x),
+      mirvPt.y - 10,
+      THEME.TEXT_SECONDARY
+    );
+
+    // DANGER CLOSE // 3X Thermal Band Labels (13px screen-space)
+    const dcLeftPt = toScreen(92, FLAK_CONSTANTS.DANGER_CLOSE_Y);
+    const dcRightPt = toScreen(FLAK_CONSTANTS.VIRTUAL_W - 92, FLAK_CONSTANTS.DANGER_CLOSE_Y);
+    ctx.font = font('data', 13);
+    ctx.textAlign = 'left';
+    this.drawHaloText(
+      ctx,
+      '▼ DANGER CLOSE // 3X THERMAL BAND',
+      Math.max(leftEdgeX + 46, dcLeftPt.x),
+      dcLeftPt.y - 10,
+      THEME.ACCENT_AMBER
+    );
+    if (viewport.width >= 760) {
+      ctx.textAlign = 'right';
+      this.drawHaloText(
+        ctx,
+        '3X SCORE // +1 EMP PER 3 KILLS',
+        Math.min(rightEdgeX - 46, dcRightPt.x),
+        dcRightPt.y - 10,
+        THEME.ACCENT_AMBER
+      );
+    }
+
+    ctx.restore();
+  }
+
+  private drawInstallationLabelsScreenSpace(
+    ctx: CanvasRenderingContext2D,
+    sim: FlakSimulation,
+    viewport: ViewportRect,
+    toScreen: (vx: number, vy: number) => ScreenTextTarget
+  ): void {
+    ctx.save();
+    ctx.font = font('data', 13);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const maxY = viewport.y + viewport.height - 10;
+
+    for (const d of sim.domes) {
+      const pt = toScreen(d.x, d.y + 34);
+      const y = Math.min(maxY, pt.y);
+      if (d.intact) {
+        const savedGlow = d.savedFlashTimer > 0 || d.restoreFlashTimer > 0;
+        this.drawHaloText(
+          ctx,
+          d.label,
+          pt.x,
+          y,
+          savedGlow ? THEME.ACCENT_AMBER_HI : THEME.TEXT_BRIGHT
+        );
+      } else {
+        this.drawHaloText(ctx, `${d.label} LOST`, pt.x, y, THEME.ALERT_RED_TEXT);
+      }
+    }
+
+    for (const b of sim.batteries) {
+      const isEmp = b.weaponType === 'MK4_EMP';
+      const pt = toScreen(b.x, b.y + 44);
+      const y = Math.min(maxY, pt.y);
+      const lbl = isEmp ? `${SEMIOTIC_ICONS.DIAMOND} [S] EMP` : `[${b.id}] FLAK`;
+      this.drawHaloText(
+        ctx,
+        lbl,
+        Math.max(viewport.x + 42, Math.min(viewport.x + viewport.width - 42, pt.x)),
+        y,
+        isEmp ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY
+      );
+    }
+
+    ctx.restore();
+  }
+
+  private drawDropPodLabelScreenSpace(
+    ctx: CanvasRenderingContext2D,
+    sim: FlakSimulation,
+    viewport: ViewportRect,
+    toScreen: (vx: number, vy: number) => ScreenTextTarget
+  ): void {
+    const pod = sim.dropPod;
+    if (!pod) return;
+    const pt = toScreen(pod.x, pod.y);
+    const flipLeft = pt.x > viewport.x + viewport.width - 190;
+    ctx.save();
+    ctx.font = font('data', 13);
+    ctx.textAlign = flipLeft ? 'right' : 'left';
+    ctx.textBaseline = 'middle';
+    this.drawHaloText(
+      ctx,
+      `${SEMIOTIC_ICONS.DIAMOND} DROP-POD // RESTORE`,
+      flipLeft ? pt.x - 16 : pt.x + 16,
+      pt.y - 4,
+      THEME.ACCENT_CYAN
+    );
+    ctx.restore();
+  }
+
+  private drawThreatLabelsScreenSpace(
+    ctx: CanvasRenderingContext2D,
+    sim: FlakSimulation,
+    viewport: ViewportRect,
+    projScale: number,
+    toScreen: (vx: number, vy: number) => ScreenTextTarget
+  ): void {
+    ctx.save();
+    ctx.textBaseline = 'middle';
+    let shownMeteorHint = false;
+    let shownDcHint = false;
+
+    for (const t of sim.threats) {
+      if (t.y <= 16) continue;
+      const isHot = t.y >= FLAK_CONSTANTS.DANGER_CLOSE_Y;
+      const altKm = Math.max(
+        0,
+        ((FLAK_CONSTANTS.HORIZON_Y - t.y) / FLAK_CONSTANTS.HORIZON_Y) * 98
+      );
+      const pt = toScreen(t.x, t.y);
+      const radPx = Math.max(10, t.radius * projScale + 6);
+      const flipLeft = pt.x > viewport.x + viewport.width - 156;
+      const tx = flipLeft ? pt.x - radPx : pt.x + radPx;
+
+      let tag = `${altKm.toFixed(1)}KM`;
+      let col: string = THEME.TEXT_BRIGHT;
+      if (t.kind === 'HEAVY_METEOR') {
+        tag = `${SEMIOTIC_ICONS.TRIANGLE} HVY [${'█'.repeat(Math.max(1, t.hp))}] ${altKm.toFixed(0)}KM`;
+        col = isHot ? THEME.ACCENT_AMBER_HI : THEME.TEXT_BRIGHT;
+      } else if (t.kind === 'MIRV_POD') {
+        tag = `${SEMIOTIC_ICONS.DIAMOND} MIRV ${altKm.toFixed(0)}KM`;
+        col = THEME.ACCENT_AMBER;
+      } else if (t.kind === 'ION_JAMMER') {
+        tag = `${SEMIOTIC_ICONS.HEX} ION JAM`;
+        col = THEME.ACCENT_CYAN;
+      } else if (isHot) {
+        tag = `${SEMIOTIC_ICONS.STAR} 3X ${altKm.toFixed(1)}KM`;
+        col = THEME.ACCENT_AMBER_HI;
+      }
+
+      ctx.font = font('data', 13);
+      ctx.textAlign = flipLeft ? 'right' : 'left';
+      this.drawHaloText(ctx, tag, tx, pt.y, col);
+
+      // Wave-1 diegetic micro-hints (crisp >=13px screen-space pills)
+      if (sim.waveNumber === 1) {
+        if (
+          !shownMeteorHint &&
+          t.kind === 'HEAVY_METEOR' &&
+          sim.deflectionKills === 0 &&
+          t.deflectedTimer <= 0 &&
+          t.y > 90 &&
+          t.y < 660
+        ) {
+          shownMeteorHint = true;
+          this.drawMicroHintPill(
+            ctx,
+            flipLeft ? 'AIM BESIDE TO DEFLECT ►' : '◄ AIM BESIDE TO DEFLECT!',
+            tx,
+            pt.y + 18,
+            flipLeft,
+            THEME.ACCENT_AMBER,
+            THEME.ACCENT_AMBER_HI
+          );
+        } else if (
+          !shownDcHint &&
+          t.kind === 'KINETIC_ROD' &&
+          sim.dangerCloseKills === 0 &&
+          t.y > 470 &&
+          t.y < FLAK_CONSTANTS.DANGER_CLOSE_Y + 32
+        ) {
+          shownDcHint = true;
+          this.drawMicroHintPill(
+            ctx,
+            '▼ WAIT BELOW 24KM FOR 3X!',
+            tx,
+            pt.y + 18,
+            flipLeft,
+            THEME.ACCENT_AMBER,
+            THEME.ACCENT_AMBER_HI
+          );
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  private drawMicroHintPill(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    anchorX: number,
+    centerY: number,
+    alignRight: boolean,
+    borderColor: string,
+    textColor: string
+  ): void {
+    ctx.save();
+    ctx.font = font('data', 13);
+    const tw = Math.ceil(ctx.measureText(text).width);
+    const pw = tw + 12;
+    const ph = 20;
+    const px = alignRight ? anchorX - pw : anchorX;
+    const py = Math.round(centerY - ph * 0.5);
+
+    ctx.fillStyle = 'rgba(18, 12, 3, 0.90)';
+    ctx.fillRect(px, py, pw, ph);
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(px + 0.5, py + 0.5, pw - 1, ph - 1);
+
+    ctx.fillStyle = textColor;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, px + pw * 0.5, centerY + 0.5);
+    ctx.restore();
+  }
+
+  private drawScorePopupsScreenSpace(
+    ctx: CanvasRenderingContext2D,
+    sim: FlakSimulation,
+    viewport: ViewportRect,
+    toScreen: (vx: number, vy: number) => ScreenTextTarget
+  ): void {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const pop of sim.popups) {
+      const p = pop.age / pop.duration;
+      const alpha = p < 0.15 ? p / 0.15 : Math.max(0, 1 - (p - 0.15) / 0.85);
+      const pt = toScreen(pop.x, pop.y);
+      const sx = Math.max(viewport.x + 84, Math.min(viewport.x + viewport.width - 84, pt.x));
+      const sy = Math.max(viewport.y + 44, Math.min(viewport.y + viewport.height - 28, pt.y));
+
+      ctx.globalAlpha = alpha;
+      ctx.font = font('head', 15);
+      this.drawHaloText(ctx, pop.text, sx, sy, pop.color);
+      if (pop.subText) {
+        ctx.font = font('data', 13);
+        this.drawHaloText(ctx, pop.subText, sx, sy + 16, THEME.ACCENT_AMBER);
+      }
+    }
+    ctx.restore();
+  }
+
+  private drawReticleLabelsScreenSpace(
+    ctx: CanvasRenderingContext2D,
+    sim: FlakSimulation,
+    cursor: Vec2,
+    viewport: ViewportRect,
+    toScreen: (vx: number, vy: number) => ScreenTextTarget,
+    demoState: DemoTelemetryState | null,
+    empTouchArmed: boolean
+  ): void {
+    const info = sim.getReticleInfo(cursor);
+    const isAi = Boolean(demoState?.active);
+    const cx = cursor.x;
+    const cy = Math.min(FLAK_CONSTANTS.HORIZON_Y - 34, cursor.y);
+    const pt = toScreen(cx, cy);
+
+    // Deflection preview callout tag in crisp >=13px screen-space
+    const deflectPrev = sim.getDeflectionPreview({ x: cx, y: cy });
+    if (deflectPrev && deflectPrev.arc.length >= 2) {
+      const billiard = deflectPrev.hitsOtherThreat;
+      const tip = deflectPrev.arc[deflectPrev.arc.length - 1];
+      const tipPt = toScreen(tip.x, tip.y);
+      const tx = Math.max(viewport.x + 88, Math.min(viewport.x + viewport.width - 88, tipPt.x));
+      const ty = Math.max(viewport.y + 24, tipPt.y - 16);
+
+      ctx.save();
+      ctx.font = font('data', billiard ? 14 : 13);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      this.drawHaloText(
+        ctx,
+        billiard ? `${SEMIOTIC_ICONS.STAR} BILLIARD KILL! ${SEMIOTIC_ICONS.STAR}` : 'DEFLECT VECTOR →',
+        tx,
+        ty,
+        billiard ? THEME.ACCENT_AMBER_HI : THEME.ACCENT_AMBER
+      );
+      ctx.restore();
+    }
+
+    // Flip player & AI reticle text left when cx > VIRTUAL_W - 340 OR close to right viewport edge!
+    const flipLeft = cx > FLAK_CONSTANTS.VIRTUAL_W - 340 || pt.x > viewport.x + viewport.width - 236;
+    const tagX = flipLeft ? pt.x - 24 : pt.x + 24;
+    const tagY = Math.max(viewport.y + 28, Math.min(viewport.y + viewport.height - 28, pt.y));
+
+    ctx.save();
+    ctx.textBaseline = 'middle';
+
+    if (isAi && demoState) {
+      const mode = demoState.aiWeaponMode;
+      const modeTag =
+        mode === 'EMP'
+          ? 'MK-IV EMP LOCK'
+          : mode === 'HOLD'
+            ? 'HOLDING (3X WAIT)'
+            : mode === 'DEFLECT_AIM'
+              ? 'OFF-CENTER SHOVE'
+              : 'M90 BALLISTIC LEAD';
+      const tofStr =
+        mode === 'EMP' ? info.empTofSec.toFixed(2) : info.flakTofSec.toFixed(2);
+
+      const line1 = `AI TARGETER // ${modeTag}`;
+      const line2 = `AUTO-SOLVER // TOF ${tofStr}S`;
+      this.drawReticleTagBox(
+        ctx,
+        tagX,
+        tagY,
+        flipLeft,
+        line1,
+        line2,
+        THEME.ACCENT_AMBER,
+        THEME.ACCENT_AMBER_HI,
+        THEME.ACCENT_AMBER
+      );
+      ctx.restore();
+      return;
+    }
+
+    const readyCol = empTouchArmed
+      ? THEME.ACCENT_AMBER_HI
+      : info.activeFlakBattery
+        ? THEME.TEXT_PRIMARY
+        : THEME.ACCENT_AMBER;
+    const batLabel = empTouchArmed
+      ? `${SEMIOTIC_ICONS.DIAMOND} EMP ARMED`
+      : info.activeFlakBattery
+        ? `BAT-${info.activeFlakBattery.id} FLAK`
+        : 'RELOADING';
+    const primaryTof = empTouchArmed ? info.empTofSec : info.flakTofSec;
+    const line1 = `${batLabel} // TOF ${primaryTof.toFixed(2)}S`;
+    const line2 = empTouchArmed
+      ? 'CLICK / TAP SKY TO FIRE EMP'
+      : info.empReady
+        ? `[RMB/SPC/S] EMP RDY (${info.empTofSec.toFixed(2)}S)`
+        : '[RMB/SPC/S] EMP EMPTY';
+    const line2Col = empTouchArmed
+      ? THEME.ACCENT_AMBER_HI
+      : info.empReady
+        ? THEME.ACCENT_AMBER
+        : THEME.TEXT_MUTED;
+
+    this.drawReticleTagBox(
+      ctx,
+      tagX,
+      tagY,
+      flipLeft,
+      line1,
+      line2,
+      readyCol,
+      line2Col,
+      empTouchArmed ? THEME.ACCENT_AMBER : THEME.BORDER_SUBTLE
+    );
+    ctx.restore();
+  }
+
+  private drawReticleTagBox(
+    ctx: CanvasRenderingContext2D,
+    anchorX: number,
+    centerY: number,
+    alignRight: boolean,
+    line1: string,
+    line2: string,
+    col1: string,
+    col2: string,
+    borderCol: string
+  ): void {
+    ctx.font = font('data', 13);
+    const w1 = ctx.measureText(line1).width;
+    const w2 = ctx.measureText(line2).width;
+    const boxW = Math.ceil(Math.max(w1, w2)) + 14;
+    const boxH = 38;
+    const bx = alignRight ? anchorX - boxW : anchorX;
+    const by = Math.round(centerY - boxH * 0.5);
+
+    ctx.fillStyle = 'rgba(3, 10, 6, 0.84)';
+    ctx.fillRect(bx, by, boxW, boxH);
+    ctx.strokeStyle = borderCol;
+    ctx.lineWidth = 1.1;
+    ctx.strokeRect(bx + 0.5, by + 0.5, boxW - 1, boxH - 1);
+
+    ctx.textAlign = alignRight ? 'right' : 'left';
+    const tx = alignRight ? bx + boxW - 7 : bx + 7;
+    ctx.fillStyle = col1;
+    ctx.fillText(line1, tx, by + 11);
+    ctx.fillStyle = col2;
+    ctx.fillText(line2, tx, by + 28);
+  }
+
+  private drawDemoTacticalTickerScreenSpace(
+    ctx: CanvasRenderingContext2D,
+    viewport: ViewportRect,
+    demo: DemoTelemetryState,
+    timeSec: number,
+    topY: number
+  ): number {
+    const bx = viewport.x + 12;
+    const bw = Math.max(240, viewport.width - 24);
+    const bh = 54;
+    const exitPulse = 0.68 + 0.32 * Math.sin(timeSec * 6.5);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(14, 10, 2, 0.88)';
+    ctx.fillRect(bx, topY, bw, bh);
+    ctx.strokeStyle = THEME.ACCENT_AMBER;
+    ctx.lineWidth = 1.8;
+    ctx.strokeRect(bx + 0.5, topY + 0.5, bw - 1, bh - 1);
+
+    const pips = `${'■'.repeat(demo.stageIndex)}${'□'.repeat(Math.max(0, demo.totalStages - demo.stageIndex))}`;
+    ctx.textBaseline = 'middle';
+
+    // Top-right exit cue
+    ctx.font = font('button', 13);
+    const exitTxt = '[SPACE / ESC / CLICK] EXIT DEMO';
+    const exitW = Math.ceil(ctx.measureText(exitTxt).width) + 16;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = `rgba(255, 228, 143, ${exitPulse.toFixed(2)})`;
+    ctx.fillText(exitTxt, bx + bw - 12, topY + 16);
+
+    // Top-left stage title
+    ctx.textAlign = 'left';
+    ctx.font = font('head', 14);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
+    drawEllipsizedText(
+      ctx,
+      `TACTICAL DEMO [${pips}] ${demo.stageTitle}`,
+      bx + 12,
+      topY + 16,
+      Math.max(120, bw - exitW - 24)
+    );
+
+    // Bottom-right milestone confirmation badge
+    let milestoneW = 0;
+    if (demo.milestoneBanner) {
+      ctx.font = font('data', 13);
+      const msTxt = `✓ ${demo.milestoneBanner}`;
+      milestoneW = Math.ceil(ctx.measureText(msTxt).width) + 16;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+      ctx.fillText(msTxt, bx + bw - 12, topY + 39);
+    }
+
+    // Bottom-left AI callout
+    ctx.textAlign = 'left';
+    ctx.font = font('data', 13);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
+    drawEllipsizedText(
+      ctx,
+      demo.calloutText,
+      bx + 12,
+      topY + 39,
+      Math.max(120, bw - milestoneW - 24)
+    );
+
+    ctx.restore();
+    return topY + bh + 6;
+  }
+
+  /**
+   * Single Consolidated Diegetic Scope-Bezel 2X Boost Gauge.
+   * Replaces all 3 previous duplicated 2X Boost meters with one crisp screen-space bezel instrument.
+   */
+  private drawBezelPredictorGaugeScreenSpace(
+    ctx: CanvasRenderingContext2D,
+    viewport: ViewportRect,
+    sim: FlakSimulation,
+    timeSec: number,
+    topY: number
+  ): number {
+    const active = sim.predictorBoostTimer > 0;
+    const overclocked = sim.liveChain >= 4;
+    const bh = active ? 36 : 24;
+
+    ctx.save();
+    if (!active) {
+      // Calm low-profile bezel readiness pill when 2X Boost is on standby
+      const stbyText = `${SEMIOTIC_ICONS.DIAMOND} 2X LEAD PREDICTOR: STBY · CHAIN 2X TO ENGAGE`;
+      ctx.font = font('micro', 12);
+      const bw = Math.min(
+        viewport.width - 24,
+        Math.max(340, Math.ceil(ctx.measureText(stbyText).width) + 28)
+      );
+      const bx = Math.round(viewport.x + (viewport.width - bw) * 0.5);
+
+      ctx.fillStyle = 'rgba(4, 14, 8, 0.80)';
+      ctx.fillRect(bx, topY, bw, bh);
+      ctx.strokeStyle = THEME.BORDER_SUBTLE;
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(bx + 0.5, topY + 0.5, bw - 1, bh - 1);
+
+      ctx.fillStyle = THEME.TEXT_SECONDARY;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      drawEllipsizedText(ctx, stbyText, bx + bw * 0.5, topY + bh * 0.5 + 0.5, bw - 16);
+      ctx.restore();
+      return topY + bh + 6;
+    }
+
+    const label = overclocked
+      ? `${SEMIOTIC_ICONS.PLAY} x${sim.liveChain} OVERCLOCK // LEAD PIPS + -20% LOAD (${sim.predictorBoostTimer.toFixed(1)}S)`
+      : `${SEMIOTIC_ICONS.PLAY} 2X BOOST // LEAD PIPS + FAST LOAD (${sim.predictorBoostTimer.toFixed(1)}S)`;
+    ctx.font = font('data', 13);
+    const bw = Math.min(
+      viewport.width - 24,
+      Math.max(440, Math.ceil(ctx.measureText(label).width) + 28)
+    );
+    const bx = Math.round(viewport.x + (viewport.width - bw) * 0.5);
+
+    const frac = Math.max(0, Math.min(1, sim.predictorBoostTimer / sim.predictorBoostMaxSec));
+    const lowWarn = sim.predictorBoostTimer < 2.5;
+    const pulse = (lowWarn || overclocked) && Math.sin(timeSec * 16) > 0;
+    const borderCol = overclocked
+      ? THEME.ACCENT_AMBER
+      : lowWarn
+        ? THEME.ACCENT_AMBER
+        : THEME.TEXT_PRIMARY;
+
+    ctx.fillStyle = overclocked ? 'rgba(34, 22, 4, 0.90)' : 'rgba(5, 22, 11, 0.90)';
+    ctx.fillRect(bx, topY, bw, bh);
+    ctx.strokeStyle = borderCol;
+    ctx.lineWidth = 1.6;
+    ctx.strokeRect(bx + 0.5, topY + 0.5, bw - 1, bh - 1);
+    drawCornerBrackets(ctx, bx, topY, bw, bh, 8, borderCol, 2.0);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = overclocked
+      ? pulse
+        ? THEME.ACCENT_AMBER_HI
+        : THEME.ACCENT_AMBER
+      : pulse
+        ? THEME.ACCENT_AMBER_HI
+        : THEME.TEXT_BRIGHT;
+
+    drawEllipsizedText(ctx, label, bx + bw * 0.5, topY + 13, bw - 18);
+
+    // Draining phosphor bar with live carrier oscilloscope ripple
+    const barX = bx + 12;
+    const barY = topY + 24;
+    const barW = bw - 24;
+    const barH = 7;
+    ctx.fillStyle = 'rgba(10, 28, 16, 0.92)';
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.fillStyle = lowWarn || overclocked ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY;
+    ctx.fillRect(barX, barY, barW * frac, barH);
+
+    ctx.strokeStyle = THEME.ACCENT_AMBER_HI;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    const segs = 22;
+    for (let i = 0; i <= segs; i++) {
+      const u = i / segs;
+      const wx = barX + u * barW * frac;
+      const wy = barY + barH * 0.5 + Math.sin(u * 20 - timeSec * 22) * 2.4;
+      if (i === 0) ctx.moveTo(wx, wy);
+      else ctx.lineTo(wx, wy);
+    }
+    ctx.stroke();
+
+    ctx.restore();
+    return topY + bh + 6;
+  }
+
+  private drawBossTelemetryBarScreenSpace(
+    ctx: CanvasRenderingContext2D,
+    viewport: ViewportRect,
+    sim: FlakSimulation,
+    topY: number
+  ): void {
+    const boss = sim.boss;
+    if (!boss) return;
+
+    const isStunned = boss.empStunTimer > 0;
+    const isCharging = boss.chargeTimer > 0;
+    const isDying = boss.dyingTimer > 0;
     const hpFrac = Math.max(0, boss.hp / Math.max(1, boss.maxHp));
 
-    ctx.fillStyle = 'rgba(18, 6, 4, 0.88)';
-    ctx.fillRect(barX, barY, barW, barH);
-    ctx.strokeStyle = isStunned ? '#8EF5AB' : '#FF4422';
-    ctx.lineWidth = 2.2;
-    ctx.strokeRect(barX, barY, barW, barH);
+    const barW = Math.min(540, viewport.width - 24);
+    const barH = 44;
+    const barX = Math.round(viewport.x + (viewport.width - barW) * 0.5);
 
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 16px "Share Tech Mono", monospace';
-    ctx.fillStyle = isStunned ? '#8EF5AB' : '#FFB000';
-    ctx.fillText(`⚠ BOSS CONTACT // ${boss.designation}`, barX + 14, barY + 20);
+    ctx.save();
+    ctx.fillStyle = 'rgba(22, 8, 5, 0.92)';
+    ctx.fillRect(barX, topY, barW, barH);
+    ctx.strokeStyle = isStunned ? THEME.TEXT_BRIGHT : THEME.ALERT_RED_STROKE;
+    ctx.lineWidth = 2.0;
+    ctx.strokeRect(barX + 0.5, topY + 0.5, barW - 1, barH - 1);
+
+    ctx.textBaseline = 'middle';
+    ctx.font = font('data', 13);
+    const statusText = isDying
+      ? 'CORE COLLAPSING...'
+      : isStunned
+        ? `EMP STUNNED ${boss.empStunTimer.toFixed(1)}S`
+        : isCharging
+          ? 'SALVO LOCKING!'
+          : `HULL ${Math.round(hpFrac * 100)}%`;
+    const statusW = Math.ceil(ctx.measureText(statusText).width) + 16;
 
     ctx.textAlign = 'right';
-    ctx.font = 'bold 14.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = isStunned ? '#8EF5AB' : isCharging ? '#FF4422' : '#FFF6CC';
-    ctx.fillText(
-      isDying
-        ? 'CORE COLLAPSING...'
-        : isStunned
-          ? `EMP STUNNED ${boss.empStunTimer.toFixed(1)}S`
-          : isCharging
-            ? 'SALVO LOCKING!'
-            : `HULL ${Math.round(hpFrac * 100)}%`,
-      barX + barW - 14,
-      barY + 20
+    ctx.fillStyle = isStunned
+      ? THEME.TEXT_BRIGHT
+      : isCharging
+        ? THEME.ALERT_RED_TEXT
+        : THEME.ACCENT_AMBER_HI;
+    ctx.fillText(statusText, barX + barW - 12, topY + 15);
+
+    ctx.textAlign = 'left';
+    ctx.font = font('head', 14);
+    ctx.fillStyle = isStunned ? THEME.TEXT_BRIGHT : THEME.ACCENT_AMBER;
+    drawEllipsizedText(
+      ctx,
+      `${SEMIOTIC_ICONS.TRIANGLE} BOSS // ${boss.designation}`,
+      barX + 12,
+      topY + 15,
+      Math.max(120, barW - statusW - 24)
     );
 
     ctx.fillStyle = 'rgba(42, 12, 8, 0.9)';
-    ctx.fillRect(barX + 14, barY + 28, barW - 28, 10);
-    ctx.fillStyle = isStunned ? '#44FF77' : isCharging ? '#FF4422' : '#FFB000';
-    ctx.fillRect(barX + 14, barY + 28, (barW - 28) * hpFrac, 10);
+    ctx.fillRect(barX + 12, topY + 28, barW - 24, 9);
+    ctx.fillStyle = isStunned
+      ? THEME.TEXT_PRIMARY
+      : isCharging
+        ? THEME.ALERT_RED_STROKE
+        : THEME.ACCENT_AMBER;
+    ctx.fillRect(barX + 12, topY + 28, (barW - 24) * hpFrac, 9);
 
     ctx.restore();
   }

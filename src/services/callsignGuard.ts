@@ -4,17 +4,17 @@ export const CALLSIGN_MAX_LEN = 12;
 export const CALLSIGN_REGEX = /^[A-Z0-9_-]{1,12}$/;
 export const CALLSIGN_CHAR_REGEX = /^[A-Za-z0-9_-]$/;
 
-export const SUBMIT_COOLDOWN_MS = 30_000;
+export const SUBMIT_COOLDOWN_MS = 15_000;
 export const MIN_RUN_PLAYTIME_SEC = 5;
 
 /**
  * Canonical plausible upper ceilings mirrored 1:1 in `firestore.rules`.
  */
 export const SCORE_CAPS = {
-  lander: { score: 500_000, sector: 99, accuracy: 100 },
-  perimeter: { score: 1_000_000, waves: 200, kills: 25_000 },
-  flak: { score: 2_500_000, wave: 99, maxChain: 32, accuracy: 100 },
-  trench: { score: 500_000, distance: 250_000, maxMach: 5, grazes: 5_000 },
+  lander: { score: 10_000_000, sector: 99, accuracy: 100 },
+  perimeter: { score: 50_000_000, waves: 200, kills: 100_000 },
+  flak: { score: 25_000_000, wave: 99, maxChain: 32, accuracy: 100 },
+  trench: { score: 5_000_000, distance: 500_000, maxMach: 5, grazes: 10_000 },
 } as const;
 
 const COOLDOWN_KEY_PREFIX = 'alienarcade_submit_cd_v1_';
@@ -59,14 +59,11 @@ const BLOCKED_SUBSTRINGS: readonly string[] = [
   'BITCH',
   'WHORE',
   'SLUT',
-  'COCK',
   'PUSSY',
   'PENIS',
   'VAGINA',
   'DILDO',
-  'RAPE',
   'RAPIST',
-  'PEDO',
   'PAEDO',
   'ASSHOLE',
   'AHOLE',
@@ -92,7 +89,7 @@ const BLOCKED_SUBSTRINGS: readonly string[] = [
 ];
 
 // Shorter/ambiguous terms checked ONLY against whole normalized string or separator-split tokens
-// so innocent callsigns (e.g., CASSANDRA, TITAN-01, SPUNKMEYER, ASH-120A2) never false-positive.
+// so innocent callsigns (e.g., CASSANDRA, TITAN-01, SPUNKMEYER, ASH-120A2, TORPEDO, COCKPIT, SCRAPER) never false-positive.
 const BLOCKED_EXACT_TOKENS: ReadonlySet<string> = new Set([
   'ASS',
   'FAG',
@@ -107,8 +104,14 @@ const BLOCKED_EXACT_TOKENS: ReadonlySet<string> = new Set([
   'FCK',
   'SHT',
   'CNT',
+  'COCK',
+  'COCKS',
   'DICK',
   'DICKS',
+  'PEDO',
+  'PEDOS',
+  'RAPE',
+  'RAPES',
   'TIT',
   'TITS',
   'HOE',
@@ -233,7 +236,7 @@ export function maskCallsignForDisplay(raw: string, fallback = 'PILOT-01'): stri
 }
 
 /**
- * Enforces minimum run playtime (>=5s) and per-game 30-second submission cooldown via localStorage.
+ * Enforces minimum run playtime (>=5s) and per-game 15-second submission cooldown via localStorage.
  */
 export function checkSubmissionGate(
   gameId: ArcadeGameId,
@@ -273,7 +276,7 @@ export function checkSubmissionGate(
 }
 
 /**
- * Records a completed score submission timestamp for the given game's 30-second cooldown.
+ * Records a completed score submission timestamp for the given game's 15-second cooldown.
  */
 export function recordSubmissionTimestamp(gameId: ArcadeGameId): void {
   const now = Date.now();

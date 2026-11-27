@@ -1,8 +1,5 @@
-import { COLORS, PHYSICS } from '../constants';
-import { BootLogoRenderer } from './BootLogoRenderer';
-import { CampaignMapRenderer } from './CampaignMapRenderer';
-import { MobileHudRenderer, type MobileActiveTouchState } from './MobileHudRenderer';
-import { drawRankedHudPill, drawRankedTitleRibbon } from './RankedBadge';
+import { PHYSICS } from '../constants';
+import type { CrtPreset, PhosphorTheme } from '../shell/Cartridge';
 import type {
   BezelState,
   CrewManifestEntry,
@@ -19,11 +16,48 @@ import type {
   TouchdownSnapshot,
   ViewportRect,
 } from '../types';
+import { BootLogoRenderer } from './BootLogoRenderer';
+import { CampaignMapRenderer } from './CampaignMapRenderer';
+import {
+  CONTROLS_STRIP_HEIGHT,
+  drawChromeButton,
+  drawControlsCardModal,
+  drawGameOverDebriefModal,
+  drawGlobalManifestModal,
+  drawModalFrame,
+  drawPauseBanner,
+  drawPersistentControlsStrip,
+  drawStatusToast,
+  drawSystemMenuModal,
+  drawTopChromeBar,
+  TOP_CHROME_BAR_HEIGHT,
+  type ChromeButtonHitbox,
+  type ControlsCardSpec,
+  type ControlsStripItem,
+  type DebriefStatCard,
+  type ManifestColumnDef,
+  type ManifestRowData,
+  type SystemMenuExtraRow,
+  type UplinkStatus,
+} from './chrome';
+import { MobileHudRenderer, type MobileActiveTouchState } from './MobileHudRenderer';
+import { drawRankedTitleRibbon } from './RankedBadge';
+import {
+  drawAnnunciatorStrip,
+  drawCornerBrackets,
+  drawEllipsizedText,
+  font,
+  SEMIOTIC_ICONS,
+  THEME,
+  wrapTextLines,
+  type AnnunciatorLamp,
+} from './theme';
 
 export interface CrtInteractiveButton {
   id: string;
   rect: ViewportRect;
   label: string;
+  disabled?: boolean;
 }
 
 export interface HudLayoutMetrics {
@@ -54,6 +88,19 @@ export interface HudRenderContext {
   sector: SectorConfig;
   lander: LanderState;
   bezel: BezelState;
+  crtPreset: CrtPreset;
+  phosphorTheme: PhosphorTheme;
+  masterVolume: number;
+  controlsCardOpen: boolean;
+  confirmExitPending: boolean;
+  inlineTeletypeHold: boolean;
+  pulseSafetyLockSec: number;
+  debriefKeylockSec: number;
+  debriefOutcome: 'BREACH' | 'VICTORY' | 'ABORT';
+  callsignEditing: boolean;
+  manifestOpenedPostRun: boolean;
+  mobileRadarHintTimer: number;
+  statusBannerTone: 'green' | 'amber' | 'red' | 'cyan';
   cameraZoom: number;
   sectorElapsedSec: number;
   missionScore: number;
@@ -113,6 +160,58 @@ export const BOOT_LINES = [
   'INTERFACE 2037 READY // AWAITING FLIGHT OFFICER DIRECTIVE.',
 ];
 
+const LANDER_FLIGHT_CONTROLS_STRIP: readonly ControlsStripItem[] = [
+  { key: 'W', label: 'Thrust', accent: 'amber' },
+  { key: 'A/D', label: 'Roll', accent: 'green' },
+  { key: 'S', label: 'Retro', accent: 'green' },
+  { key: 'LMB', label: 'Radar', accent: 'cyan' },
+  { key: 'SPACE', label: '1X Pulse', accent: 'amber' },
+  { key: 'H', label: 'Controls', accent: 'cyan' },
+  { key: 'ESC', label: 'Menu', accent: 'amber' },
+];
+
+const LANDER_TITLE_CONTROLS_STRIP: readonly ControlsStripItem[] = [
+  { key: '1-3', label: 'Mode', accent: 'amber' },
+  { key: '←/→', label: 'Practice Sector', accent: 'green' },
+  { key: 'ENTER', label: 'Launch', accent: 'amber' },
+  { key: 'H', label: 'Controls', accent: 'cyan' },
+  { key: 'M', label: 'Mute', accent: 'green' },
+  { key: 'ESC', label: 'System Menu', accent: 'amber' },
+];
+
+export const LANDER_CONTROLS_SPEC: Omit<ControlsCardSpec, 'hoveredButtonId'> = {
+  programTitle: 'LV-426 LUNAR LANDER',
+  leftColumnTitle: 'SHUTTLE FLIGHT CONTROLS',
+  rightColumnTitle: 'SYSTEM & ARCADE KEYS',
+  leftControls: [
+    { keys: 'W / ↑', action: 'Main Thruster (+SHIFT: Overdrive)' },
+    { keys: 'A / D', action: 'RCS Roll Left / Right' },
+    { keys: 'S / ↓', action: 'Retro-Brake Stabilizer' },
+    { keys: 'LMB', action: 'Aim & Ping Directional Radar' },
+    { keys: 'SPACE', action: '1X Emergency Pulse (0.6s Arm)' },
+    { keys: 'SCROLL', action: 'Manual Camera Zoom (1X–3.5X)' },
+  ],
+  rightControls: [
+    { keys: 'P', action: 'Quick Pause / Resume' },
+    { keys: 'H / ?', action: 'Toggle Controls Quick-Card' },
+    { keys: 'M', action: 'Toggle Master Audio Mute' },
+    { keys: 'ESC', action: 'System Menu (CRT / SAS / Quit)' },
+    { keys: 'TAB', action: 'Switch Campaign / Endless Tab' },
+    { keys: 'R / ENT', action: 'Instant Replay (Post-Run)' },
+  ],
+  coreRules: [
+    'Touchdown GO limits: Descent ≤ 2.4 m/s, Drift ≤ 1.8 m/s, Attitude ≤ 8° inside the landing pad.',
+    'Align inside the green ILS Soft-Kiss window for up to +1,500 bonus and chain Drop Streaks.',
+    'Refill propellant on ✚ Fuel Depots and ping Radar [LMB] to map pitch-black caverns & EM blackouts.',
+  ],
+};
+
+const LANDER_MANIFEST_COLUMNS: readonly ManifestColumnDef[] = [
+  { header: 'SECTOR', widthFrac: 0.30, align: 'center' },
+  { header: 'ACC', widthFrac: 0.34, align: 'center' },
+  { header: 'DATE', widthFrac: 0.36, align: 'right' },
+];
+
 export class HudRenderer {
   public buttons: CrtInteractiveButton[] = [];
   public touchControls: CrtInteractiveButton[] = [];
@@ -120,25 +219,33 @@ export class HudRenderer {
   private campaignMapRenderer = new CampaignMapRenderer();
   private mobileHudRenderer = new MobileHudRenderer();
 
+  /**
+   * Slimmed ~210px Nostromo side racks (+240px central flight corridor!) with lifted hudScale
+   * floor (>=0.80) guaranteeing >=12px effective typography across every display size.
+   */
   public static computeLayoutMetrics(crtWidth: number, crtHeight: number): HudLayoutMetrics {
-    const baseSideW = 328;
-    const baseSideH = 652;
-    const marginX = Math.max(10, Math.round(crtWidth * 0.012));
-    const topHeaderY = 60;
+    const baseSideW = 210;
+    const baseSideH = 600;
+    const marginX = Math.max(8, Math.round(crtWidth * 0.01));
+    const topHeaderY = TOP_CHROME_BAR_HEIGHT + 6; // 52px
+    const bottomReservedH = CONTROLS_STRIP_HEIGHT + 10; // 32px
 
-    const scaleW = (crtWidth * 0.228) / baseSideW;
-    const scaleH = (crtHeight - topHeaderY - 18) / baseSideH;
-    const hudScale = Math.max(0.58, Math.min(1.28, Math.min(scaleW, scaleH)));
+    const scaleW = (crtWidth * 0.18) / baseSideW;
+    const scaleH = (crtHeight - topHeaderY - bottomReservedH) / baseSideH;
+    const hudScale = Math.max(0.80, Math.min(1.04, Math.min(scaleW, scaleH)));
 
     const sidePanelW = Math.round(baseSideW * hudScale);
     const sidePanelH = Math.round(baseSideH * hudScale);
-    const safeLeftPx = marginX + sidePanelW + 14;
-    const safeRightPx = crtWidth - marginX - sidePanelW - 14;
-    const safeWidthPx = Math.max(180, safeRightPx - safeLeftPx);
+    const safeLeftPx = marginX + sidePanelW + 10;
+    const safeRightPx = crtWidth - marginX - sidePanelW - 10;
+    const safeWidthPx = Math.max(220, safeRightPx - safeLeftPx);
 
-    const centerScale = Math.max(0.64, Math.min(1.22, Math.min(safeWidthPx / 628, hudScale * 1.04)));
-    const safeTopPx = topHeaderY + Math.round(174 * centerScale);
-    const safeBottomPx = crtHeight - Math.round(78 * centerScale);
+    const centerScale = Math.max(
+      0.80,
+      Math.min(1.06, Math.min(safeWidthPx / 620, hudScale * 1.04))
+    );
+    const safeTopPx = topHeaderY + Math.round(166 * centerScale);
+    const safeBottomPx = crtHeight - CONTROLS_STRIP_HEIGHT - 38;
     const safeHeightPx = Math.max(140, safeBottomPx - safeTopPx);
 
     return {
@@ -194,7 +301,7 @@ export class HudRenderer {
     }
 
     if (emBlackoutActive) {
-      alerts.push({ text: 'EM OPTIC LOSS // PING RADAR', critical: false });
+      alerts.push({ text: 'EM BLACKOUT // PING RADAR', critical: false });
     }
     if (lander.inWindShear) {
       alerts.push({ text: 'WIND SHEAR', critical: false });
@@ -217,8 +324,6 @@ export class HudRenderer {
     const w = state.width;
     const h = state.height;
 
-    // Entire startup sequence (Dormant -> Distorted Tube Flash -> Procedural Red Logo -> Awakening Protocol)
-    // runs 100% edge-to-edge full-screen with zero flight HUD frame or pills!
     if (state.phase === 'BOOT') {
       this.bootLogoRenderer.render(ctx, {
         width: w,
@@ -254,7 +359,7 @@ export class HudRenderer {
       this.campaignMapRenderer.render(ctx, {
         width: w,
         height: h,
-        topHeaderY: 60,
+        topHeaderY: TOP_CHROME_BAR_HEIGHT + 6,
         menuBox,
         selectedMenuMode: state.selectedMenuMode,
         selectedStartSector: state.selectedStartSector,
@@ -262,251 +367,109 @@ export class HudRenderer {
         buttonsOut: this.buttons,
         timeSec: state.timeSec,
       });
-      this.drawOuterFrame(ctx, w, h, state);
+      this.drawSharedTopBar(ctx, w, state);
       this.drawTitleMenu(ctx, w, h, state, menuBox);
+      drawPersistentControlsStrip(ctx, w, h, LANDER_TITLE_CONTROLS_STRIP);
     } else {
-      this.drawOuterFrame(ctx, w, h, state);
+      this.drawSharedTopBar(ctx, w, state);
 
-      if (state.phase === 'SECTOR_BRIEFING') {
-        this.drawFlightTelemetryHud(ctx, w, h, state, true);
+      const isModalBriefing = state.phase === 'SECTOR_BRIEFING' && !state.inlineTeletypeHold;
+      this.drawFlightTelemetryHud(ctx, w, h, state, isModalBriefing);
+
+      // Persistent 22px bottom controls strip during flight / active deck
+      drawPersistentControlsStrip(ctx, w, h, LANDER_FLIGHT_CONTROLS_STRIP);
+
+      if (isModalBriefing) {
         this.drawSectorBriefingOverlay(ctx, w, h, state);
-      } else {
-        this.drawFlightTelemetryHud(ctx, w, h, state, false);
-
-        if (state.phase === 'PAUSED') {
-          this.drawPauseOverlay(ctx, w, h, state);
-        } else if (state.phase === 'SECTOR_TALLY' && state.lastBreakdown) {
-          this.drawSectorTallyOverlay(ctx, w, h, state, state.lastBreakdown);
-        } else if (state.phase === 'HULL_BREACH') {
-          this.drawHullBreachOverlay(ctx, w, h, state);
-        } else if (state.phase === 'CALLSIGN_ENTRY') {
-          this.drawCallsignOverlay(ctx, w, h, state);
-        } else if (state.phase === 'CAMPAIGN_COMPLETE') {
-          this.drawCampaignCompleteOverlay(ctx, w, h, state);
-        }
+      } else if (state.phase === 'PAUSED' && !state.bezel.osdMenuOpen && !state.controlsCardOpen) {
+        drawPauseBanner(
+          ctx,
+          w,
+          h,
+          'Press [P] to resume descent, [H] for Controls Quick-Card, or [ESC] for System Menu.',
+          this.buttons as ChromeButtonHitbox[],
+          state.hoveredButtonId,
+          state.timeSec
+        );
+      } else if (state.phase === 'SECTOR_TALLY' && state.lastBreakdown) {
+        this.drawSectorTallyOverlay(ctx, w, h, state, state.lastBreakdown);
+      } else if (state.phase === 'HULL_BREACH' && state.lives > 0) {
+        this.drawHullBreachOverlay(ctx, w, h, state);
+      } else if (
+        state.phase === 'CALLSIGN_ENTRY' ||
+        state.phase === 'CAMPAIGN_COMPLETE' ||
+        (state.phase === 'HULL_BREACH' && state.lives <= 0)
+      ) {
+        this.drawUnifiedDebriefOverlay(ctx, w, h, state);
       }
     }
 
+    // Transient status toast when no top-level modal covers screen
+    if (
+      state.statusBannerText &&
+      state.statusBannerTimer > 0 &&
+      !state.bezel.osdMenuOpen &&
+      !state.controlsCardOpen &&
+      !state.bezel.flightLogsOpen
+    ) {
+      const toastY =
+        state.phase === 'TITLE_MENU'
+          ? TOP_CHROME_BAR_HEIGHT + 12
+          : h - CONTROLS_STRIP_HEIGHT - 30 - 44;
+      const alpha = Math.min(1, state.statusBannerTimer / 0.25);
+      drawStatusToast(ctx, w, toastY, state.statusBannerText, state.statusBannerTone, alpha);
+    }
+
+    // Top-level Shared Modals (always isolate hitboxes via drawModalFrame!)
     if (state.bezel.osdMenuOpen) {
-      this.drawTvOsdModal(ctx, w, h, state);
+      this.drawSharedSystemMenu(ctx, w, h, state);
+    } else if (state.controlsCardOpen) {
+      drawControlsCardModal(
+        ctx,
+        w,
+        h,
+        {
+          ...LANDER_CONTROLS_SPEC,
+          hoveredButtonId: state.hoveredButtonId,
+        },
+        this.buttons as ChromeButtonHitbox[]
+      );
     } else if (state.bezel.flightLogsOpen) {
-      this.drawFlightLogsModal(ctx, w, h, state);
+      this.drawSharedGlobalManifest(ctx, w, h, state);
     }
   }
 
-  private drawCornerBrackets(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    len: number,
-    color: string,
-    lineWidth = 2.2
-  ): void {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = lineWidth;
-    ctx.beginPath();
-    ctx.moveTo(x, y + len);
-    ctx.lineTo(x, y);
-    ctx.lineTo(x + len, y);
-
-    ctx.moveTo(x + w - len, y);
-    ctx.lineTo(x + w, y);
-    ctx.lineTo(x + w, y + len);
-
-    ctx.moveTo(x, y + h - len);
-    ctx.lineTo(x, y + h);
-    ctx.lineTo(x + len, y + h);
-
-    ctx.moveTo(x + w - len, y + h);
-    ctx.lineTo(x + w, y + h);
-    ctx.lineTo(x + w, y + h - len);
-    ctx.stroke();
-  }
-
-  private drawOuterFrame(
+  private drawSharedTopBar(
     ctx: CanvasRenderingContext2D,
     w: number,
-    h: number,
     state: HudRenderContext
   ): void {
-    ctx.save();
-    const pad = 10;
-    const activeRankedFlight =
-      state.phase !== 'BOOT' && state.phase !== 'TITLE_MENU' && !state.isPracticeRun;
-    this.drawCornerBrackets(
+    const inRun = state.phase !== 'TITLE_MENU' && state.phase !== 'BOOT';
+    const telemetryText = inRun
+      ? `${state.sector.code} · ${Math.round(state.displayedScore).toLocaleString()} PTS`
+      : '6 SECTORS · 3 SHUTTLES';
+
+    drawTopChromeBar(
       ctx,
-      pad,
-      pad,
-      w - pad * 2,
-      h - pad * 2,
-      24,
-      activeRankedFlight ? '#FFB000' : COLORS.GREEN_DIM,
-      activeRankedFlight ? 2.6 : 2.2
+      w,
+      {
+        title: 'LUNAR LANDER',
+        timeSec: state.timeSec,
+        isRanked: !state.isPracticeRun,
+        showRankedBadge: inRun,
+        telemetryText,
+        crt1979Enabled: state.crtPreset === 'CLASSIC_1979',
+        controlsLabel: '[H] CONTROLS',
+        audioMuted: state.bezel.audioMuted,
+        hoveredButtonId: state.hoveredButtonId,
+        confirmExitPending: state.confirmExitPending,
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
-
-    ctx.strokeStyle = activeRankedFlight ? 'rgba(255, 176, 0, 0.55)' : COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    ctx.moveTo(pad + 18, pad + 46);
-    ctx.lineTo(w - pad - 18, pad + 46);
-    ctx.stroke();
-
-    ctx.font = 'bold 18.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.textAlign = 'left';
-    const brandText = 'INTERFACE 2037 // NOSTROMO';
-    ctx.fillText(brandText, pad + 14, pad + 30);
-    const brandRightX = pad + 14 + ctx.measureText(brandText).width;
-
-    // Large, High-Legibility Top-Right Control Strip + FULLSCREEN + Unmistakable [TAB] = MENU!
-    if (state.bootPoweredOn) {
-      const pillScale = Math.max(0.68, Math.min(1.0, (w - 310) / 1160));
-      const pills: Array<{
-        id: string;
-        label: string;
-        active: boolean;
-        accent: string;
-        pw: number;
-        isPrimaryMenu?: boolean;
-      }> = [
-        {
-          id: 'hud-sas-toggle',
-          label: state.bezel.sasEnabled ? 'SAS: 50%' : 'SAS: OFF',
-          active: state.bezel.sasEnabled,
-          accent: state.bezel.sasEnabled ? COLORS.GREEN_BRIGHT : COLORS.AMBER_CAUTION,
-          pw: Math.round(110 * pillScale),
-        },
-        {
-          id: 'hud-zoom-toggle',
-          label: `ZOOM: ${state.bezel.autoZoomEnabled ? 'AUTO' : 'MAN'}`,
-          active: state.bezel.autoZoomEnabled,
-          accent: state.bezel.autoZoomEnabled ? COLORS.GREEN_BRIGHT : COLORS.AMBER_CAUTION,
-          pw: Math.round(126 * pillScale),
-        },
-        {
-          id: 'hud-mute-toggle',
-          label: `AUDIO: ${state.bezel.audioMuted ? 'MUTE' : 'ON'}`,
-          active: !state.bezel.audioMuted,
-          accent: state.bezel.audioMuted ? COLORS.RED_KLAXON : COLORS.GREEN_BRIGHT,
-          pw: Math.round(122 * pillScale),
-        },
-        {
-          id: 'hud-fullscreen-toggle',
-          label: state.isFullscreen ? 'EXIT FULL' : 'FULLSCREEN',
-          active: state.isFullscreen,
-          accent: COLORS.AMBER_BRIGHT,
-          pw: Math.round(128 * pillScale),
-        },
-        {
-          id: 'hud-osd-toggle',
-          label: '[TAB] = MENU',
-          active: state.bezel.osdMenuOpen,
-          accent: '#FFB000',
-          pw: Math.round(148 * pillScale),
-          isPrimaryMenu: true,
-        },
-        {
-          id: 'hud-logs-toggle',
-          label: 'LOGS',
-          active: state.bezel.flightLogsOpen,
-          accent: COLORS.GREEN_BRIGHT,
-          pw: Math.round(84 * pillScale),
-        },
-        {
-          id: 'exit-muthur-os',
-          label: 'MU-TH-UR OS',
-          active: false,
-          accent: '#FFB000',
-          pw: Math.round(138 * pillScale),
-        },
-      ];
-
-      const gap = Math.round(8 * pillScale);
-      const totalPillsW = pills.reduce((acc, p) => acc + p.pw, 0) + gap * (pills.length - 1);
-      const pillsStartX = w - pad - 14 - totalPillsW;
-
-      if (state.phase !== 'BOOT' && state.phase !== 'TITLE_MENU') {
-        const badgeX = Math.round(brandRightX + 14);
-        const pillUsedW = drawRankedHudPill(
-          ctx,
-          badgeX,
-          pad + 10,
-          26,
-          state.timeSec,
-          !state.isPracticeRun,
-          w < 1260
-        );
-        const sectorLeftX = badgeX + pillUsedW + 12;
-        const availSectorW = pillsStartX - sectorLeftX - 14;
-        if (availSectorW >= 90) {
-          ctx.font = 'bold 16px "Share Tech Mono", monospace';
-          ctx.fillStyle = state.isPracticeRun ? COLORS.GREEN_MID : COLORS.AMBER_CAUTION;
-          ctx.textAlign = 'left';
-          let clipped = `${state.sector.code} // ${state.sector.name}`;
-          while (clipped.length > 7 && ctx.measureText(clipped).width > availSectorW) {
-            clipped = `${clipped.slice(0, -2)}…`;
-          }
-          ctx.fillText(clipped, sectorLeftX, pad + 30);
-        }
-      }
-
-      let px = pillsStartX;
-      const py = pad + 4;
-      const ph = 38;
-      const fontPx = Math.max(14, Math.round(16.8 * pillScale));
-
-      for (const p of pills) {
-        this.buttons.push({ id: p.id, rect: { x: px, y: py, width: p.pw, height: ph }, label: p.label });
-        const hovered = state.hoveredButtonId === p.id;
-        ctx.fillStyle = hovered
-          ? p.isPrimaryMenu
-            ? 'rgba(255, 176, 0, 0.28)'
-            : 'rgba(59, 224, 104, 0.28)'
-          : p.isPrimaryMenu
-            ? 'rgba(36, 22, 4, 0.92)'
-            : p.active
-              ? 'rgba(18, 48, 28, 0.88)'
-              : 'rgba(5, 13, 8, 0.94)';
-        ctx.fillRect(px, py, p.pw, ph);
-
-        ctx.strokeStyle = hovered
-          ? '#FFFFFF'
-          : p.isPrimaryMenu
-            ? '#FFB000'
-            : p.active
-              ? p.accent
-              : COLORS.GREEN_MID;
-        ctx.lineWidth = hovered || p.isPrimaryMenu ? 2.4 : 1.9;
-        ctx.strokeRect(px, py, p.pw, ph);
-
-        ctx.font = `bold ${fontPx}px "Share Tech Mono", monospace`;
-        ctx.fillStyle = hovered ? '#FFFFFF' : p.isPrimaryMenu ? '#FFD266' : p.accent;
-        ctx.textAlign = 'center';
-        ctx.fillText(p.label, px + p.pw * 0.5, py + 25);
-        px += p.pw + gap;
-      }
-
-      const regSeed = Math.floor(state.timeSec * 6);
-      const hexA = ((regSeed * 4919) & 0xffff).toString(16).toUpperCase().padStart(4, '0');
-      const hexB = ((regSeed * 7907) & 0xff).toString(16).toUpperCase().padStart(2, '0');
-      const pulseBits = regSeed % 2 === 0 ? '[||||..||]' : '[||.||||.]';
-      const busStr = `MU-TH-UR 6000 // BUS ${hexA}:${hexB} ${pulseBits}`;
-      ctx.textAlign = 'left';
-      ctx.font = 'bold 14.5px "JetBrains Mono", monospace';
-      ctx.fillStyle = COLORS.GREEN_MID;
-      ctx.fillText(busStr, pad + 14, h - pad - 5);
-      const busEndX = pad + 14 + ctx.measureText(busStr).width + 18;
-
-      ctx.fillStyle = '#FFB000';
-      ctx.fillText('► PRESS [TAB] = MENU (SETTINGS / CRT / PAUSE)', busEndX, h - pad - 5);
-    }
-    ctx.restore();
   }
 
   // =========================================================================
-  // SCALED-UP CHUNKY NOSTROMO INSTRUMENTATION + SCORE & RADAR CELL RACK
+  // SLIM ~210PX NOSTROMO INSTRUMENTATION + 7-LAMP BACKLIT ANNUNCIATOR STRIP
   // =========================================================================
 
   private drawFlightTelemetryHud(
@@ -524,31 +487,44 @@ export class HudRenderer {
     const layout = HudRenderer.computeLayoutMetrics(w, h);
     const s = layout.hudScale;
 
-    const totalMass = lander.dryMassKg + lander.fuelKg;
-    const currentTwr = PHYSICS.MAIN_THRUST_N / (totalMass * sector.gravity);
-    const thrustKn = (lander.throttle * PHYSICS.MAIN_THRUST_N) / 1000;
-    const pitchDeg = (lander.angle * 180) / Math.PI;
-    const rollRateDeg = (lander.angularVel * 180) / Math.PI;
     const windKnots = Math.hypot(lander.currentWindVx, lander.currentWindVy) * 1.94384;
-
     const targetPadInfo = this.findClosestTargetPad(lander, sector.pads);
-    const padDx = targetPadInfo ? (targetPadInfo.pad.x1 + targetPadInfo.pad.x2) * 0.5 - lander.pos.x : 0;
+    const inFinalApproach = Boolean(
+      targetPadInfo && targetPadInfo.dist <= PHYSICS.APPROACH_PROXIMITY_M
+    );
+    const padDx = targetPadInfo
+      ? (targetPadInfo.pad.x1 + targetPadInfo.pad.x2) * 0.5 - lander.pos.x
+      : 0;
     const padBearingStr = targetPadInfo
-      ? `${Math.abs(padDx).toFixed(0)}M ${padDx >= 0 ? 'E' : 'W'} [${targetPadInfo.pad.type === 'DEPOT' ? 'DEP' : `${targetPadInfo.pad.multiplier}X`}]`
+      ? `${Math.abs(padDx).toFixed(0)}M ${padDx >= 0 ? 'E' : 'W'} ${targetPadInfo.pad.type === 'DEPOT' ? SEMIOTIC_ICONS.CROSS : `${targetPadInfo.pad.multiplier}X`}`
       : '---';
 
     const ttiStr =
       lander.groundedPad !== null
         ? 'CONTACT'
         : lander.vel.y < -0.25
-          ? `${Math.min(99.9, lander.agl / Math.abs(lander.vel.y)).toFixed(1)} SEC`
-          : 'CLIMB/HVR';
+          ? `${Math.min(99.9, lander.agl / Math.abs(lander.vel.y)).toFixed(1)}S`
+          : 'CLIMB';
+
+    // Subtle outer viewport corner brackets below top bar & above bottom controls strip
+    const activeRankedFlight = !state.isPracticeRun;
+    drawCornerBrackets(
+      ctx,
+      4,
+      TOP_CHROME_BAR_HEIGHT + 3,
+      w - 8,
+      h - TOP_CHROME_BAR_HEIGHT - CONTROLS_STRIP_HEIGHT - 6,
+      16,
+      activeRankedFlight ? THEME.ACCENT_AMBER : THEME.BORDER_SUBTLE,
+      1.8
+    );
 
     // ---------------------------------------------------------------------
-    // RIGHT INSTRUMENT CLUSTER (WINDOW-SCALED): FLIGHT DATA + DIALS + VERNIER
+    // RIGHT INSTRUMENT CLUSTER (~210px): ANALOG DIALS + AGL VERNIER + STATUS
+    // (Duplicated 7-row FLIGHT DATA prose block removed -> +240px flight corridor!)
     // ---------------------------------------------------------------------
-    const baseW = 328;
-    const baseH = 652;
+    const baseW = 210;
+    const baseH = 600;
     const rightScreenX = w - layout.marginX - layout.sidePanelW;
     const rightScreenY = layout.topHeaderY;
 
@@ -556,185 +532,160 @@ export class HudRenderer {
     ctx.translate(rightScreenX, rightScreenY);
     ctx.scale(s, s);
 
-    ctx.fillStyle = 'rgba(3, 8, 5, 0.88)';
+    ctx.fillStyle = 'rgba(3, 8, 5, 0.90)';
     ctx.fillRect(0, 0, baseW, baseH);
-    this.drawCornerBrackets(ctx, 0, 0, baseW, baseH, 16, COLORS.GREEN_DIM, 2.4);
+    drawCornerBrackets(ctx, 0, 0, baseW, baseH, 12, THEME.BORDER_SUBTLE, 2.0);
 
-    // 1. Expanded "FLIGHT DATA" Tabular Telemetry Block (7 Avionics Rows)
+    // Compact Rack Header
     ctx.textAlign = 'left';
-    ctx.font = 'bold 22px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_BRIGHT;
-    ctx.fillText('FLIGHT DATA', 14, 26);
+    ctx.font = font('head', 14, s);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
+    ctx.fillText('AVIONICS', 10, 20);
 
-    ctx.strokeStyle = COLORS.GREEN_PRIMARY;
-    ctx.lineWidth = 2.2;
+    const totalMass = lander.dryMassKg + lander.fuelKg;
+    const currentTwr = PHYSICS.MAIN_THRUST_N / (totalMass * sector.gravity);
+    ctx.textAlign = 'right';
+    ctx.font = font('micro', 12, s);
+    ctx.fillStyle = THEME.TEXT_SECONDARY;
+    ctx.fillText(`TWR ${currentTwr.toFixed(1)}`, baseW - 10, 20);
+
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.4;
     ctx.beginPath();
-    ctx.moveTo(14, 33);
-    ctx.lineTo(baseW - 14, 33);
+    ctx.moveTo(10, 27);
+    ctx.lineTo(baseW - 10, 27);
     ctx.stroke();
 
-    const vsDangerous =
-      lander.vel.y < -10.5 || (lander.agl < 40 && lander.vel.y < -PHYSICS.SURVIVAL_VS_MAX);
-    const hsDangerous =
-      Math.abs(lander.vel.x) > 6.8 ||
-      (lander.agl < 34 && Math.abs(lander.vel.x) > PHYSICS.SURVIVAL_HS_MAX);
+    const leftColCx = 60;
+    const rightColCx = 154;
+    const dialR = 37;
 
-    const dataRows: Array<{ label: string; val: string; color: string }> = [
-      {
-        label: 'MASS / TWR',
-        val: `${totalMass.toFixed(0)}K / ${currentTwr.toFixed(2)}`,
-        color: COLORS.GREEN_PRIMARY,
-      },
-      {
-        label: 'VERT VEL',
-        val: `${lander.vel.y >= 0 ? '+' : ''}${lander.vel.y.toFixed(2)} M/S`,
-        color: vsDangerous
-          ? COLORS.RED_KLAXON
-          : lander.vel.y < -PHYSICS.SAFE_VS_MAX && lander.agl < 70
-            ? COLORS.AMBER_CAUTION
-            : COLORS.GREEN_PRIMARY,
-      },
-      {
-        label: 'LAT DRIFT',
-        val: `${lander.vel.x >= 0 ? '+' : ''}${lander.vel.x.toFixed(2)} M/S`,
-        color: hsDangerous
-          ? COLORS.RED_KLAXON
-          : Math.abs(lander.vel.x) > PHYSICS.SAFE_HS_MAX && lander.agl < 70
-            ? COLORS.AMBER_CAUTION
-            : COLORS.GREEN_PRIMARY,
-      },
-      {
-        label: 'THR / G-LOAD',
-        val: `${thrustKn.toFixed(1)}KN / ${lander.netAccelG.toFixed(2)}G`,
-        color: lander.overdrive ? COLORS.RED_KLAXON : COLORS.GREEN_PRIMARY,
-      },
-      {
-        label: 'ATT / RATE',
-        val: `${pitchDeg >= 0 ? '+' : ''}${pitchDeg.toFixed(1)}° / ${rollRateDeg >= 0 ? '+' : ''}${rollRateDeg.toFixed(0)}°/S`,
-        color:
-          Math.abs(pitchDeg) > PHYSICS.SAFE_ANGLE_DEG
-            ? COLORS.AMBER_CAUTION
-            : COLORS.GREEN_PRIMARY,
-      },
-      {
-        label: 'PAD BEARING',
-        val: padBearingStr,
-        color: COLORS.AMBER_BRIGHT,
-      },
-      {
-        label: 'TIME TO IMP',
-        val: ttiStr,
-        color:
-          lander.vel.y < -3.2 && lander.agl < 24 ? COLORS.RED_KLAXON : COLORS.GREEN_PRIMARY,
-      },
-    ];
-
-    ctx.font = 'bold 16px "JetBrains Mono", monospace';
-    dataRows.forEach((row, idx) => {
-      const ty = 53 + idx * 19.5;
-      ctx.textAlign = 'left';
-      ctx.fillStyle = COLORS.GREEN_MID;
-      ctx.fillText(row.label, 14, ty);
-
-      ctx.textAlign = 'right';
-      ctx.fillStyle = row.color;
-      ctx.fillText(row.val, baseW - 14, ty);
-    });
-
-    // 2. Chunky Circular Golden-Orange Gauges + Stepped Vertical Green Vernier Scale
-    const gaugesTopY = 190;
-    const leftColCx = Math.round(baseW * 0.28);
-    const rightColCx = Math.round(baseW * 0.74);
-    const dialR = 42;
-    const rowStep = 132;
-
-    // Gauge A: FUEL Circular Wedge Dial
+    // Gauge A: FUEL Wedge Dial (top-left)
     const fuelRatio = Math.max(0, Math.min(1, lander.fuelKg / Math.max(1, lander.maxFuelKg)));
     this.drawChunkyFuelWedgeDial(
       ctx,
       leftColCx,
-      gaugesTopY + dialR + 4,
+      78,
       dialR,
       fuelRatio,
       `${lander.fuelKg.toFixed(0)} KG`,
-      'FUEL'
+      'FUEL',
+      s
     );
 
-    // Gauge B: SPEED Dial (Scaled to 15.0 M/S full-scale; red only on dangerous speed or low-AGL excessive sink)
+    // Gauge B: SPEED Needle Dial (mid-left)
     const speedMaxScale = 15.0;
     const speedMag = Math.hypot(lander.vel.x, lander.vel.y);
     const speedNorm = Math.min(1, speedMag / speedMaxScale);
     const speedIsRed =
       speedMag > 11.8 || (lander.agl < 36 && lander.vel.y < -PHYSICS.SURVIVAL_VS_MAX);
-    const speedWarn = speedIsRed ? COLORS.RED_KLAXON : COLORS.AMBER_CAUTION;
     this.drawChunkyNeedleDial(
       ctx,
       leftColCx,
-      gaugesTopY + dialR + 4 + rowStep,
+      218,
       dialR,
       speedNorm,
       PHYSICS.SAFE_VS_MAX / speedMaxScale,
       'SPEED',
-      speedWarn,
+      speedIsRed ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER,
       false,
+      s,
       `${speedMag.toFixed(1)} M/S`
     );
 
-    // Gauge C: DRIFT Dial (Scaled to +/-8.5 M/S full-scale)
+    // Gauge C: DRIFT Needle Dial (lower-left)
+    const hsDangerous =
+      Math.abs(lander.vel.x) > 6.8 ||
+      (lander.agl < 34 && Math.abs(lander.vel.x) > PHYSICS.SURVIVAL_HS_MAX);
     const driftSigned = Math.max(-1, Math.min(1, lander.vel.x / 8.5));
-    const driftCol = hsDangerous ? COLORS.RED_KLAXON : COLORS.AMBER_CAUTION;
     this.drawChunkyNeedleDial(
       ctx,
       leftColCx,
-      gaugesTopY + dialR + 4 + rowStep * 2,
+      362,
       dialR,
       driftSigned,
       undefined,
       'DRIFT',
-      driftCol,
-      true
+      hsDangerous ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER,
+      true,
+      s,
+      `${lander.vel.x >= 0 ? '+' : ''}${lander.vel.x.toFixed(1)}`
     );
 
-    // Gauge D: Tall Stepped Vertical Green Vernier Scale (AGL M)
-    this.drawSteppedVerticalVernier(
-      ctx,
-      rightColCx,
-      gaugesTopY,
-      rowStep * 1.82,
-      lander.agl,
-      200,
-      'AGL M'
-    );
+    // Gauge D: Tall Stepped Vertical Green Vernier Scale (AGL M, top-right)
+    this.drawSteppedVerticalVernier(ctx, rightColCx, 38, 250, lander.agl, 200, 'AGL M', s);
 
-    // Gauge E: THRUST Dial directly below vertical scale
+    // Gauge E: THRUST Needle Dial (lower-right)
     const thrustNorm = Math.min(1, lander.throttle / PHYSICS.OVERDRIVE_MULTIPLIER);
-    const thrustCol = lander.overdrive ? COLORS.RED_KLAXON : COLORS.AMBER_CAUTION;
     this.drawChunkyNeedleDial(
       ctx,
       rightColCx,
-      gaugesTopY + dialR + 4 + rowStep * 2,
+      362,
       dialR,
       thrustNorm,
       1.0 / PHYSICS.OVERDRIVE_MULTIPLIER,
       'THRUST',
-      thrustCol,
-      false
+      lander.overdrive ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER,
+      false,
+      s,
+      lander.overdrive ? 'OVR' : `${Math.round(lander.throttle * 100)}%`
     );
 
-    // Hull & Optic Status Footer
-    ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
+    // Compact Non-Duplicated Tactical Readout Footer (Pad Bearing, TTI, Hull, Bus)
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.moveTo(10, 444);
+    ctx.lineTo(baseW - 10, 444);
+    ctx.stroke();
+
+    const footerRows: Array<{ label: string; val: string; col: string }> = [
+      { label: 'PAD', val: padBearingStr, col: THEME.ACCENT_AMBER_HI },
+      {
+        label: 'IMPACT',
+        val: ttiStr,
+        col: lander.vel.y < -3.2 && lander.agl < 24 ? THEME.ALERT_RED_TEXT : THEME.TEXT_PRIMARY,
+      },
+      {
+        label: 'HULL',
+        val: `${Math.round(lander.hullIntegrity)}%${lander.strutDamaged ? ' GEAR' : lander.rcsDamaged ? ' RCS' : ''}`,
+        col: lander.strutDamaged || lander.rcsDamaged ? THEME.ALERT_RED_TEXT : THEME.TEXT_PRIMARY,
+      },
+      {
+        label: 'SAS / ZM',
+        val: `${state.bezel.sasEnabled ? '50%' : '100%'} · ${state.cameraZoom.toFixed(1)}X`,
+        col: state.bezel.sasEnabled ? THEME.TEXT_BRIGHT : THEME.ACCENT_AMBER,
+      },
+    ];
+
+    ctx.font = font('micro', 12, s);
+    footerRows.forEach((row, idx) => {
+      const ry = 468 + idx * 28;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = THEME.TEXT_SECONDARY;
+      ctx.fillText(row.label, 10, ry);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = row.col;
+      drawEllipsizedText(ctx, row.val, baseW - 10, ry, baseW - 80);
+    });
+
+    // Subtle MU-TH-UR Bus Hex Ticker — PAUSED during final approach to eliminate distraction!
+    const regSeed = inFinalApproach ? 0 : Math.floor(state.timeSec * 6);
+    const hexA = ((regSeed * 4919 + 0x2037) & 0xffff).toString(16).toUpperCase().padStart(4, '0');
+    const hexB = ((regSeed * 7907 + 0x42) & 0xff).toString(16).toUpperCase().padStart(2, '0');
     ctx.textAlign = 'center';
-    const sysBroken = lander.strutDamaged || lander.rcsDamaged;
-    ctx.fillStyle = sysBroken ? COLORS.RED_KLAXON : COLORS.GREEN_PRIMARY;
-    const sysTxt = sysBroken
-      ? `HULL ${Math.round(lander.hullIntegrity)}% // ${lander.strutDamaged ? 'GEAR-DMG ' : ''}${lander.rcsDamaged ? 'RCS-DMG' : ''}`
-      : `HULL ${Math.round(lander.hullIntegrity)}% // ${state.bezel.sasEnabled ? 'SAS 50% ROLL' : '100% ROLL'} // ${state.cameraZoom.toFixed(1)}X`;
-    ctx.fillText(sysTxt, baseW * 0.5, baseH - 11);
+    ctx.font = font('micro', 12, s);
+    ctx.fillStyle = THEME.TEXT_MUTED;
+    ctx.fillText(
+      inFinalApproach ? 'BUS LOCK // APPROACH' : `BUS ${hexA}:${hexB}`,
+      baseW * 0.5,
+      baseH - 12
+    );
     ctx.restore();
 
     // ---------------------------------------------------------------------
-    // LEFT TACTICAL STACK (WINDOW-SCALED):
-    // 1) GIANT SCORE + 3-SHUTTLE RESERVES + [SPACE] 1X PULSE + 3 RADAR CELLS
+    // LEFT TACTICAL STACK (~210px):
+    // 1) SCORE + 3-SHUTTLE RESERVES + [SPACE] 1X PULSE (0.6s FLIP COVER) + RADAR
     // 2) INERTIAL ATTITUDE GYRO + WIND COMPASS
     // 3) 2D LANDING PAD TOPOGRAPHY & GLIDE-SLOPE MAP
     // ---------------------------------------------------------------------
@@ -754,30 +705,39 @@ export class HudRenderer {
       state.lifeLostFlashTimer,
       state.isPracticeRun,
       state.sectorElapsedSec,
+      state.pulseSafetyLockSec,
       lander,
-      state.timeSec
+      state.timeSec,
+      s
     );
 
-    this.drawAttitudeAndWindPod(ctx, 0, 236, baseW, lander, sector, windKnots);
+    this.drawAttitudeAndWindPod(ctx, 0, 224, baseW, lander, sector, windKnots, s);
 
     if (targetPadInfo && lander.alive && (state.phase === 'FLIGHT' || state.phase === 'PAUSED')) {
       this.drawProximityApproachSubWindow(
         ctx,
         0,
-        408,
+        384,
         baseW,
-        238,
+        216,
         sector,
         lander,
         targetPadInfo.pad,
-        targetPadInfo.dist
+        targetPadInfo.dist,
+        s
       );
     }
     ctx.restore();
 
     // ---------------------------------------------------------------------
+    // LIVE 1-LINE TELETYPE HAZARD STRIP (SECTORS 2-6 & REPLAYS)
+    // ---------------------------------------------------------------------
+    if (state.phase === 'SECTOR_BRIEFING' && state.inlineTeletypeHold) {
+      this.drawInlineTeletypeHazardStrip(ctx, w, layout, state);
+    }
+
+    // ---------------------------------------------------------------------
     // TOP-CENTER GO / NO-GO + CENTERLINE SOFT-KISS ILS HUD
-    // Visible during pad approach AND remains locked upon landing/crash!
     // ---------------------------------------------------------------------
     if (
       (state.phase === 'SECTOR_TALLY' || state.phase === 'HULL_BREACH') &&
@@ -819,29 +779,158 @@ export class HudRenderer {
     }
 
     // ---------------------------------------------------------------------
-    // LARGE BOTTOM-CENTER AIRBUS AVIONICS WARNING BAR
+    // NOSTROMO 7-LAMP BACKLIT GLASS ANNUNCIATOR STRIP (DARK CALM UNTIL TRIPPED!)
+    // Replaces colliding bottom Airbus warning bars!
     // ---------------------------------------------------------------------
-    this.drawBottomAirbusWarnings(
-      ctx,
-      w,
-      h,
-      layout,
-      lander,
-      state.emBlackoutActive,
-      state.activeCalloutText && state.activeCalloutTimer > 0 ? state.activeCalloutText : null,
-      state.timeSec
-    );
-
-    if (state.statusBannerText && state.statusBannerTimer > 0) {
-      this.drawStatusToast(ctx, w, h, layout, state.statusBannerText);
-    }
+    this.drawNostromoAnnunciator(ctx, w, h, layout, lander, state.emBlackoutActive, state.timeSec);
 
     ctx.restore();
   }
 
+  private drawInlineTeletypeHazardStrip(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    layout: HudLayoutMetrics,
+    state: HudRenderContext
+  ): void {
+    const stripW = Math.min(680, layout.safeWidthPx - 12);
+    const stripH = 40;
+    const sx = Math.round((w - stripW) * 0.5);
+    const sy = layout.topHeaderY + 8;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(4, 14, 8, 0.94)';
+    ctx.fillRect(sx, sy, stripW, stripH);
+    ctx.strokeStyle = THEME.ACCENT_AMBER;
+    ctx.lineWidth = 1.8;
+    ctx.strokeRect(sx + 0.5, sy + 0.5, stripW - 1, stripH - 1);
+
+    const dropW = 92;
+    drawChromeButton(
+      ctx,
+      { x: sx + stripW - dropW - 5, y: sy + 5, width: dropW, height: stripH - 10 },
+      `${SEMIOTIC_ICONS.PLAY} DROP`,
+      {
+        id: 'briefing-launch',
+        accent: 'amber',
+        active: true,
+        hovered: state.hoveredButtonId === 'briefing-launch',
+        fontPx: 12,
+      },
+      this.buttons as ChromeButtonHitbox[]
+    );
+
+    const hazard = state.sector.subtitle || `GRAV ${state.sector.gravity.toFixed(2)}G`;
+    const fullText = `${state.sector.code} // ${state.sector.name} · ${hazard} · [ANY THRUST TO DROP]`;
+    const visible = fullText.slice(0, Math.max(14, Math.floor(state.briefingProgressChars)));
+    const cursor = Math.sin(state.timeSec * 9) > 0 ? '█' : '';
+
+    ctx.font = font('data', 13);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    drawEllipsizedText(ctx, `${visible}${cursor}`, sx + 12, sy + stripH * 0.5 + 0.5, stripW - dropW - 24);
+    ctx.restore();
+  }
+
   /**
-   * Dedicated High-Visibility MISSION SCORE Display + 3 DROP-SHUTTLE RESERVES Module
-   * + [SPACE] 1X GAME PULSE + 3 RADAR PING CELLS Rack.
+   * Nostromo 7-Lamp Backlit Glass Annunciator Strip:
+   * PULL UP | SINK | BANK | DRIFT | FUEL | WIND | EM
+   * Dark etched glass until triggered — zero collision with HUD or toasts!
+   */
+  private drawNostromoAnnunciator(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    layout: HudLayoutMetrics,
+    lander: LanderState,
+    emBlackoutActive: boolean,
+    timeSec: number
+  ): void {
+    const active = lander.alive && lander.groundedPad === null;
+    const absPitchDeg = Math.abs((lander.angle * 180) / Math.PI);
+    const fuelRatio = lander.fuelKg / Math.max(1, lander.maxFuelKg);
+
+    const ceilingHit = active && lander.ceilingClearance < 9 && lander.vel.y > 1.2;
+    const pullUpCrit = active && (ceilingHit || (lander.agl < 16 && lander.vel.y < -4.4));
+
+    const sinkCrit =
+      active &&
+      ((lander.agl < 26 && lander.vel.y < -3.05) || (lander.agl < 14 && lander.vel.y < -2.4)) &&
+      lander.throttle < 0.85;
+    const sinkCaut =
+      active && !sinkCrit && lander.agl < 42 && lander.vel.y < -2.55 && lander.throttle < 0.78;
+
+    const bankCrit = active && lander.agl < 32 && absPitchDeg > 33.0;
+    const bankCaut =
+      active && !bankCrit && ((lander.agl < 52 && absPitchDeg > 20.0) || absPitchDeg > 38.0);
+
+    const driftCrit = active && lander.agl < 15 && Math.abs(lander.vel.x) > 2.85;
+    const driftCaut = active && !driftCrit && lander.agl < 28 && Math.abs(lander.vel.x) > 2.15;
+
+    const fuelCrit = active && lander.fuelKg <= 12;
+    const fuelCaut = active && !fuelCrit && fuelRatio <= 0.16;
+
+    const windActive = active && (lander.inWindShear || lander.inThermalUpdraft);
+    const emActive = active && emBlackoutActive;
+
+    const lamps: AnnunciatorLamp[] = [
+      {
+        id: 'pull-up',
+        label: ceilingHit ? 'OBSTACLE' : 'PULL UP',
+        state: pullUpCrit ? 'CRITICAL' : 'OFF',
+        icon: pullUpCrit ? SEMIOTIC_ICONS.TRIANGLE : undefined,
+      },
+      {
+        id: 'sink',
+        label: 'SINK',
+        state: sinkCrit ? 'CRITICAL' : sinkCaut ? 'CAUTION' : 'OFF',
+        icon: sinkCrit ? SEMIOTIC_ICONS.TRIANGLE : undefined,
+      },
+      {
+        id: 'bank',
+        label: 'BANK',
+        state: bankCrit ? 'CRITICAL' : bankCaut ? 'CAUTION' : 'OFF',
+        icon: bankCrit ? SEMIOTIC_ICONS.TRIANGLE : undefined,
+      },
+      {
+        id: 'drift',
+        label: 'DRIFT',
+        state: driftCrit ? 'CRITICAL' : driftCaut ? 'CAUTION' : 'OFF',
+        icon: driftCrit ? SEMIOTIC_ICONS.TRIANGLE : undefined,
+      },
+      {
+        id: 'fuel',
+        label: 'FUEL',
+        state: fuelCrit ? 'CRITICAL' : fuelCaut ? 'CAUTION' : 'OFF',
+        icon: fuelCrit ? SEMIOTIC_ICONS.TRIANGLE : undefined,
+      },
+      {
+        id: 'wind',
+        label: lander.inThermalUpdraft && !lander.inWindShear ? 'THERMAL' : 'WIND',
+        state: windActive ? 'CAUTION' : 'OFF',
+        icon: windActive ? SEMIOTIC_ICONS.DIAMOND : undefined,
+      },
+      {
+        id: 'em',
+        label: 'EM',
+        state: emActive ? 'INFO' : 'OFF',
+        icon: emActive ? SEMIOTIC_ICONS.HEX : undefined,
+        pulse: emActive,
+      },
+    ];
+
+    const stripW = Math.min(620, Math.max(320, layout.safeWidthPx - 12));
+    const stripH = 30;
+    const stripX = Math.round((w - stripW) * 0.5);
+    const stripY = h - CONTROLS_STRIP_HEIGHT - stripH - 4;
+
+    drawAnnunciatorStrip(ctx, lamps, stripX, stripY, stripW, stripH, timeSec);
+  }
+
+  /**
+   * Slim 210px Score + 3 Drop-Shuttle Reserves + [SPACE] 1X Pulse (with 0.6s flip-cover safety guard!)
+   * + 3 Radar Ping Cells Rack.
    */
   private drawScoreAndRadarRack(
     ctx: CanvasRenderingContext2D,
@@ -855,211 +944,217 @@ export class HudRenderer {
     lifeLostFlashTimer: number,
     isPracticeRun: boolean,
     sectorElapsedSec: number,
+    pulseSafetyLockSec: number,
     lander: LanderState,
-    timeSec: number
+    timeSec: number,
+    scale: number
   ): void {
-    const h = 228;
+    const h = 216;
     ctx.save();
-    ctx.fillStyle = 'rgba(3, 8, 5, 0.88)';
+    ctx.fillStyle = 'rgba(3, 8, 5, 0.90)';
     ctx.fillRect(x, y, w, h);
-    this.drawCornerBrackets(ctx, x, y, w, h, 14, COLORS.GREEN_DIM, 2.4);
+    drawCornerBrackets(ctx, x, y, w, h, 12, THEME.BORDER_SUBTLE, 2.0);
 
-    // Top Row: Giant Prominent MISSION SCORE + STREAK / PRACTICE Badge
+    // Top Row: Score Label + Streak / Unranked
     ctx.textAlign = 'left';
-    ctx.font = 'bold 15px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_MID;
-    ctx.fillText(isPracticeRun ? 'PRACTICE TELEMETRY' : 'MISSION TELEMETRY', x + 14, y + 22);
+    ctx.font = font('micro', 12, scale);
+    ctx.fillStyle = THEME.TEXT_SECONDARY;
+    ctx.fillText(isPracticeRun ? 'PRACTICE' : 'SCORE', x + 10, y + 18);
 
     const streak = Math.max(1, dropStreak);
     ctx.textAlign = 'right';
-    ctx.font = 'bold 15px "Share Tech Mono", monospace';
+    ctx.font = font('micro', 12, scale);
     ctx.fillStyle = isPracticeRun
-      ? COLORS.AMBER_CAUTION
+      ? THEME.ACCENT_AMBER
       : streak > 1
-        ? COLORS.AMBER_BRIGHT
-        : COLORS.GREEN_PRIMARY;
-    ctx.fillText(isPracticeRun ? 'UNRANKED' : `STREAK ${streak}X`, x + w - 14, y + 22);
+        ? THEME.ACCENT_AMBER_HI
+        : THEME.TEXT_PRIMARY;
+    ctx.fillText(isPracticeRun ? 'UNRANKED' : `STREAK ${streak}X`, x + w - 10, y + 18);
 
-    // Big Bold 34px Nostromo Tabular Score Readout
+    // Crisp Tabular Score
     ctx.textAlign = 'left';
-    ctx.font = 'bold 34px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
+    ctx.font = font('data', 24, scale);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
     const scoreText = Math.round(displayedScore).toString().padStart(7, '0');
-    ctx.fillText(scoreText, x + 14, y + 55);
+    drawEllipsizedText(ctx, scoreText, x + 10, y + 46, w - 20);
 
-    // Mission Elapsed Time (MET) + Delta-V / Flow
+    // MET + Delta-V
     const mins = Math.floor(sectorElapsedSec / 60);
-    const secs = sectorElapsedSec % 60;
-    const metStr = `MET ${String(mins).padStart(2, '0')}:${secs.toFixed(1).padStart(4, '0')}`;
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 14.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.fillText(metStr, x + w - 14, y + 52);
-
+    const secs = Math.floor(sectorElapsedSec % 60);
     const totalMass = lander.dryMassKg + lander.fuelKg;
     const vExhaust = PHYSICS.MAIN_THRUST_N / PHYSICS.MAIN_BURN_RATE_KG_S;
     const deltaV = vExhaust * Math.log(totalMass / lander.dryMassKg);
-    const burnMult = lander.throttle > 1 ? PHYSICS.OVERDRIVE_BURN_PENALTY : 1;
-    const flowKgS =
-      lander.throttle * PHYSICS.MAIN_BURN_RATE_KG_S * burnMult +
-      (lander.retroActive ? PHYSICS.RETRO_BURN_RATE_KG_S : 0) +
-      (lander.rcsLeftActive || lander.rcsRightActive ? PHYSICS.RCS_BURN_RATE_KG_S : 0);
 
+    ctx.font = font('micro', 12, scale);
     ctx.textAlign = 'left';
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_MID;
-    ctx.fillText(`ΔV ${deltaV.toFixed(0)} M/S`, x + 14, y + 74);
+    ctx.fillStyle = THEME.TEXT_PRIMARY;
+    ctx.fillText(`MET ${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`, x + 10, y + 66);
     ctx.textAlign = 'right';
-    ctx.fillStyle = flowKgS > 9 ? COLORS.AMBER_CAUTION : COLORS.GREEN_PRIMARY;
-    ctx.fillText(`FLOW ${flowKgS.toFixed(1)} KG/S`, x + w - 14, y + 74);
+    ctx.fillStyle = THEME.TEXT_SECONDARY;
+    ctx.fillText(`ΔV ${deltaV.toFixed(0)}`, x + w - 10, y + 66);
 
-    // =====================================================================
-    // MIDDLE RACK: SHUTTLE RESERVES // 3 VECTOR DROP-SHUTTLE ICONS
-    // =====================================================================
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.4;
+    // Middle Rack: SHUTTLE RESERVES
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.moveTo(x + 14, y + 81);
-    ctx.lineTo(x + w - 14, y + 81);
+    ctx.moveTo(x + 10, y + 74);
+    ctx.lineTo(x + w - 10, y + 74);
     ctx.stroke();
 
     const finalShuttle = lives === 1;
     const noShuttles = lives <= 0;
     ctx.textAlign = 'left';
-    ctx.font = 'bold 14px "Share Tech Mono", monospace';
+    ctx.font = font('micro', 12, scale);
     ctx.fillStyle = noShuttles
-      ? '#FF3333'
+      ? THEME.ALERT_RED_TEXT
       : finalShuttle
-        ? '#FFB000'
-        : '#44FF77';
-    ctx.fillText('SHUTTLE RESERVES', x + 14, y + 98);
+        ? THEME.ACCENT_AMBER
+        : THEME.TEXT_PRIMARY;
+    ctx.fillText('SHUTTLES', x + 10, y + 90);
 
     ctx.textAlign = 'right';
-    ctx.font = 'bold 14px "JetBrains Mono", monospace';
-    ctx.fillText(
-      noShuttles ? '0/3 DEPLETED' : finalShuttle ? '1/3 FINAL HULL' : `${lives}/${maxLives} ACTIVE`,
-      x + w - 14,
-      y + 98
-    );
+    ctx.fillText(noShuttles ? '0/3 LOST' : `${lives}/${maxLives}`, x + w - 10, y + 90);
 
-    const bayGap = 8;
-    const bayW = (w - 28 - bayGap * (maxLives - 1)) / maxLives;
-    const bayY = y + 104;
-    const bayH = 38;
+    const bayGap = 6;
+    const bayW = (w - 20 - bayGap * (maxLives - 1)) / maxLives;
+    const bayY = y + 97;
+    const bayH = 34;
 
     for (let i = 0; i < maxLives; i++) {
-      const bx = x + 14 + i * (bayW + bayGap);
+      const bx = x + 10 + i * (bayW + bayGap);
       const isAlive = i < lives;
       const justLostFlash =
         !isAlive && i === lives && lifeLostFlashTimer > 0 && Math.sin(timeSec * 22) > -0.2;
 
       if (isAlive) {
-        const hullCol = finalShuttle ? '#FFB000' : '#44FF77';
-        ctx.fillStyle = finalShuttle ? 'rgba(255, 176, 0, 0.14)' : 'rgba(68, 255, 119, 0.11)';
+        const hullCol = finalShuttle ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY;
+        ctx.fillStyle = finalShuttle ? 'rgba(255, 176, 0, 0.14)' : 'rgba(68, 255, 119, 0.12)';
         ctx.fillRect(bx, bayY, bayW, bayH);
         ctx.strokeStyle = hullCol;
-        ctx.lineWidth = 2.0;
+        ctx.lineWidth = 1.8;
         ctx.strokeRect(bx, bayY, bayW, bayH);
-        this.drawMiniShuttleVector(ctx, bx + bayW * 0.5, bayY + bayH * 0.52, hullCol, false);
+        this.drawMiniShuttleVector(ctx, bx + bayW * 0.5, bayY + bayH * 0.52, hullCol, false, 0.8);
       } else {
-        const deadStroke = justLostFlash ? '#FF3333' : '#4A2020';
-        ctx.fillStyle = justLostFlash ? 'rgba(255, 51, 51, 0.25)' : '#2A1A1A';
+        const deadStroke = justLostFlash ? THEME.ALERT_RED_STROKE : '#5A2424';
+        ctx.fillStyle = justLostFlash ? 'rgba(255, 51, 24, 0.25)' : '#241414';
         ctx.fillRect(bx, bayY, bayW, bayH);
         ctx.strokeStyle = deadStroke;
-        ctx.lineWidth = 1.6;
+        ctx.lineWidth = 1.4;
         ctx.strokeRect(bx, bayY, bayW, bayH);
         this.drawMiniShuttleVector(
           ctx,
           bx + bayW * 0.5,
           bayY + bayH * 0.52,
-          justLostFlash ? '#FF3333' : '#5E2A2A',
-          true
+          justLostFlash ? THEME.ALERT_RED_TEXT : '#6E3232',
+          true,
+          0.8
         );
-
-        // Diagonal Breached Cross-Out Slash
-        ctx.strokeStyle = justLostFlash ? '#FF3333' : '#8A2828';
-        ctx.lineWidth = 1.8;
+        ctx.strokeStyle = justLostFlash ? THEME.ALERT_RED_STROKE : '#8A2828';
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.moveTo(bx + 6, bayY + 5);
-        ctx.lineTo(bx + bayW - 6, bayY + bayH - 5);
-        ctx.moveTo(bx + bayW - 6, bayY + 5);
-        ctx.lineTo(bx + 6, bayY + bayH - 5);
+        ctx.moveTo(bx + 5, bayY + 5);
+        ctx.lineTo(bx + bayW - 5, bayY + bayH - 5);
+        ctx.moveTo(bx + bayW - 5, bayY + 5);
+        ctx.lineTo(bx + 5, bayY + bayH - 5);
         ctx.stroke();
       }
     }
 
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.moveTo(x + 14, y + 150);
-    ctx.lineTo(x + w - 14, y + 150);
+    ctx.moveTo(x + 10, y + 139);
+    ctx.lineTo(x + w - 10, y + 139);
     ctx.stroke();
 
-    // =====================================================================
-    // BOTTOM SPLIT RACK:
-    // LEFT: [SPACE] ONE-TIME EMERGENCY THRUST PULSE CARTRIDGE
-    // RIGHT: [L-CLICK] 3 TACTICAL RADAR PING CELLS
-    // =====================================================================
-    const splitX = x + Math.round(w * 0.52);
+    // Bottom Split Rack: [SPACE] 1X PULSE (with 0.6s flip-cover interlock) | RADAR [LMB]
+    const splitX = x + Math.round(w * 0.5);
 
-    // 1. Left Box: [SPACE] 1X GAME PULSE
     const pulseArmed = lander.emergencyPulseAvailable;
     const pulseFiring = lander.emergencyPulseTimer > 0;
+    const guardActive = pulseArmed && pulseSafetyLockSec > 0;
+
     ctx.textAlign = 'left';
-    ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
+    ctx.font = font('micro', 12, scale);
     ctx.fillStyle = pulseFiring
       ? '#FFFFFF'
-      : pulseArmed
-        ? COLORS.AMBER_BRIGHT
-        : COLORS.RED_KLAXON;
-    ctx.fillText('[SPACE] 1X PULSE', x + 14, y + 168);
+      : guardActive
+        ? THEME.ALERT_RED_TEXT
+        : pulseArmed
+          ? THEME.ACCENT_AMBER_HI
+          : THEME.TEXT_MUTED;
+    ctx.fillText('1X PULSE', x + 10, y + 156);
 
-    const pBoxX = x + 14;
-    const pBoxY = y + 176;
-    const pBoxW = splitX - pBoxX - 10;
+    const pBoxX = x + 10;
+    const pBoxY = y + 164;
+    const pBoxW = splitX - pBoxX - 5;
     const pBoxH = 38;
 
-    ctx.strokeStyle = pulseArmed || pulseFiring ? COLORS.AMBER_CAUTION : COLORS.RED_DIM;
-    ctx.lineWidth = 2.0;
+    ctx.strokeStyle = guardActive
+      ? THEME.ALERT_RED_STROKE
+      : pulseArmed || pulseFiring
+        ? THEME.ACCENT_AMBER
+        : THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.8;
     ctx.strokeRect(pBoxX, pBoxY, pBoxW, pBoxH);
 
-    if (pulseArmed || pulseFiring) {
-      const glow = pulseFiring ? 0.9 : 0.25 + 0.12 * Math.sin(timeSec * 5);
-      ctx.fillStyle = `rgba(255, 140, 0, ${glow.toFixed(2)})`;
-      ctx.fillRect(pBoxX + 3, pBoxY + 3, pBoxW - 6, pBoxH - 6);
+    if (guardActive) {
+      // Animated Nostromo flip-cover safety guard opening over 0.6s!
+      const coverFrac = Math.max(0, Math.min(1, pulseSafetyLockSec / 0.6));
+      const coverH = Math.round((pBoxH - 4) * coverFrac);
+      ctx.fillStyle = 'rgba(130, 26, 16, 0.72)';
+      ctx.fillRect(pBoxX + 2, pBoxY + 2, pBoxW - 4, coverH);
+      ctx.strokeStyle = THEME.ALERT_RED_TEXT;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(pBoxX + 2, pBoxY + 2 + coverH);
+      ctx.lineTo(pBoxX + pBoxW - 2, pBoxY + 2 + coverH);
+      ctx.stroke();
+    } else if (pulseArmed || pulseFiring) {
+      const glow = pulseFiring ? 0.88 : 0.22 + 0.10 * Math.sin(timeSec * 5);
+      ctx.fillStyle = `rgba(255, 176, 0, ${glow.toFixed(2)})`;
+      ctx.fillRect(pBoxX + 2, pBoxY + 2, pBoxW - 4, pBoxH - 4);
     }
 
     ctx.textAlign = 'center';
-    ctx.font = 'bold 14px "JetBrains Mono", monospace';
+    ctx.font = font('micro', 12, scale);
     ctx.fillStyle = pulseFiring
       ? '#FFFFFF'
-      : pulseArmed
-        ? COLORS.AMBER_BRIGHT
-        : COLORS.RED_KLAXON;
-    ctx.fillText(
-      pulseFiring ? '>> FIRING <<' : pulseArmed ? 'ARMED [1/RUN]' : 'EXPENDED',
+      : guardActive
+        ? THEME.ALERT_RED_TEXT
+        : pulseArmed
+          ? THEME.ACCENT_AMBER_HI
+          : THEME.TEXT_MUTED;
+    drawEllipsizedText(
+      ctx,
+      pulseFiring ? 'FIRING' : guardActive ? 'GUARD' : pulseArmed ? 'ARMED' : 'USED',
       pBoxX + pBoxW * 0.5,
-      pBoxY + 24
+      pBoxY + 23,
+      pBoxW - 6
     );
 
-    // 2. Right Box: [L-CLICK] 3 RADAR PING CELLS
+    // Right Box: RADAR [LMB] 3 Cells
     const maxCells = Math.max(1, lander.maxRadarCharges);
     const remCells = lander.radarCharges;
     const lowCells = remCells <= 1;
 
     ctx.textAlign = 'left';
-    ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = remCells === 0 ? COLORS.RED_KLAXON : lowCells ? COLORS.AMBER_CAUTION : COLORS.GREEN_PRIMARY;
-    ctx.fillText('RADAR [L-CLK]', splitX + 4, y + 168);
+    ctx.font = font('micro', 12, scale);
+    ctx.fillStyle =
+      remCells === 0
+        ? THEME.ALERT_RED_TEXT
+        : lowCells
+          ? THEME.ACCENT_AMBER
+          : THEME.ACCENT_CYAN;
+    ctx.fillText('RADAR', splitX + 4, y + 156);
 
     ctx.textAlign = 'right';
-    ctx.font = 'bold 14px "JetBrains Mono", monospace';
-    ctx.fillText(`${remCells}/${maxCells}`, x + w - 14, y + 168);
+    ctx.fillText(`${remCells}/${maxCells}`, x + w - 10, y + 156);
 
     const rackX = splitX + 4;
-    const rackW = x + w - 14 - rackX;
-    const rackY = y + 176;
-    const cellGap = 6;
+    const rackW = x + w - 10 - rackX;
+    const rackY = y + 164;
+    const cellGap = 4;
     const cellW = (rackW - cellGap * (maxCells - 1)) / maxCells;
     const cellH = 38;
 
@@ -1070,59 +1165,57 @@ export class HudRenderer {
 
         ctx.fillStyle = charged
           ? lowCells
-            ? COLORS.AMBER_BRIGHT
-            : COLORS.GREEN_BRIGHT
-          : COLORS.GREEN_DIM;
+            ? THEME.ACCENT_AMBER_HI
+            : THEME.ACCENT_CYAN
+          : THEME.BORDER_SUBTLE;
         ctx.fillRect(cx + cellW * 0.25, rackY, cellW * 0.5, 4);
 
         ctx.strokeStyle = charged
           ? lowCells
-            ? COLORS.AMBER_CAUTION
-            : COLORS.GREEN_PRIMARY
-          : COLORS.GREEN_DIM;
-        ctx.lineWidth = 2.0;
+            ? THEME.ACCENT_AMBER
+            : THEME.ACCENT_CYAN
+          : THEME.BORDER_SUBTLE;
+        ctx.lineWidth = 1.6;
         ctx.strokeRect(cx, rackY + 4, cellW, cellH - 4);
 
         if (charged) {
-          ctx.fillStyle = lowCells ? COLORS.AMBER_CAUTION : COLORS.GREEN_PRIMARY;
-          ctx.fillRect(cx + 3, rackY + 7, Math.max(2, cellW - 6), cellH - 10);
+          ctx.fillStyle = lowCells ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY;
+          ctx.fillRect(cx + 2.5, rackY + 7, Math.max(2, cellW - 5), cellH - 10);
         }
       }
     } else {
       const blink = Math.sin(timeSec * 10) > 0;
-      ctx.strokeStyle = blink ? COLORS.RED_KLAXON : COLORS.AMBER_DIM;
-      ctx.lineWidth = 1.8;
+      ctx.strokeStyle = blink ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER;
+      ctx.lineWidth = 1.6;
       ctx.strokeRect(rackX, rackY + 4, rackW, 34);
 
       const progW = ((rackW - 4) * lander.sensorCapacitor) / 100;
-      ctx.fillStyle = COLORS.AMBER_CAUTION;
+      ctx.fillStyle = 'rgba(255, 176, 0, 0.36)';
       ctx.fillRect(rackX + 2, rackY + 6, progW, 30);
 
       ctx.textAlign = 'center';
-      ctx.font = 'bold 13px "JetBrains Mono", monospace';
-      ctx.fillStyle = COLORS.GREEN_BRIGHT;
-      ctx.fillText(`GEN ${Math.round(lander.sensorCapacitor)}%`, rackX + rackW * 0.5, rackY + 26);
+      ctx.font = font('micro', 12, scale);
+      ctx.fillStyle = THEME.TEXT_BRIGHT;
+      ctx.fillText(`${Math.round(lander.sensorCapacitor)}%`, rackX + rackW * 0.5, rackY + 25);
     }
 
     ctx.restore();
   }
 
-  /**
-   * Renders a crisp miniature vector Narcissus Drop-Shuttle icon inside each SHUTTLE RESERVES bay.
-   */
   private drawMiniShuttleVector(
     ctx: CanvasRenderingContext2D,
     cx: number,
     cy: number,
     color: string,
-    breached: boolean
+    breached: boolean,
+    scale = 1.0
   ): void {
     ctx.save();
     ctx.translate(cx, cy);
+    ctx.scale(scale, scale);
     ctx.strokeStyle = color;
     ctx.lineWidth = breached ? 1.4 : 1.9;
 
-    // Octagonal Descent Module Hull
     ctx.beginPath();
     ctx.moveTo(-7, -10);
     ctx.lineTo(7, -10);
@@ -1133,7 +1226,6 @@ export class HudRenderer {
     ctx.closePath();
     ctx.stroke();
 
-    // Cockpit Canopy Truss
     ctx.beginPath();
     ctx.moveTo(-5, -5);
     ctx.lineTo(5, -5);
@@ -1141,7 +1233,6 @@ export class HudRenderer {
     ctx.lineTo(0, 4);
     ctx.stroke();
 
-    // Splayed Articulated Landing Struts + Footpads
     ctx.beginPath();
     ctx.moveTo(-8, 3);
     ctx.lineTo(-16, 11);
@@ -1153,7 +1244,6 @@ export class HudRenderer {
     ctx.moveTo(12, 11);
     ctx.lineTo(19, 11);
 
-    // Engine Nozzle Bell
     ctx.moveTo(-3.5, 4);
     ctx.lineTo(-5.5, 9);
     ctx.lineTo(5.5, 9);
@@ -1169,16 +1259,18 @@ export class HudRenderer {
     r: number,
     fuelRatio: number,
     subValue: string,
-    label: string
+    label: string,
+    scale: number
   ): void {
     ctx.save();
     const startAng = (140 * Math.PI) / 180;
     const endAng = (400 * Math.PI) / 180;
     const isCritical = fuelRatio <= 0.18;
-    const activeCol = isCritical ? COLORS.RED_KLAXON : COLORS.AMBER_CAUTION;
+    const activeCol = isCritical ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER;
+    const textCol = isCritical ? THEME.ALERT_RED_TEXT : THEME.ACCENT_AMBER;
 
-    ctx.strokeStyle = COLORS.AMBER_DIM;
-    ctx.lineWidth = 4.2;
+    ctx.strokeStyle = 'rgba(255, 176, 0, 0.25)';
+    ctx.lineWidth = 3.8;
     ctx.beginPath();
     ctx.arc(cx, cy, r, startAng, endAng);
     ctx.stroke();
@@ -1186,7 +1278,7 @@ export class HudRenderer {
     const activeEnd = startAng + (endAng - startAng) * fuelRatio;
     if (fuelRatio > 0.01) {
       ctx.strokeStyle = activeCol;
-      ctx.lineWidth = 5.0;
+      ctx.lineWidth = 4.6;
       ctx.beginPath();
       ctx.arc(cx, cy, r, startAng, activeEnd);
       ctx.stroke();
@@ -1194,40 +1286,40 @@ export class HudRenderer {
 
     ctx.save();
     ctx.beginPath();
-    ctx.arc(cx, cy, r - 6.5, 0, Math.PI * 2);
+    ctx.arc(cx, cy, r - 6, 0, Math.PI * 2);
     ctx.clip();
 
-    const innerTop = cy - (r - 9);
-    const innerBot = cy + (r - 9);
+    const innerTop = cy - (r - 8);
+    const innerBot = cy + (r - 8);
     const fillTop = innerBot - (innerBot - innerTop) * fuelRatio;
 
     ctx.fillStyle = activeCol;
     ctx.beginPath();
     ctx.moveTo(cx - r + 5, innerBot);
-    ctx.lineTo(cx - r + 8, fillTop);
-    ctx.lineTo(cx + r - 6 - (1 - fuelRatio) * 5, fillTop);
-    ctx.lineTo(cx + r - 10, innerBot);
+    ctx.lineTo(cx - r + 7, fillTop);
+    ctx.lineTo(cx + r - 6 - (1 - fuelRatio) * 4, fillTop);
+    ctx.lineTo(cx + r - 9, innerBot);
     ctx.closePath();
     ctx.fill();
 
     if (fuelRatio > 0.04) {
-      ctx.strokeStyle = isCritical ? '#FF9A8A' : COLORS.AMBER_BRIGHT;
-      ctx.lineWidth = 2.4;
+      ctx.strokeStyle = isCritical ? THEME.ALERT_RED_TEXT : THEME.ACCENT_AMBER_HI;
+      ctx.lineWidth = 2.0;
       ctx.beginPath();
-      ctx.moveTo(cx - r + 8, fillTop);
+      ctx.moveTo(cx - r + 7, fillTop);
       ctx.lineTo(cx + r - 6, fillTop);
       ctx.stroke();
     }
     ctx.restore();
 
     ctx.textAlign = 'center';
-    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = activeCol;
+    ctx.font = font('micro', 12, scale);
+    ctx.fillStyle = textCol;
     ctx.fillText(label, cx, cy + r + 15);
 
-    ctx.font = 'bold 13px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
-    ctx.fillText(subValue, cx, cy + r + 30);
+    ctx.font = font('micro', 12, scale);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+    ctx.fillText(subValue, cx, cy + r + 31);
     ctx.restore();
   }
 
@@ -1241,6 +1333,7 @@ export class HudRenderer {
     label: string,
     activeCol: string,
     centerZero: boolean,
+    scale: number,
     subValue?: string
   ): void {
     ctx.save();
@@ -1248,15 +1341,15 @@ export class HudRenderer {
     const sweep = (240 * Math.PI) / 180;
     const endAng = startAng + sweep;
 
-    ctx.strokeStyle = COLORS.AMBER_DIM;
-    ctx.lineWidth = 4.4;
+    ctx.strokeStyle = 'rgba(255, 176, 0, 0.25)';
+    ctx.lineWidth = 3.8;
     ctx.beginPath();
     ctx.arc(cx, cy, r, startAng, endAng);
     ctx.stroke();
 
     let needleAng = startAng;
     ctx.strokeStyle = activeCol;
-    ctx.lineWidth = 5.2;
+    ctx.lineWidth = 4.6;
     ctx.beginPath();
     if (centerZero) {
       const midAng = startAng + sweep * 0.5;
@@ -1279,50 +1372,54 @@ export class HudRenderer {
     for (let i = 0; i <= ticks; i++) {
       const frac = i / ticks;
       const a = startAng + frac * sweep;
-      const innerLen = i % 2 === 0 ? 8 : 5;
+      const innerLen = i % 2 === 0 ? 7 : 4;
       const lit = centerZero
         ? Math.abs(frac - 0.5) <= Math.abs(value) * 0.5 + 0.02
         : frac <= value + 0.02;
-      ctx.strokeStyle = lit ? COLORS.AMBER_BRIGHT : COLORS.AMBER_DIM;
-      ctx.lineWidth = i % 2 === 0 ? 2.2 : 1.5;
+      ctx.strokeStyle = lit ? THEME.ACCENT_AMBER_HI : 'rgba(255, 176, 0, 0.32)';
+      ctx.lineWidth = i % 2 === 0 ? 2.0 : 1.3;
       ctx.beginPath();
       ctx.moveTo(cx + Math.cos(a) * (r - 2.5), cy + Math.sin(a) * (r - 2.5));
-      ctx.lineTo(cx + Math.cos(a) * (r - 2.5 - innerLen), cy + Math.sin(a) * (r - 2.5 - innerLen));
+      ctx.lineTo(
+        cx + Math.cos(a) * (r - 2.5 - innerLen),
+        cy + Math.sin(a) * (r - 2.5 - innerLen)
+      );
       ctx.stroke();
     }
 
     if (safeTickRatio !== undefined) {
       const sa = startAng + Math.max(0, Math.min(1, safeTickRatio)) * sweep;
-      ctx.strokeStyle = COLORS.GREEN_PRIMARY;
-      ctx.lineWidth = 2.6;
+      ctx.strokeStyle = THEME.TEXT_PRIMARY;
+      ctx.lineWidth = 2.4;
       ctx.beginPath();
-      ctx.moveTo(cx + Math.cos(sa) * (r - 6), cy + Math.sin(sa) * (r - 6));
-      ctx.lineTo(cx + Math.cos(sa) * (r + 5), cy + Math.sin(sa) * (r + 5));
+      ctx.moveTo(cx + Math.cos(sa) * (r - 5), cy + Math.sin(sa) * (r - 5));
+      ctx.lineTo(cx + Math.cos(sa) * (r + 4), cy + Math.sin(sa) * (r + 4));
       ctx.stroke();
     }
 
-    ctx.strokeStyle = COLORS.AMBER_BRIGHT;
-    ctx.lineWidth = 3.6;
+    ctx.strokeStyle = THEME.ACCENT_AMBER_HI;
+    ctx.lineWidth = 3.2;
     ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(cx - Math.cos(needleAng) * 5, cy - Math.sin(needleAng) * 5);
+    ctx.moveTo(cx - Math.cos(needleAng) * 4, cy - Math.sin(needleAng) * 4);
     ctx.lineTo(cx + Math.cos(needleAng) * (r - 6), cy + Math.sin(needleAng) * (r - 6));
     ctx.stroke();
     ctx.lineCap = 'butt';
 
     ctx.fillStyle = activeCol;
     ctx.beginPath();
-    ctx.arc(cx, cy, 4.4, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.textAlign = 'center';
-    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = activeCol;
+    ctx.font = font('micro', 12, scale);
+    ctx.fillStyle =
+      activeCol === THEME.ALERT_RED_STROKE ? THEME.ALERT_RED_TEXT : THEME.ACCENT_AMBER;
     ctx.fillText(label, cx, cy + r + 15);
     if (subValue) {
-      ctx.font = 'bold 13px "JetBrains Mono", monospace';
-      ctx.fillStyle = COLORS.AMBER_BRIGHT;
-      ctx.fillText(subValue, cx, cy + r + 30);
+      ctx.font = font('micro', 12, scale);
+      ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+      ctx.fillText(subValue, cx, cy + r + 31);
     }
     ctx.restore();
   }
@@ -1334,27 +1431,28 @@ export class HudRenderer {
     totalH: number,
     aglMeters: number,
     maxScaleM: number,
-    topLabel: string
+    topLabel: string,
+    scale: number
   ): void {
     ctx.save();
     const ladderTop = topY + 22;
     const ladderH = totalH - 46;
     const ladderBot = ladderTop + ladderH;
-    const colHalfW = 5.5;
+    const colHalfW = 5;
 
     ctx.textAlign = 'center';
-    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
+    ctx.font = font('micro', 12, scale);
+    ctx.fillStyle = THEME.TEXT_PRIMARY;
     ctx.fillText(topLabel, cx, topY + 14);
 
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 2.2;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 2.0;
     ctx.strokeRect(cx - colHalfW, ladderTop, colHalfW * 2, ladderH);
 
     const norm = Math.max(0, Math.min(1, aglMeters / maxScaleM));
     const fillH = ladderH * norm;
     if (fillH > 1) {
-      ctx.fillStyle = COLORS.GREEN_PRIMARY;
+      ctx.fillStyle = THEME.TEXT_PRIMARY;
       ctx.fillRect(cx - colHalfW + 1.5, ladderBot - fillH, colHalfW * 2 - 3, fillH);
     }
 
@@ -1363,11 +1461,11 @@ export class HudRenderer {
       const frac = i / rungs;
       const ry = ladderBot - frac * ladderH;
       const isMajor = i % 5 === 0 || i === 4;
-      const rungSpan = isMajor ? 18 : 11;
+      const rungSpan = isMajor ? 14 : 9;
       const lit = frac <= norm + 0.02;
 
-      ctx.strokeStyle = lit ? COLORS.GREEN_PRIMARY : COLORS.GREEN_MID;
-      ctx.lineWidth = isMajor ? 2.5 : 1.6;
+      ctx.strokeStyle = lit ? THEME.TEXT_PRIMARY : THEME.TEXT_SECONDARY;
+      ctx.lineWidth = isMajor ? 2.2 : 1.4;
       ctx.beginPath();
       ctx.moveTo(cx - colHalfW - rungSpan, ry);
       ctx.lineTo(cx - colHalfW - 1, ry);
@@ -1376,27 +1474,25 @@ export class HudRenderer {
       ctx.stroke();
 
       if (i === 4) {
-        ctx.font = 'bold 13px "JetBrains Mono", monospace';
-        ctx.fillStyle = COLORS.GREEN_BRIGHT;
+        ctx.font = font('micro', 12, scale);
+        ctx.fillStyle = THEME.TEXT_BRIGHT;
         ctx.textAlign = 'right';
-        ctx.fillText('80', cx - colHalfW - rungSpan - 4, ry + 5);
-        ctx.textAlign = 'left';
-        ctx.fillText('80', cx + colHalfW + rungSpan + 4, ry + 5);
+        ctx.fillText('80', cx - colHalfW - rungSpan - 3, ry + 4);
       }
     }
 
     const bugY = ladderBot - fillH;
-    ctx.strokeStyle = COLORS.GREEN_BRIGHT;
-    ctx.lineWidth = 3.0;
+    ctx.strokeStyle = THEME.TEXT_BRIGHT;
+    ctx.lineWidth = 2.6;
     ctx.beginPath();
-    ctx.moveTo(cx - 17, bugY);
-    ctx.lineTo(cx + 17, bugY);
+    ctx.moveTo(cx - 14, bugY);
+    ctx.lineTo(cx + 14, bugY);
     ctx.stroke();
 
     ctx.textAlign = 'center';
-    ctx.font = 'bold 15px "JetBrains Mono", monospace';
-    ctx.fillStyle = aglMeters < 25 ? COLORS.AMBER_BRIGHT : COLORS.GREEN_BRIGHT;
-    ctx.fillText(`${aglMeters.toFixed(1)}M`, cx, topY + totalH - 3);
+    ctx.font = font('data', 13, scale);
+    ctx.fillStyle = aglMeters < 25 ? THEME.ACCENT_AMBER_HI : THEME.TEXT_BRIGHT;
+    ctx.fillText(`${aglMeters.toFixed(1)}M`, cx, topY + totalH - 4);
     ctx.restore();
   }
 
@@ -1407,104 +1503,104 @@ export class HudRenderer {
     w: number,
     lander: LanderState,
     sector: SectorConfig,
-    windKnots: number
+    windKnots: number,
+    scale: number
   ): void {
-    const h = 166;
+    const h = 152;
     ctx.save();
-    ctx.fillStyle = 'rgba(3, 8, 5, 0.86)';
+    ctx.fillStyle = 'rgba(3, 8, 5, 0.90)';
     ctx.fillRect(x, y, w, h);
-    this.drawCornerBrackets(ctx, x, y, w, h, 14, COLORS.GREEN_DIM, 2.4);
+    drawCornerBrackets(ctx, x, y, w, h, 12, THEME.BORDER_SUBTLE, 2.0);
 
     const gyroCx = x + w * 0.27;
-    const gyroCy = y + 62;
-    const gyroR = 42;
+    const gyroCy = y + 54;
+    const gyroR = 34;
     const pitchDeg = (lander.angle * 180) / Math.PI;
     const attSafe = Math.abs(pitchDeg) <= PHYSICS.SAFE_ANGLE_DEG;
 
-    ctx.strokeStyle = attSafe ? COLORS.GREEN_PRIMARY : COLORS.AMBER_CAUTION;
-    ctx.lineWidth = 3.0;
+    ctx.strokeStyle = attSafe ? THEME.TEXT_PRIMARY : THEME.ACCENT_AMBER;
+    ctx.lineWidth = 2.6;
     ctx.beginPath();
     ctx.arc(gyroCx, gyroCy, gyroR, 0, Math.PI * 2);
     ctx.stroke();
 
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 2.0;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.moveTo(gyroCx - gyroR - 4, gyroCy);
-    ctx.lineTo(gyroCx - gyroR + 6, gyroCy);
-    ctx.moveTo(gyroCx + gyroR - 6, gyroCy);
-    ctx.lineTo(gyroCx + gyroR + 4, gyroCy);
+    ctx.moveTo(gyroCx - gyroR - 3, gyroCy);
+    ctx.lineTo(gyroCx - gyroR + 5, gyroCy);
+    ctx.moveTo(gyroCx + gyroR - 5, gyroCy);
+    ctx.lineTo(gyroCx + gyroR + 3, gyroCy);
     ctx.stroke();
 
     ctx.save();
     ctx.translate(gyroCx, gyroCy);
     ctx.rotate(lander.angle);
-    ctx.strokeStyle = attSafe ? COLORS.GREEN_BRIGHT : COLORS.RED_KLAXON;
-    ctx.lineWidth = 3.2;
+    ctx.strokeStyle = attSafe ? THEME.TEXT_BRIGHT : THEME.ALERT_RED_STROKE;
+    ctx.lineWidth = 2.8;
     ctx.beginPath();
-    ctx.moveTo(-gyroR + 8, 0);
-    ctx.lineTo(-8, 0);
-    ctx.lineTo(0, -9);
-    ctx.lineTo(8, 0);
-    ctx.lineTo(gyroR - 8, 0);
+    ctx.moveTo(-gyroR + 6, 0);
+    ctx.lineTo(-6, 0);
+    ctx.lineTo(0, -8);
+    ctx.lineTo(6, 0);
+    ctx.lineTo(gyroR - 6, 0);
     ctx.stroke();
     ctx.restore();
 
     ctx.textAlign = 'center';
-    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = attSafe ? COLORS.GREEN_PRIMARY : COLORS.AMBER_CAUTION;
-    ctx.fillText(`ATT ${pitchDeg >= 0 ? '+' : ''}${pitchDeg.toFixed(1)}°`, gyroCx, gyroCy + gyroR + 18);
+    ctx.font = font('micro', 12, scale);
+    ctx.fillStyle = attSafe ? THEME.TEXT_PRIMARY : THEME.ACCENT_AMBER_HI;
+    ctx.fillText(`ATT ${pitchDeg >= 0 ? '+' : ''}${pitchDeg.toFixed(0)}°`, gyroCx, gyroCy + gyroR + 18);
 
     const windCx = x + w * 0.73;
-    const windCy = y + 62;
-    const windR = 42;
+    const windCy = y + 54;
+    const windR = 34;
     const windCol = lander.inWindShear
-      ? COLORS.RED_KLAXON
+      ? THEME.ALERT_RED_TEXT
       : windKnots > 9
-        ? COLORS.AMBER_CAUTION
-        : COLORS.GREEN_PRIMARY;
+        ? THEME.ACCENT_AMBER
+        : THEME.TEXT_PRIMARY;
 
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 2.8;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 2.4;
     ctx.beginPath();
     ctx.arc(windCx, windCy, windR, 0, Math.PI * 2);
     ctx.stroke();
 
     if (windKnots > 0.4) {
       const wAng = Math.atan2(-lander.currentWindVy, lander.currentWindVx);
-      const tipX = windCx + Math.cos(wAng) * (windR - 7);
-      const tipY = windCy + Math.sin(wAng) * (windR - 7);
-      const tailX = windCx - Math.cos(wAng) * (windR - 11);
-      const tailY = windCy - Math.sin(wAng) * (windR - 11);
+      const tipX = windCx + Math.cos(wAng) * (windR - 6);
+      const tipY = windCy + Math.sin(wAng) * (windR - 6);
+      const tailX = windCx - Math.cos(wAng) * (windR - 10);
+      const tailY = windCy - Math.sin(wAng) * (windR - 10);
 
       ctx.strokeStyle = windCol;
-      ctx.lineWidth = 3.4;
+      ctx.lineWidth = 3.0;
       ctx.beginPath();
       ctx.moveTo(tailX, tailY);
       ctx.lineTo(tipX, tipY);
-      ctx.lineTo(tipX - Math.cos(wAng - 0.5) * 9, tipY - Math.sin(wAng - 0.5) * 9);
+      ctx.lineTo(tipX - Math.cos(wAng - 0.5) * 8, tipY - Math.sin(wAng - 0.5) * 8);
       ctx.moveTo(tipX, tipY);
-      ctx.lineTo(tipX - Math.cos(wAng + 0.5) * 9, tipY - Math.sin(wAng + 0.5) * 9);
+      ctx.lineTo(tipX - Math.cos(wAng + 0.5) * 8, tipY - Math.sin(wAng + 0.5) * 8);
       ctx.stroke();
     } else {
-      ctx.fillStyle = COLORS.GREEN_MID;
-      ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-      ctx.fillText('VACUUM', windCx, windCy + 5);
+      ctx.fillStyle = THEME.TEXT_SECONDARY;
+      ctx.font = font('micro', 12, scale);
+      ctx.fillText('VAC', windCx, windCy + 4);
     }
 
-    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
+    ctx.font = font('micro', 12, scale);
     ctx.fillStyle = windCol;
-    ctx.fillText(`WIND ${windKnots.toFixed(0)}KT`, windCx, windCy + windR + 18);
+    ctx.fillText(`WND ${windKnots.toFixed(0)}KT`, windCx, windCy + windR + 18);
 
-    // Extra Inertial & Terrain Slope Telemetry Footer
     const slopeAbs = Math.abs(lander.surfaceSlopeDeg);
-    ctx.font = 'bold 13px "JetBrains Mono", monospace';
+    ctx.font = font('micro', 12, scale);
     ctx.textAlign = 'left';
-    ctx.fillStyle = COLORS.GREEN_MID;
-    ctx.fillText(`GRAV ${sector.gravity.toFixed(2)}`, x + 12, y + h - 9);
+    ctx.fillStyle = THEME.TEXT_SECONDARY;
+    ctx.fillText(`G ${sector.gravity.toFixed(2)}`, x + 10, y + h - 10);
     ctx.textAlign = 'right';
-    ctx.fillStyle = slopeAbs > 8 ? COLORS.AMBER_CAUTION : COLORS.GREEN_PRIMARY;
-    ctx.fillText(`SLOPE ${slopeAbs.toFixed(1)}°`, x + w - 12, y + h - 9);
+    ctx.fillStyle = slopeAbs > 8 ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY;
+    ctx.fillText(`SLP ${slopeAbs.toFixed(1)}°`, x + w - 10, y + h - 10);
     ctx.restore();
   }
 
@@ -1525,11 +1621,6 @@ export class HudRenderer {
     return best ? { pad: best, dist: bestDist } : null;
   }
 
-  /**
-   * Expanded Always-On Landing Pad Topography & Glide-Slope Mapping Window:
-   * Renders local terrain cross-section around the target pad, safe glide-slope corridor,
-   * live shuttle X/Y approach pip, and 4-channel GO/NO-GO avionics check!
-   */
   private drawProximityApproachSubWindow(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -1539,67 +1630,67 @@ export class HudRenderer {
     sector: SectorConfig,
     lander: LanderState,
     pad: LandingPad,
-    distM: number
+    distM: number,
+    scale: number
   ): void {
     const inApproachGate = distM <= PHYSICS.APPROACH_PROXIMITY_M;
     ctx.save();
-    ctx.fillStyle = 'rgba(3, 8, 5, 0.88)';
+    ctx.fillStyle = 'rgba(3, 8, 5, 0.90)';
     ctx.fillRect(x, y, w, boxH);
-    this.drawCornerBrackets(
+    drawCornerBrackets(
       ctx,
       x,
       y,
       w,
       boxH,
       12,
-      inApproachGate ? COLORS.AMBER_CAUTION : COLORS.GREEN_DIM,
-      2.2
+      inApproachGate ? THEME.ACCENT_AMBER : THEME.BORDER_SUBTLE,
+      2.0
     );
 
-    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = inApproachGate ? COLORS.AMBER_BRIGHT : COLORS.GREEN_PRIMARY;
+    ctx.font = font('micro', 12, scale);
+    ctx.fillStyle = inApproachGate ? THEME.ACCENT_AMBER_HI : THEME.TEXT_PRIMARY;
     ctx.textAlign = 'left';
-    const badge = pad.type === 'DEPOT' ? '+FUEL' : `${pad.multiplier}X`;
-    ctx.fillText(`${inApproachGate ? 'PAD LOCK' : 'PAD MAP'} // ${pad.label} [${badge}]`, x + 10, y + 20);
+    const badge = pad.type === 'DEPOT' ? `${SEMIOTIC_ICONS.CROSS}FUEL` : `${pad.multiplier}X`;
+    drawEllipsizedText(ctx, `${pad.label} [${badge}]`, x + 8, y + 18, w - 58);
 
-    ctx.font = 'bold 14px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_CAUTION;
+    ctx.fillStyle = THEME.ACCENT_AMBER;
     ctx.textAlign = 'right';
-    ctx.fillText(`${distM.toFixed(0)}M`, x + w - 10, y + 20);
+    ctx.fillText(`${distM.toFixed(0)}M`, x + w - 8, y + 18);
 
     const vs = Math.abs(Math.min(0, lander.vel.y));
     const hs = Math.abs(lander.vel.x);
     const padCenter = (pad.x1 + pad.x2) * 0.5;
     const padHalfW = (pad.x2 - pad.x1) * 0.5;
-    const aligned = Math.abs(lander.pos.x - padCenter) + PHYSICS.STRUT_SPAN_HALF_X <= padHalfW + 0.85;
+    const aligned =
+      Math.abs(lander.pos.x - padCenter) + PHYSICS.STRUT_SPAN_HALF_X <= padHalfW + 0.85;
     const vsGo = vs <= PHYSICS.SAFE_VS_MAX;
     const hsGo = hs <= PHYSICS.SAFE_HS_MAX;
 
     const offsetM = lander.pos.x - padCenter;
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
+    ctx.font = font('micro', 12, scale);
     ctx.textAlign = 'left';
-    ctx.fillStyle = COLORS.GREEN_MID;
-    ctx.fillText('PAD ALIGN:', x + 10, y + 40);
-    ctx.fillStyle = aligned ? COLORS.GREEN_BRIGHT : COLORS.AMBER_CAUTION;
-    ctx.fillText(
-      `${offsetM >= 0 ? '+' : ''}${offsetM.toFixed(1)}M [${aligned ? 'LOCK' : 'OFFSET'}]`,
-      x + 98,
-      y + 40
+    ctx.fillStyle = aligned ? THEME.TEXT_BRIGHT : THEME.ACCENT_AMBER;
+    drawEllipsizedText(
+      ctx,
+      `ALIGN ${offsetM >= 0 ? '+' : ''}${offsetM.toFixed(1)}M [${aligned ? 'LOCK' : 'OFF'}]`,
+      x + 8,
+      y + 36,
+      w - 16
     );
 
     // Live 2D Topographic Approach & Glide-Slope Map Window
-    const mapX = x + 10;
-    const mapY = y + 50;
-    const mapW = w - 20;
-    const mapH = Math.max(80, boxH - 60);
+    const mapX = x + 8;
+    const mapY = y + 44;
+    const mapW = w - 16;
+    const mapH = Math.max(80, boxH - 52);
 
-    ctx.fillStyle = 'rgba(2, 6, 3, 0.92)';
+    ctx.fillStyle = 'rgba(2, 6, 3, 0.94)';
     ctx.fillRect(mapX, mapY, mapW, mapH);
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.4;
     ctx.strokeRect(mapX, mapY, mapW, mapH);
 
-    // Dynamic zoom inside Pad Map: wide +/-95m at long range, zooming to +/-32m inside 80m!
     const viewHalfX = inApproachGate ? 34 : 95;
     const viewMaxY = inApproachGate ? 85 : 185;
 
@@ -1613,11 +1704,10 @@ export class HudRenderer {
     ctx.rect(mapX + 1, mapY + 1, mapW - 2, mapH - 2);
     ctx.clip();
 
-    // Safe Glide-Slope Funnel V-Corridor rising from pad edges
     const pLeftX = toMapX(pad.x1);
     const pRightX = toMapX(pad.x2);
     const pBaseY = toMapY(pad.y);
-    ctx.strokeStyle = 'rgba(59, 224, 104, 0.24)';
+    ctx.strokeStyle = 'rgba(68, 255, 119, 0.24)';
     ctx.lineWidth = 1.2;
     ctx.setLineDash([3, 4]);
     ctx.beginPath();
@@ -1630,9 +1720,8 @@ export class HudRenderer {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Local Terrain Cross-Section Silhouette around Pad
-    ctx.strokeStyle = COLORS.GREEN_MID;
-    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = THEME.TEXT_SECONDARY;
+    ctx.lineWidth = 1.5;
     ctx.beginPath();
     let started = false;
     for (const pt of sector.terrain) {
@@ -1648,35 +1737,32 @@ export class HudRenderer {
     }
     ctx.stroke();
 
-    // Glowing Pad Platform Bar on Map
-    ctx.strokeStyle = COLORS.AMBER_BRIGHT;
-    ctx.lineWidth = 3.2;
+    ctx.strokeStyle = pad.type === 'DEPOT' ? THEME.ACCENT_CYAN : THEME.ACCENT_AMBER_HI;
+    ctx.lineWidth = 3.0;
     ctx.beginPath();
     ctx.moveTo(pLeftX, pBaseY);
     ctx.lineTo(pRightX, pBaseY);
     ctx.stroke();
 
-    // Live Shuttle Pip + Velocity Vector inside Landing Map!
     const shipX = toMapX(lander.pos.x);
     const shipY = toMapY(lander.pos.y + PHYSICS.STRUT_REST_BOTTOM_Y);
     const spanPx = Math.max(4, (PHYSICS.STRUT_SPAN_HALF_X / (viewHalfX * 2)) * mapW);
 
-    // Velocity vector tail/nose inside mini-map
     const velEndX = toMapX(lander.pos.x + lander.vel.x * 2.5);
     const velEndY = toMapY(lander.pos.y + PHYSICS.STRUT_REST_BOTTOM_Y + lander.vel.y * 2.5);
-    ctx.strokeStyle = vsGo && hsGo ? COLORS.GREEN_PRIMARY : COLORS.AMBER_CAUTION;
+    ctx.strokeStyle = vsGo && hsGo ? THEME.TEXT_PRIMARY : THEME.ACCENT_AMBER;
     ctx.lineWidth = 1.4;
     ctx.beginPath();
     ctx.moveTo(shipX, shipY);
     ctx.lineTo(velEndX, velEndY);
     ctx.stroke();
 
-    ctx.strokeStyle = aligned && vsGo && hsGo ? COLORS.GREEN_BRIGHT : COLORS.AMBER_BRIGHT;
-    ctx.lineWidth = 2.4;
+    ctx.strokeStyle = aligned && vsGo && hsGo ? THEME.TEXT_BRIGHT : THEME.ACCENT_AMBER_HI;
+    ctx.lineWidth = 2.2;
     ctx.beginPath();
     ctx.moveTo(shipX - spanPx, shipY);
     ctx.lineTo(shipX + spanPx, shipY);
-    ctx.moveTo(shipX, shipY - 6);
+    ctx.moveTo(shipX, shipY - 5);
     ctx.lineTo(shipX, shipY + 2);
     ctx.stroke();
 
@@ -1685,9 +1771,8 @@ export class HudRenderer {
   }
 
   /**
-   * LARGE TOP-CENTER GO / NO-GO LANDING ENVELOPE HUD + CENTERLINE SOFT-KISS ILS BAR
-   * Engages inside pad proximity (<= 90m) and remains visible upon landing/crash so
-   * the pilot can review exact GO/KISS/NO-GO telemetry and Soft-Kiss centerline offset.
+   * TOP-CENTER GO / NO-GO LANDING ENVELOPE HUD + CENTERLINE SOFT-KISS ILS BAR
+   * Enforces >=12px effective typography via `font(..., cs)` at every viewport scale.
    */
   private drawTopGoNoGoHud(
     ctx: CanvasRenderingContext2D,
@@ -1703,8 +1788,8 @@ export class HudRenderer {
     timeSec: number
   ): void {
     const cs = layout.centerScale;
-    const basePanelW = 620;
-    const basePanelH = 164;
+    const basePanelW = 612;
+    const basePanelH = 160;
     const cx = w * 0.5;
     const topY = layout.topHeaderY;
 
@@ -1728,10 +1813,11 @@ export class HudRenderer {
 
     const allGo = vsGo && hsGo && attGo && inSafeAlign;
     const allKiss = vsKiss && hsKiss && attGo && inKissAlign;
-    const anyFatal = vsFatal || hsFatal || attFatal || (!inSafeAlign && lockedGrade === 'CATASTROPHIC');
+    const anyFatal =
+      vsFatal || hsFatal || attFatal || (!inSafeAlign && lockedGrade === 'CATASTROPHIC');
 
     ctx.save();
-    ctx.translate(cx - (basePanelW * cs) * 0.5, topY);
+    ctx.translate(cx - basePanelW * cs * 0.5, topY);
     ctx.scale(cs, cs);
 
     ctx.fillStyle = 'rgba(3, 9, 5, 0.94)';
@@ -1739,83 +1825,83 @@ export class HudRenderer {
 
     const frameCol =
       lockedGrade === 'CATASTROPHIC'
-        ? COLORS.RED_KLAXON
+        ? THEME.ALERT_RED_STROKE
         : lockedGrade === 'HARD_SURVIVAL'
-          ? COLORS.AMBER_CAUTION
+          ? THEME.ACCENT_AMBER
           : allGo
-            ? COLORS.GREEN_PRIMARY
+            ? THEME.TEXT_PRIMARY
             : anyFatal
-              ? COLORS.RED_KLAXON
-              : COLORS.AMBER_CAUTION;
-    this.drawCornerBrackets(ctx, 0, 0, basePanelW, basePanelH, 14, frameCol, 2.6);
+              ? THEME.ALERT_RED_STROKE
+              : THEME.ACCENT_AMBER;
+    drawCornerBrackets(ctx, 0, 0, basePanelW, basePanelH, 14, frameCol, 2.4);
 
-    // Header Bar: Pad Lock + Master GO / NO-GO Status (Live or Locked Touchdown Review)
-    const padTag = pad.type === 'DEPOT' ? '+FUEL DEPOT' : `${pad.multiplier}X`;
+    // Header Bar
+    const padTag = pad.type === 'DEPOT' ? `${SEMIOTIC_ICONS.CROSS} FUEL DEPOT` : `${pad.multiplier}X`;
     ctx.textAlign = 'left';
-    ctx.font = 'bold 15.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
+    ctx.font = font('head', 15, cs);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
     const headerLeft = lockedGrade
       ? `TOUCHDOWN REPORT // ${pad.label} [${padTag}]`
       : `LANDING GATE // ${pad.label} [${padTag}] // ${distM.toFixed(0)}M`;
-    ctx.fillText(headerLeft, 14, 21);
+    drawEllipsizedText(ctx, headerLeft, 14, 21, 355);
 
     ctx.textAlign = 'right';
-    ctx.font = 'bold 16px "Share Tech Mono", monospace';
+    ctx.font = font('head', 15, cs);
     const blink = lockedGrade ? 1.0 : 0.8 + 0.2 * Math.sin(timeSec * 12);
     ctx.globalAlpha = allGo ? 1 : blink;
 
     let rightStatus = '';
     if (lockedGrade === 'SOFT_KISS') {
-      ctx.fillStyle = COLORS.GREEN_BRIGHT;
-      rightStatus = '★ SOFT KISS ACHIEVED ★';
+      ctx.fillStyle = THEME.TEXT_BRIGHT;
+      rightStatus = `${SEMIOTIC_ICONS.STAR} SOFT KISS ACHIEVED`;
     } else if (lockedGrade === 'NOMINAL_SAFE') {
-      ctx.fillStyle = COLORS.GREEN_PRIMARY;
-      rightStatus = '● SAFE GO (OUTSIDE KISS) ●';
+      ctx.fillStyle = THEME.TEXT_PRIMARY;
+      rightStatus = `${SEMIOTIC_ICONS.DOT_LIVE} SAFE GO`;
     } else if (lockedGrade === 'HARD_SURVIVAL') {
-      ctx.fillStyle = COLORS.AMBER_CAUTION;
-      rightStatus = '▲ HARD LANDING (CAUTION) ▲';
+      ctx.fillStyle = THEME.ACCENT_AMBER;
+      rightStatus = `${SEMIOTIC_ICONS.TRIANGLE} HARD LANDING`;
     } else if (lockedGrade === 'CATASTROPHIC') {
-      ctx.fillStyle = COLORS.RED_KLAXON;
-      rightStatus = '✖ HULL BREACH (NO-GO) ✖';
+      ctx.fillStyle = THEME.ALERT_RED_TEXT;
+      rightStatus = '✖ HULL BREACH (NO-GO)';
     } else {
       ctx.fillStyle = allGo
-        ? COLORS.GREEN_BRIGHT
+        ? THEME.TEXT_BRIGHT
         : anyFatal
-          ? COLORS.RED_KLAXON
-          : COLORS.AMBER_BRIGHT;
+          ? THEME.ALERT_RED_TEXT
+          : THEME.ACCENT_AMBER_HI;
       rightStatus = allKiss
-        ? '★ SOFT KISS: GO ★'
+        ? `${SEMIOTIC_ICONS.STAR} SOFT KISS: GO`
         : allGo
-          ? '● TOUCHDOWN: GO ●'
+          ? `${SEMIOTIC_ICONS.DOT_LIVE} TOUCHDOWN: GO`
           : anyFatal
-            ? '✖ TOUCHDOWN: NO-GO ✖'
-            : '▲ TOUCHDOWN: CAUTION ▲';
+            ? '✖ TOUCHDOWN: NO-GO'
+            : `${SEMIOTIC_ICONS.TRIANGLE} CAUTION`;
     }
     ctx.fillText(rightStatus, basePanelW - 14, 21);
     ctx.globalAlpha = 1;
 
-    // 3 Large Side-by-Side GO / CAUTION / NO-GO Criteria Modules
+    // 3 Criteria Modules (all fonts strictly >=12px effective!)
     const criteria = [
       {
-        title: 'DESCENT V/S',
+        title: 'V/S',
         valueStr: `${vs.toFixed(1)} M/S`,
-        limitStr: `GO≤${PHYSICS.SAFE_VS_MAX.toFixed(1)} MAX≤${PHYSICS.SURVIVAL_VS_MAX.toFixed(1)}`,
+        limitStr: `GO≤${PHYSICS.SAFE_VS_MAX.toFixed(1)}`,
         go: vsGo,
         kiss: vsKiss,
         fatal: vsFatal,
       },
       {
-        title: 'DRIFT H/S',
+        title: 'H/S',
         valueStr: `${hs.toFixed(1)} M/S`,
-        limitStr: `GO≤${PHYSICS.SAFE_HS_MAX.toFixed(1)} MAX≤${PHYSICS.SURVIVAL_HS_MAX.toFixed(1)}`,
+        limitStr: `GO≤${PHYSICS.SAFE_HS_MAX.toFixed(1)}`,
         go: hsGo,
         kiss: hsKiss,
         fatal: hsFatal,
       },
       {
-        title: 'ATTITUDE',
+        title: 'ATT',
         valueStr: `${deg.toFixed(1)}°`,
-        limitStr: `GO≤${PHYSICS.SAFE_ANGLE_DEG.toFixed(0)}° MAX≤${PHYSICS.SURVIVAL_ANGLE_DEG.toFixed(1)}°`,
+        limitStr: `GO≤${PHYSICS.SAFE_ANGLE_DEG.toFixed(0)}°`,
         go: attGo,
         kiss: attGo && deg <= 3.0,
         fatal: attFatal,
@@ -1825,69 +1911,72 @@ export class HudRenderer {
     const gap = 10;
     const cardW = (basePanelW - 24 - gap * 2) / 3;
     const cardY = 29;
-    const cardH = 62;
+    const cardH = 60;
 
     criteria.forEach((c, idx) => {
       const cardX = 12 + idx * (cardW + gap);
-      const col = c.go
-        ? COLORS.GREEN_PRIMARY
+      const strokeCol = c.go
+        ? THEME.TEXT_PRIMARY
         : c.fatal
-          ? COLORS.RED_KLAXON
-          : COLORS.AMBER_CAUTION;
+          ? THEME.ALERT_RED_STROKE
+          : THEME.ACCENT_AMBER;
+      const textCol = c.go
+        ? THEME.TEXT_PRIMARY
+        : c.fatal
+          ? THEME.ALERT_RED_TEXT
+          : THEME.ACCENT_AMBER;
       const brightCol = c.go
-        ? COLORS.GREEN_BRIGHT
+        ? THEME.TEXT_BRIGHT
         : c.fatal
-          ? '#FF7A66'
-          : COLORS.AMBER_BRIGHT;
+          ? THEME.ALERT_RED_TEXT
+          : THEME.ACCENT_AMBER_HI;
 
       ctx.fillStyle = c.go
-        ? 'rgba(59, 224, 104, 0.12)'
+        ? 'rgba(68, 255, 119, 0.10)'
         : c.fatal
-          ? 'rgba(255, 51, 24, 0.17)'
-          : 'rgba(255, 140, 0, 0.14)';
+          ? 'rgba(255, 51, 24, 0.16)'
+          : 'rgba(255, 176, 0, 0.12)';
       ctx.fillRect(cardX, cardY, cardW, cardH);
 
-      ctx.strokeStyle = col;
-      ctx.lineWidth = 2.2;
+      ctx.strokeStyle = strokeCol;
+      ctx.lineWidth = 2.0;
       ctx.strokeRect(cardX, cardY, cardW, cardH);
 
       ctx.textAlign = 'left';
-      ctx.font = 'bold 13px "Share Tech Mono", monospace';
-      ctx.fillStyle = COLORS.GREEN_PRIMARY;
+      ctx.font = font('micro', 12, cs);
+      ctx.fillStyle = THEME.TEXT_SECONDARY;
       ctx.fillText(c.title, cardX + 7, cardY + 17);
 
       ctx.textAlign = 'right';
-      ctx.font = 'bold 11.5px "JetBrains Mono", monospace';
-      ctx.fillStyle = col;
-      ctx.fillText(c.limitStr, cardX + cardW - 6, cardY + 17);
+      ctx.font = font('micro', 12, cs);
+      ctx.fillStyle = textCol;
+      ctx.fillText(c.limitStr, cardX + cardW - 7, cardY + 17);
 
       ctx.textAlign = 'left';
-      ctx.font = 'bold 20px "JetBrains Mono", monospace';
+      ctx.font = font('data', 18, cs);
       ctx.fillStyle = brightCol;
-      ctx.fillText(c.valueStr, cardX + 7, cardY + 49);
+      ctx.fillText(c.valueStr, cardX + 7, cardY + 47);
 
-      const statusText = c.kiss ? 'KISS' : c.go ? 'GO' : c.fatal ? 'NO-GO' : 'CAUTION';
-      const pillW = c.go ? 56 : c.fatal ? 68 : 82;
-      const pillH = 25;
+      const statusText = c.kiss ? 'KISS' : c.go ? 'GO' : c.fatal ? 'NO-GO' : 'CAUT';
+      const pillW = c.fatal ? 64 : 56;
+      const pillH = 24;
       const pillX = cardX + cardW - pillW - 6;
       const pillY = cardY + 29;
 
-      ctx.fillStyle = col;
+      ctx.fillStyle = strokeCol;
       ctx.fillRect(pillX, pillY, pillW, pillH);
 
       ctx.textAlign = 'center';
-      ctx.font = c.go || c.fatal ? 'bold 16px "Share Tech Mono", monospace' : 'bold 15px "Share Tech Mono", monospace';
-      ctx.fillStyle = '#030805';
-      ctx.fillText(statusText, pillX + pillW * 0.5, pillY + 18);
+      ctx.font = font('micro', 12, cs);
+      ctx.fillStyle = THEME.INK_INVERSE;
+      ctx.fillText(statusText, pillX + pillW * 0.5, pillY + 16);
     });
 
-    // =====================================================================
-    // HORIZONTAL ILS CENTERLINE INDICATOR (SHOWS EXACT "SOFT KISS" BOUNDARIES)
-    // =====================================================================
+    // Horizontal ILS Centerline Indicator
     const ilsX = 12;
     const ilsW = basePanelW - 24;
-    const ilsCaptionY = 109;
-    const barY = 117;
+    const ilsCaptionY = 107;
+    const barY = 115;
     const barH = 34;
     const midBarX = ilsX + ilsW * 0.5;
 
@@ -1895,50 +1984,47 @@ export class HudRenderer {
     const toIlsX = (m: number) =>
       ilsX + ilsW * (0.5 + Math.max(-0.485, Math.min(0.485, m / (maxRangeM * 2))));
 
-    // Top Caption for ILS Localizer
     ctx.textAlign = 'left';
-    ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.fillText(`ILS CENTERLINE // SOFT KISS ZONE (±${kissBoundM.toFixed(1)}M)`, ilsX + 2, ilsCaptionY);
+    ctx.font = font('micro', 12, cs);
+    ctx.fillStyle = THEME.TEXT_PRIMARY;
+    ctx.fillText(`ILS SOFT KISS (±${kissBoundM.toFixed(1)}M)`, ilsX + 2, ilsCaptionY);
 
     ctx.textAlign = 'right';
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
+    ctx.font = font('micro', 12, cs);
     if (inKissAlign) {
-      ctx.fillStyle = COLORS.GREEN_BRIGHT;
+      ctx.fillStyle = THEME.TEXT_BRIGHT;
       ctx.fillText(
-        `OFFSET ${offsetM >= 0 ? '+' : ''}${offsetM.toFixed(1)}M [ ★ SOFT KISS ALIGNED ★ ]`,
+        `OFFSET ${offsetM >= 0 ? '+' : ''}${offsetM.toFixed(1)}M [${SEMIOTIC_ICONS.STAR} KISS LOCK]`,
         ilsX + ilsW - 2,
         ilsCaptionY
       );
     } else if (inSafeAlign) {
-      ctx.fillStyle = COLORS.AMBER_BRIGHT;
+      ctx.fillStyle = THEME.ACCENT_AMBER_HI;
       ctx.fillText(
-        `OFFSET ${offsetM >= 0 ? '+' : ''}${offsetM.toFixed(1)}M [ SAFE PAD — STEER ${offsetM > 0 ? '◄' : '►'} FOR KISS ]`,
+        `OFFSET ${offsetM >= 0 ? '+' : ''}${offsetM.toFixed(1)}M [STEER ${offsetM > 0 ? '◄' : '►'}]`,
         ilsX + ilsW - 2,
         ilsCaptionY
       );
     } else {
-      ctx.fillStyle = COLORS.RED_KLAXON;
+      ctx.fillStyle = THEME.ALERT_RED_TEXT;
       ctx.fillText(
-        `OFFSET ${offsetM >= 0 ? '+' : ''}${offsetM.toFixed(1)}M [ ▲ OFF PAD — STEER ${offsetM > 0 ? '◄◄' : '►►'} ▲ ]`,
+        `OFFSET ${offsetM >= 0 ? '+' : ''}${offsetM.toFixed(1)}M [OFF PAD ${offsetM > 0 ? '◄◄' : '►►'}]`,
         ilsX + ilsW - 2,
         ilsCaptionY
       );
     }
 
-    // ILS Track Frame
     ctx.fillStyle = 'rgba(2, 6, 4, 0.96)';
     ctx.fillRect(ilsX, barY, ilsW, barH);
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.5;
     ctx.strokeRect(ilsX, barY, ilsW, barH);
 
-    // Outer Safe Strut Touchdown Zone (Safe GO Pad Span)
     const safeLeftX = toIlsX(-safeBoundM);
     const safeRightX = toIlsX(safeBoundM);
-    ctx.fillStyle = 'rgba(255, 140, 0, 0.08)';
+    ctx.fillStyle = 'rgba(255, 176, 0, 0.08)';
     ctx.fillRect(safeLeftX, barY + 2, safeRightX - safeLeftX, barH - 4);
-    ctx.strokeStyle = COLORS.AMBER_DIM;
+    ctx.strokeStyle = 'rgba(255, 176, 0, 0.55)';
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.moveTo(safeLeftX, barY + 2);
@@ -1947,15 +2033,13 @@ export class HudRenderer {
     ctx.lineTo(safeRightX, barY + barH - 2);
     ctx.stroke();
 
-    // Inner Highlighted "SOFT KISS" Centerline Window!
     const kissLeftX = toIlsX(-kissBoundM);
     const kissRightX = toIlsX(kissBoundM);
-    ctx.fillStyle = inKissAlign ? 'rgba(59, 224, 104, 0.24)' : 'rgba(59, 224, 104, 0.14)';
+    ctx.fillStyle = inKissAlign ? 'rgba(68, 255, 119, 0.24)' : 'rgba(68, 255, 119, 0.14)';
     ctx.fillRect(kissLeftX, barY + 2, kissRightX - kissLeftX, barH - 4);
 
-    // Bold Soft Kiss Gate Brackets [   KISS   ]
-    ctx.strokeStyle = COLORS.GREEN_BRIGHT;
-    ctx.lineWidth = 2.4;
+    ctx.strokeStyle = THEME.TEXT_BRIGHT;
+    ctx.lineWidth = 2.2;
     ctx.beginPath();
     ctx.moveTo(kissLeftX + 6, barY + 3);
     ctx.lineTo(kissLeftX, barY + 3);
@@ -1968,8 +2052,7 @@ export class HudRenderer {
     ctx.lineTo(kissRightX - 6, barY + barH - 3);
     ctx.stroke();
 
-    // Centerline 0.0M Bullseye Crosshair & Scale Ticks
-    ctx.strokeStyle = COLORS.GREEN_PRIMARY;
+    ctx.strokeStyle = THEME.TEXT_PRIMARY;
     ctx.lineWidth = 1.4;
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
@@ -1978,29 +2061,23 @@ export class HudRenderer {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    ctx.font = 'bold 12px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_MID;
+    ctx.font = font('micro', 12, cs);
+    ctx.fillStyle = THEME.TEXT_SECONDARY;
     ctx.textAlign = 'right';
     ctx.fillText('PAD L', safeLeftX - 5, barY + 22);
     ctx.textAlign = 'left';
     ctx.fillText('PAD R', safeRightX + 5, barY + 22);
 
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.textAlign = 'center';
-    ctx.fillText('KISS', (kissLeftX + midBarX) * 0.5, barY + 13);
-    ctx.fillText('KISS', (kissRightX + midBarX) * 0.5, barY + 13);
-
-    // Live / Frozen Shuttle ILS Localizer Diamond Needle
     const bugX = toIlsX(offsetM);
-    const bugY = barY + barH * 0.5 + 2;
+    const bugY = barY + barH * 0.5;
     const bugCol = inKissAlign
-      ? COLORS.GREEN_BRIGHT
+      ? THEME.TEXT_BRIGHT
       : inSafeAlign
-        ? COLORS.AMBER_BRIGHT
-        : COLORS.RED_KLAXON;
+        ? THEME.ACCENT_AMBER_HI
+        : THEME.ALERT_RED_STROKE;
 
     ctx.fillStyle = bugCol;
-    ctx.strokeStyle = '#030805';
+    ctx.strokeStyle = THEME.BG_VOID;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(bugX, bugY - 9);
@@ -2014,158 +2091,26 @@ export class HudRenderer {
     ctx.restore();
   }
 
-  /**
-   * LARGE BOTTOM-CENTER AIRBUS AVIONICS WARNING BAR
-   * Renders terse Airbus-style warnings ("SINK RATE", "PULL UP", "BANK ANGLE", "WIND SHEAR", etc.)
-   * in large, unmistakable cockpit annunciator modules along the bottom of the visor.
-   */
-  private drawBottomAirbusWarnings(
-    ctx: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    layout: HudLayoutMetrics,
-    lander: LanderState,
-    emBlackoutActive: boolean,
-    activeVoiceText: string | null,
-    timeSec: number
-  ): void {
-    const warnings = HudRenderer.computeAvionicsWarnings(lander, emBlackoutActive);
-    if (warnings.length === 0 && !activeVoiceText) return;
-
-    const cs = layout.centerScale;
-    const cx = w * 0.5;
-    const pulseAlpha = 0.78 + 0.22 * Math.sin(timeSec * 13);
-
-    // Combine up to 2 primary Airbus warnings (or active GPWS voice callout if no visual warning)
-    const displayItems: AvionicsWarningItem[] =
-      warnings.length > 0
-        ? warnings.slice(0, 2)
-        : [{ text: activeVoiceText!.replace(/\.$/, ''), critical: true }];
-
-    ctx.save();
-    ctx.translate(cx, h - 24);
-    ctx.scale(cs, cs);
-
-    const pillGap = 14;
-    const boxH = 46;
-    ctx.font = 'bold 24px "Share Tech Mono", monospace';
-
-    const widths = displayItems.map((it) => {
-      const label = it.critical ? `▲ ${it.text} ▲` : `◆ ${it.text} ◆`;
-      return Math.max(196, ctx.measureText(label).width + 40);
-    });
-    const totalW = widths.reduce((a, b) => a + b, 0) + pillGap * (displayItems.length - 1);
-
-    let curX = -totalW * 0.5;
-    const boxY = -boxH - 6;
-
-    displayItems.forEach((it, idx) => {
-      const bw = widths[idx];
-      const col = it.critical ? COLORS.RED_KLAXON : COLORS.AMBER_CAUTION;
-      const textCol = it.critical ? '#FF6B54' : COLORS.AMBER_BRIGHT;
-      const label = it.critical ? `▲ ${it.text} ▲` : `◆ ${it.text} ◆`;
-
-      ctx.globalAlpha = it.critical ? pulseAlpha : 0.94;
-      ctx.fillStyle = it.critical ? 'rgba(28, 5, 4, 0.94)' : 'rgba(18, 12, 3, 0.94)';
-      ctx.fillRect(curX, boxY, bw, boxH);
-
-      ctx.strokeStyle = col;
-      ctx.lineWidth = 3.0;
-      ctx.strokeRect(curX, boxY, bw, boxH);
-
-      ctx.strokeStyle = it.critical ? 'rgba(255, 51, 24, 0.45)' : 'rgba(255, 140, 0, 0.4)';
-      ctx.lineWidth = 1.2;
-      ctx.strokeRect(curX + 4, boxY + 4, bw - 8, boxH - 8);
-
-      ctx.textAlign = 'center';
-      ctx.fillStyle = textCol;
-      ctx.fillText(label, curX + bw * 0.5, boxY + 30);
-
-      curX += bw + pillGap;
-    });
-
-    ctx.restore();
-  }
-
-  private drawStatusToast(
-    ctx: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    layout: HudLayoutMetrics,
-    text: string
-  ): void {
-    const cs = layout.centerScale;
-    ctx.save();
-    ctx.translate(w * 0.5, h - Math.round(88 * cs));
-    ctx.scale(cs, cs);
-
-    ctx.font = 'bold 17px "Share Tech Mono", monospace';
-    const tw = ctx.measureText(text).width + 40;
-    const bx = -tw * 0.5;
-    const by = -32;
-
-    ctx.fillStyle = 'rgba(8, 19, 12, 0.94)';
-    ctx.fillRect(bx, by, tw, 32);
-    ctx.strokeStyle = COLORS.AMBER_CAUTION;
-    ctx.lineWidth = 2.0;
-    ctx.strokeRect(bx, by, tw, 32);
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
-    ctx.textAlign = 'center';
-    ctx.fillText(text, 0, by + 22);
-    ctx.restore();
-  }
-
-  private addButton(
-    ctx: CanvasRenderingContext2D,
-    id: string,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    label: string,
-    selected: boolean,
-    hoveredId: string | null,
-    accent: string = COLORS.GREEN_PRIMARY
-  ): void {
-    this.buttons.push({ id, rect: { x, y, width: w, height: h }, label });
-    const active = selected || hoveredId === id;
-
-    ctx.fillStyle = active ? 'rgba(54, 201, 94, 0.20)' : 'rgba(8, 19, 12, 0.90)';
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = active ? accent : COLORS.GREEN_DIM;
-    ctx.lineWidth = active ? 2.6 : 1.8;
-    ctx.strokeRect(x, y, w, h);
-
-    const rendered = active ? `> ${label} <` : label;
-    let fontPx = 16.5;
-    ctx.font = `bold ${fontPx}px "Share Tech Mono", monospace`;
-    while (fontPx > 12.5 && ctx.measureText(rendered).width > w - 14) {
-      fontPx -= 0.5;
-      ctx.font = `bold ${fontPx}px "Share Tech Mono", monospace`;
-    }
-    ctx.fillStyle = active ? COLORS.GREEN_BRIGHT : accent;
-    ctx.textAlign = 'center';
-    ctx.fillText(rendered, x + w * 0.5, y + h * 0.5 + Math.round(fontPx * 0.34));
-  }
-
   // =========================================================================
-  // TERMINAL SCREENS: MENU, BRIEFING, TALLY, BREACH, CALLSIGN, LOGS
+  // DESKTOP TITLE MENU (NO DUPLICATED SEC-01..06 INNER BUTTONS, AMBER TITLE)
   // =========================================================================
 
   private formatMainMenuLeader(
     leader: CrewManifestEntry | null,
     status: 'LOADING' | 'LIVE' | 'OFFLINE'
   ): string {
-    if (status === 'LOADING') return 'AWAITING UPLINK...';
-    if (!leader) return status === 'OFFLINE' ? 'OFFLINE // UNCLAIMED' : 'UNCLAIMED';
+    if (status === 'LOADING') return 'SYNCING RELAY...';
+    if (!leader) return status === 'OFFLINE' ? 'LOCAL ARCHIVE // UNCLAIMED' : 'UNCLAIMED';
     return `${leader.callsign} — ${leader.score.toLocaleString()} PTS (${leader.highestSector})`;
   }
 
   private getTitleMenuBoxRect(w: number, h: number): ViewportRect {
-    const boxW = Math.min(768, Math.max(556, Math.floor(w * 0.485)));
-    const boxH = Math.min(652, Math.max(556, h - 94));
+    const boxW = Math.min(720, Math.max(520, Math.floor(w * 0.46)));
+    const boxH = Math.min(590, Math.max(500, h - TOP_CHROME_BAR_HEIGHT - CONTROLS_STRIP_HEIGHT - 44));
     const bx = Math.round((w - boxW) * 0.5);
-    const by = Math.round(Math.max(64, (h - boxH) * 0.5 + 8));
+    const by = Math.round(
+      Math.max(TOP_CHROME_BAR_HEIGHT + 10, (h - CONTROLS_STRIP_HEIGHT - boxH) * 0.5 + 14)
+    );
     return { x: bx, y: by, width: boxW, height: boxH };
   }
 
@@ -2183,317 +2128,250 @@ export class HudRenderer {
     const isEndless = state.selectedMenuMode === 'ENDLESS';
     const isRankedSelection = isRanked || isEndless;
 
-    ctx.fillStyle = 'rgba(6, 16, 10, 0.95)';
+    ctx.fillStyle = THEME.BG_PANEL;
     ctx.fillRect(bx, by, boxW, boxH);
-    this.drawCornerBrackets(
+    drawCornerBrackets(
       ctx,
       bx,
       by,
       boxW,
       boxH,
       20,
-      isRankedSelection ? COLORS.AMBER_CAUTION : COLORS.GREEN_PRIMARY,
-      isRankedSelection ? 2.8 : 2.4
+      isRankedSelection ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY,
+      2.4
     );
 
     drawRankedTitleRibbon(
       ctx,
       bx + 20,
-      by + 8,
+      by + 10,
       boxW - 40,
       24,
       isRanked
-        ? '★ RANKED CAMPAIGN ARMED — HIGH SCORE RECORDED (6 SECTORS · 3 SHUTTLES) ★'
+        ? `${SEMIOTIC_ICONS.STAR} RANKED CAMPAIGN ARMED — 6 SECTORS · 3 SHUTTLES · GLOBAL RECORD ${SEMIOTIC_ICONS.STAR}`
         : isEndless
-          ? '★ RANKED ENDLESS ARMED — HIGH SCORE RECORDED (GLOBAL DEEP-SURVEY) ★'
+          ? `${SEMIOTIC_ICONS.STAR} RANKED ENDLESS ARMED — PROCEDURAL DEEP-SURVEY ${SEMIOTIC_ICONS.STAR}`
           : `PRACTICE MODE — SEC-0${state.selectedStartSector} OF 06 (UNRANKED · NOT RECORDED)`,
       state.timeSec,
       isRankedSelection
     );
 
-    // Header Title turns RED whenever a Ranked high-score mode is armed!
+    // Header Title: Weyland-Yutani Amber Gold (THEME.ACCENT_AMBER) in Ranked Mode!
     ctx.textAlign = 'center';
-    ctx.font = 'bold 34px "Share Tech Mono", monospace';
-    ctx.fillStyle = isRankedSelection ? COLORS.RED_KLAXON : COLORS.GREEN_PRIMARY;
-    ctx.fillText('ORBITAL DESCENT TELEMETRY', w * 0.5, by + 62);
+    ctx.font = font('display', 32);
+    ctx.fillStyle = isRankedSelection ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY;
+    drawEllipsizedText(ctx, 'LV-426 LUNAR LANDER', w * 0.5, by + 64, boxW - 40);
 
-    // =====================================================================
-    // PROMINENT MU-TH-UR LIVE GLOBAL #01 REIGNING CHAMPIONS STRIP (#FFB000)
-    // =====================================================================
+    // Reigning Champions Strip
     const stripX = bx + 20;
     const stripW = boxW - 40;
-    const stripY = by + 70;
-    const stripH = 58;
+    const stripY = by + 76;
+    const stripH = 54;
 
-    ctx.fillStyle = 'rgba(22, 14, 3, 0.78)';
+    ctx.fillStyle = 'rgba(22, 14, 3, 0.80)';
     ctx.fillRect(stripX, stripY, stripW, stripH);
-    ctx.strokeStyle = '#FFB000';
-    ctx.lineWidth = 2.0;
+    ctx.strokeStyle = THEME.ACCENT_AMBER;
+    ctx.lineWidth = 1.6;
     ctx.strokeRect(stripX, stripY, stripW, stripH);
 
-    ctx.font = 'bold 14.5px "JetBrains Mono", monospace';
+    ctx.font = font('data', 13);
     ctx.textAlign = 'left';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.fillText('CAMPAIGN LEADER:', stripX + 14, stripY + 23);
-    ctx.fillText('ENDLESS LEADER:', stripX + 14, stripY + 46);
+    ctx.fillStyle = THEME.TEXT_PRIMARY;
+    ctx.fillText('CAMPAIGN #01:', stripX + 12, stripY + 21);
+    ctx.fillText('ENDLESS  #01:', stripX + 12, stripY + 42);
 
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+    drawEllipsizedText(
+      ctx,
       this.formatMainMenuLeader(state.campaignLeader, state.uplinkConnectionStatus),
-      stripX + 182,
-      stripY + 23
+      stripX + 136,
+      stripY + 21,
+      stripW - 148
     );
-    ctx.fillText(
+    drawEllipsizedText(
+      ctx,
       this.formatMainMenuLeader(state.endlessLeader, state.uplinkConnectionStatus),
-      stripX + 182,
-      stripY + 46
+      stripX + 136,
+      stripY + 42,
+      stripW - 148
     );
 
     const btnW = boxW - 40;
-    const btnX = w * 0.5 - btnW * 0.5;
-    let curY = stripY + stripH + 10;
+    const btnX = bx + 20;
+    let curY = stripY + stripH + 12;
 
-    // 1. Top Dedicated RANKED CAMPAIGN Button (turns all 6 maps orange & header red!)
-    const rankedHov = state.hoveredButtonId === 'menu-select-ranked';
-    this.buttons.push({
-      id: 'menu-select-ranked',
-      rect: { x: btnX, y: curY, width: btnW, height: 38 },
-      label: 'RANKED CAMPAIGN (ALL 6 SECTORS)',
-    });
-    ctx.fillStyle = isRanked
-      ? 'rgba(255, 108, 0, 0.28)'
-      : rankedHov
-        ? 'rgba(255, 140, 0, 0.16)'
-        : 'rgba(8, 19, 12, 0.90)';
-    ctx.fillRect(btnX, curY, btnW, 38);
-    ctx.strokeStyle = isRanked ? COLORS.AMBER_BRIGHT : rankedHov ? COLORS.AMBER_CAUTION : COLORS.GREEN_DIM;
-    ctx.lineWidth = isRanked ? 2.8 : 1.8;
-    ctx.strokeRect(btnX, curY, btnW, 38);
-    ctx.font = 'bold 16.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = isRanked ? COLORS.AMBER_BRIGHT : COLORS.AMBER_CAUTION;
-    ctx.textAlign = 'center';
-    ctx.fillText(
-      isRanked
-        ? '★ RANKED CAMPAIGN SELECTED (ALL 6 SECTORS // GLOBAL RANKED) ★'
-        : 'RANKED CAMPAIGN (ALL 6 SECTORS // GLOBAL RANKED)',
-      btnX + btnW * 0.5,
-      curY + 25
+    // 1. 1-Click RANKED CAMPAIGN Launch Button
+    drawChromeButton(
+      ctx,
+      { x: btnX, y: curY, width: btnW, height: 42 },
+      `${SEMIOTIC_ICONS.PLAY} RANKED CAMPAIGN — ALL 6 SECTORS (CLICK OR [ENTER])`,
+      {
+        id: 'menu-select-ranked',
+        accent: 'amber',
+        active: isRanked,
+        hovered: state.hoveredButtonId === 'menu-select-ranked',
+        fontPx: 15,
+      },
+      this.buttons as ChromeButtonHitbox[]
+    );
+    curY += 48;
+
+    // 2. PRACTICE MODE (Single Clean Row — NO duplicated 6 inner SEC-01..06 buttons! Flanking topo cards select/launch!)
+    drawChromeButton(
+      ctx,
+      { x: btnX, y: curY, width: btnW, height: 38 },
+      `PRACTICE SEC-0${state.selectedStartSector} — CLICK ANY FLANKING SECTOR MAP OR PRESS [←/→]`,
+      {
+        id: 'menu-select-practice',
+        accent: 'green',
+        active: isPractice,
+        hovered: state.hoveredButtonId === 'menu-select-practice',
+        fontPx: 13,
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
     curY += 44;
 
-    // 2. PRACTICE MODE Button + 6-Map Sub-Selector Strip (SEC-01 .. SEC-06, including Map 1!)
-    this.addButton(
-      ctx,
-      'menu-select-practice',
-      btnX,
-      curY,
-      btnW,
-      36,
-      isPractice
-        ? `PRACTICE MODE ACTIVE — SINGLE MAP: SEC-0${state.selectedStartSector} (UNRANKED)`
-        : 'PRACTICE MODE — SUB-SELECT ANY SINGLE SECTOR (01–06)',
-      isPractice,
-      state.hoveredButtonId,
-      COLORS.GREEN_BRIGHT
-    );
-    curY += 41;
-
-    const subGap = 6;
-    const subW = (btnW - subGap * 5) / 6;
-    for (let sNum = 1; sNum <= 6; sNum++) {
-      const sx = btnX + (sNum - 1) * (subW + subGap);
-      const subId = `menu-map-sec-${sNum}`;
-      const subSelected = isPractice && state.selectedStartSector === sNum;
-      const subHov = state.hoveredButtonId === subId;
-      this.buttons.push({
-        id: subId,
-        rect: { x: sx, y: curY, width: subW, height: 31 },
-        label: `SEC-0${sNum}`,
-      });
-
-      ctx.fillStyle = subSelected
-        ? 'rgba(59, 224, 104, 0.28)'
-        : subHov
-          ? 'rgba(59, 224, 104, 0.14)'
-          : 'rgba(6, 15, 9, 0.88)';
-      ctx.fillRect(sx, curY, subW, 31);
-      ctx.strokeStyle = subSelected
-        ? COLORS.GREEN_BRIGHT
-        : subHov
-          ? COLORS.GREEN_PRIMARY
-          : COLORS.GREEN_DIM;
-      ctx.lineWidth = subSelected ? 2.2 : 1.5;
-      ctx.strokeRect(sx, curY, subW, 31);
-
-      ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-      ctx.fillStyle = subSelected ? '#FFFFFF' : isPractice ? COLORS.GREEN_PRIMARY : COLORS.GREEN_MID;
-      ctx.textAlign = 'center';
-      ctx.fillText(`SEC-0${sNum}`, sx + subW * 0.5, curY + 21);
-    }
-    curY += 38;
-
-    // 3. ENDLESS DEEP-SURVEY + GLOBAL LEADERBOARDS + MOBILE PLAY Row
+    // 3. ENDLESS DEEP-SURVEY + GLOBAL LEADERBOARD + TOUCH DECK Row
     const rowGap = 8;
-    const endW = Math.floor(btnW * 0.44);
-    const logW = Math.floor((btnW - endW - rowGap * 2) * 0.5);
+    const endW = Math.floor(btnW * 0.45);
+    const logW = Math.floor((btnW - endW - rowGap * 2) * 0.54);
     const mobW = btnW - endW - logW - rowGap * 2;
-    this.addButton(
+
+    drawChromeButton(
       ctx,
-      'menu-select-endless',
-      btnX,
-      curY,
-      endW,
-      36,
-      isEndless ? '★ ENDLESS SURVEY (RANKED) ★' : '★ ENDLESS SURVEY (RANKED)',
-      isEndless,
-      state.hoveredButtonId,
-      '#FFB000'
+      { x: btnX, y: curY, width: endW, height: 38 },
+      `${SEMIOTIC_ICONS.STAR} ENDLESS SURVEY (RANKED)`,
+      {
+        id: 'menu-select-endless',
+        accent: 'amber',
+        active: isEndless,
+        hovered: state.hoveredButtonId === 'menu-select-endless',
+        fontPx: 13,
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
-    this.addButton(
+    drawChromeButton(
       ctx,
-      'menu-logs',
-      btnX + endW + rowGap,
-      curY,
-      logW,
-      36,
-      'LEADERBOARDS',
-      false,
-      state.hoveredButtonId,
-      '#FFB000'
+      { x: btnX + endW + rowGap, y: curY, width: logW, height: 38 },
+      `${SEMIOTIC_ICONS.STAR} LEADERBOARD`,
+      {
+        id: 'menu-logs',
+        accent: 'cyan',
+        hovered: state.hoveredButtonId === 'menu-logs',
+        fontPx: 13,
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
-    this.addButton(
+    drawChromeButton(
       ctx,
-      'menu-toggle-mobile',
-      btnX + endW + logW + rowGap * 2,
-      curY,
-      mobW,
-      36,
-      'MOBILE PLAY',
-      false,
-      state.hoveredButtonId,
-      COLORS.GREEN_BRIGHT
+      { x: btnX + endW + logW + rowGap * 2, y: curY, width: mobW, height: 38 },
+      'MOBILE MODE',
+      {
+        id: 'menu-toggle-mobile',
+        accent: 'muted',
+        hovered: state.hoveredButtonId === 'menu-toggle-mobile',
+        fontPx: 12,
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
-    curY += 43;
+    curY += 46;
 
-    // 4. Prominent Orange [ COMMIT ] Button at Bottom to Confirm Selection!
-    const commitHov = state.hoveredButtonId === 'menu-commit' || state.menuCursor === 3;
-    const commitLabel = isRanked
-      ? '[ COMMIT ] — LAUNCH RANKED 6-SECTOR CAMPAIGN'
-      : isPractice
-        ? `[ COMMIT ] — PRACTICE SEC-0${state.selectedStartSector} (RETURNS TO MENU)`
-        : '[ COMMIT ] — LAUNCH ENDLESS DEEP-SURVEY';
-    this.buttons.push({
-      id: 'menu-commit',
-      rect: { x: btnX, y: curY, width: btnW, height: 44 },
-      label: commitLabel,
-    });
-
-    ctx.fillStyle = commitHov ? COLORS.AMBER_BRIGHT : COLORS.AMBER_CAUTION;
-    ctx.fillRect(btnX, curY, btnW, 44);
-    ctx.strokeStyle = '#FFF3CC';
-    ctx.lineWidth = 2.6;
-    ctx.strokeRect(btnX, curY, btnW, 44);
-
-    let commitFont = 18;
-    ctx.font = `bold ${commitFont}px "Share Tech Mono", monospace`;
-    const fullCommit = `► ${commitLabel} ◄`;
-    while (commitFont > 13.5 && ctx.measureText(fullCommit).width > btnW - 18) {
-      commitFont -= 0.5;
-      ctx.font = `bold ${commitFont}px "Share Tech Mono", monospace`;
-    }
-    ctx.fillStyle = '#040905';
-    ctx.textAlign = 'center';
-    ctx.fillText(fullCommit, btnX + btnW * 0.5, curY + 28);
-    curY += 51;
-
-    // =====================================================================
-    // HIGH-LEGIBILITY FLIGHT DECK CONTROLS + SMART SAS EXPLANATION PANEL
-    // =====================================================================
+    // 4. Clean 2-Column Scannable Flight Deck Controls + SAS Note
     const legY = curY;
-    const legH = Math.max(150, boxH - (legY - by) - 12);
+    const legH = Math.max(150, boxH - (legY - by) - 14);
     const legX = bx + 20;
     const legW = boxW - 40;
 
-    ctx.fillStyle = 'rgba(3, 10, 6, 0.88)';
+    ctx.fillStyle = 'rgba(3, 10, 6, 0.90)';
     ctx.fillRect(legX, legY, legW, legH);
-    ctx.strokeStyle = COLORS.GREEN_PRIMARY;
-    ctx.lineWidth = 1.8;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.5;
     ctx.strokeRect(legX, legY, legW, legH);
 
-    ctx.font = 'bold 16px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
+    ctx.font = font('head', 14);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
     ctx.textAlign = 'left';
-    ctx.fillText('FLIGHT DECK CONTROLS // PRESS [TAB] ANYTIME FOR SYSTEM MENU', legX + 12, legY + 21);
+    drawEllipsizedText(
+      ctx,
+      'FLIGHT DECK CONTROLS // [H] QUICK-CARD · [ESC] SYSTEM MENU',
+      legX + 12,
+      legY + 21,
+      legW - 24
+    );
 
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.moveTo(legX + 12, legY + 28);
-    ctx.lineTo(legX + legW - 12, legY + 28);
+    ctx.moveTo(legX + 12, legY + 29);
+    ctx.lineTo(legX + legW - 12, legY + 29);
     ctx.stroke();
 
-    const ctrlFontPx = legW < 590 ? 13.5 : 15.5;
-    ctx.font = `bold ${ctrlFontPx}px "Share Tech Mono", monospace`;
-
     const leftControls: Array<[string, string]> = [
-      ['[W / UP]', 'THRUST (+SHIFT: OVR)'],
-      ['[A / D]', 'RCS ROLL THRUSTERS'],
-      ['[S / DN]', 'RETRO-BRAKE ASSIST'],
-      ['[SPACE]', '1X EMERGENCY PULSE'],
+      ['[W / ↑]', 'Main Thrust (+SHIFT OVR)'],
+      ['[A / D]', 'RCS Roll Thrusters'],
+      ['[S / ↓]', 'Retro-Brake Stabilizer'],
+      ['[SPACE]', '1X Pulse (0.6s Arm)'],
     ];
     const rightControls: Array<[string, string]> = [
-      ['[MOUSE]', 'AIM SPOTLIGHT & RADAR'],
-      ['[L-CLICK]', 'PING RADAR (3 CELLS)'],
-      ['[SCROLL]', 'CAMERA ZOOM (1.0X–3.5X)'],
-      ['[TAB]', '= MENU (CRT / PAUSE)'],
+      ['[LMB]', 'Ping Directional Radar'],
+      ['[SCROLL]', 'Manual Zoom (1X–3.5X)'],
+      ['[P] / [M]', 'Pause · Master Mute'],
+      ['[ESC]', 'System Menu / CRT / SAS'],
     ];
 
-    const sasStripH = 34;
-    const rowsAvailH = Math.max(84, legH - 36 - sasStripH - 10);
-    const lineStep = Math.min(31, Math.max(21, Math.floor(rowsAvailH / 4)));
-    const keyOffset = legW < 590 ? 78 : 90;
-    const rightColX = legX + Math.floor(legW * 0.53);
+    const sasStripH = 30;
+    const rowsAvailH = Math.max(84, legH - 38 - sasStripH - 10);
+    const lineStep = Math.min(28, Math.max(20, Math.floor(rowsAvailH / 4)));
+    const keyOffset = legW < 560 ? 74 : 84;
+    const rightColX = legX + Math.floor(legW * 0.52);
 
+    ctx.font = font('data', 13);
     leftControls.forEach(([key, desc], i) => {
       const ry = legY + 49 + i * lineStep;
-      ctx.fillStyle = '#FFB000';
+      ctx.fillStyle = THEME.ACCENT_AMBER_HI;
       ctx.fillText(key, legX + 12, ry);
-      ctx.fillStyle = '#44FF77';
-      ctx.fillText(desc, legX + 12 + keyOffset, ry);
+      ctx.fillStyle = THEME.TEXT_BRIGHT;
+      drawEllipsizedText(ctx, desc, legX + 12 + keyOffset, ry, rightColX - legX - keyOffset - 18);
     });
 
     rightControls.forEach(([key, desc], i) => {
       const ry = legY + 49 + i * lineStep;
-      ctx.fillStyle = '#FFB000';
+      ctx.fillStyle = THEME.ACCENT_AMBER_HI;
       ctx.fillText(key, rightColX, ry);
-      ctx.fillStyle = i === 3 ? '#FFD266' : '#44FF77';
-      ctx.fillText(desc, rightColX + keyOffset, ry);
+      ctx.fillStyle = THEME.TEXT_BRIGHT;
+      drawEllipsizedText(
+        ctx,
+        desc,
+        rightColX + keyOffset,
+        ry,
+        legX + legW - rightColX - keyOffset - 12
+      );
     });
 
-    // Smart SAS Mode Explanation Strip right inside the Flight Controls Box!
-    const sasY = legY + legH - sasStripH - 7;
+    // Accurate SAS Status Strip pointing to [ESC] System Menu
+    const sasY = legY + legH - sasStripH - 8;
     const sasOn = state.bezel.sasEnabled;
-    ctx.fillStyle = sasOn ? 'rgba(22, 62, 34, 0.85)' : 'rgba(26, 18, 5, 0.85)';
+    ctx.fillStyle = sasOn ? 'rgba(20, 56, 30, 0.85)' : 'rgba(26, 18, 5, 0.85)';
     ctx.fillRect(legX + 10, sasY, legW - 20, sasStripH);
-    ctx.strokeStyle = sasOn ? COLORS.GREEN_BRIGHT : COLORS.AMBER_CAUTION;
-    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = sasOn ? THEME.TEXT_PRIMARY : THEME.ACCENT_AMBER;
+    ctx.lineWidth = 1.4;
     ctx.strokeRect(legX + 10, sasY, legW - 20, sasStripH);
 
     const sasInfo = sasOn
-      ? 'SAS [CURRENTLY ON]: 50% GENTLE ROLL INPUTS — HALF [A/D] AUTHORITY • NO AUTO-LEVEL'
-      : 'SAS [OFF BY DEFAULT]: TOGGLE TOP-RIGHT FOR 50% GENTLE ROLL (LESS AUTHORITY • NO AUTO-LEVEL)';
-    let sasFont = 14;
-    ctx.font = `bold ${sasFont}px "Share Tech Mono", monospace`;
-    while (sasFont > 11.5 && ctx.measureText(sasInfo).width > legW - 34) {
-      sasFont -= 0.5;
-      ctx.font = `bold ${sasFont}px "Share Tech Mono", monospace`;
-    }
-    ctx.fillStyle = sasOn ? '#66FF92' : '#FFD066';
+      ? 'SAS [ON]: 50% GENTLE ROLL ASSIST · CONFIGURE IN [ESC] MENU'
+      : 'SAS [OFF]: 100% RAW RCS TORQUE · ENABLE 50% ASSIST IN [ESC] MENU';
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = sasOn ? THEME.TEXT_BRIGHT : THEME.ACCENT_AMBER_HI;
     ctx.textAlign = 'center';
-    ctx.fillText(sasInfo, legX + legW * 0.5, sasY + 22);
+    drawEllipsizedText(ctx, sasInfo, legX + legW * 0.5, sasY + 19, legW - 32);
 
     ctx.restore();
   }
+
+  // =========================================================================
+  // MISSION MODALS (ALL ISOLATED THROUGH drawModalFrame + SHARED CHROME!)
+  // =========================================================================
 
   private drawSectorBriefingOverlay(
     ctx: CanvasRenderingContext2D,
@@ -2501,59 +2379,60 @@ export class HudRenderer {
     h: number,
     state: HudRenderContext
   ): void {
-    ctx.save();
-    const boxW = Math.min(760, w - 64);
-    const boxH = 336;
-    const bx = (w - boxW) * 0.5;
-    const by = (h - boxH) * 0.5;
-
-    ctx.fillStyle = 'rgba(8, 19, 12, 0.94)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 18, COLORS.AMBER_CAUTION, 2.4);
-
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 21.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_CAUTION;
-    ctx.fillText(
-      `MU-TH-UR 6000 // ${state.sector.code}: ${state.sector.name}`,
-      bx + 24,
-      by + 36
+    const m = drawModalFrame(
+      ctx,
+      w,
+      h,
+      {
+        title: `${state.sector.code} // ${state.sector.name}`,
+        subtitle: state.sector.subtitle,
+        maxWidth: 680,
+        maxHeight: 330,
+        accentColor: THEME.ACCENT_AMBER,
+        rightBadge: { text: 'ORBITAL DROP', tone: 'amber' },
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
 
-    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_MID;
-    ctx.fillText(state.sector.subtitle, bx + 24, by + 58);
-
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    ctx.moveTo(bx + 24, by + 70);
-    ctx.lineTo(bx + boxW - 24, by + 70);
-    ctx.stroke();
-
-    ctx.font = 'bold 15.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
+    ctx.save();
+    ctx.font = font('prose', 14);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
+    ctx.textAlign = 'left';
     let rem = state.briefingProgressChars;
-    state.sector.briefingLines.forEach((line, i) => {
-      if (rem <= 0) return;
+    let cy = m.contentY + 10;
+    for (const line of state.sector.briefingLines) {
+      if (rem <= 0 || cy > m.footerY - 16) break;
       const shown = line.slice(0, rem);
       rem -= line.length;
-      ctx.fillText(`> ${shown}`, bx + 24, by + 104 + i * 32);
-    });
-
-    this.addButton(
-      ctx,
-      'briefing-launch',
-      w * 0.5 - 195,
-      by + boxH - 58,
-      390,
-      42,
-      '[SPACE / ENTER] ENGAGE LATCH & DROP',
-      true,
-      state.hoveredButtonId,
-      COLORS.AMBER_CAUTION
-    );
+      const wrapped = wrapTextLines(ctx, `> ${shown}`, m.contentW - 8, 2);
+      for (const wl of wrapped) {
+        if (cy > m.footerY - 16) break;
+        ctx.fillText(wl, m.contentX, cy);
+        cy += 22;
+      }
+      cy += 6;
+    }
     ctx.restore();
+
+    const btnW = Math.min(390, m.contentW);
+    drawChromeButton(
+      ctx,
+      {
+        x: m.contentX + Math.round((m.contentW - btnW) * 0.5),
+        y: m.footerY,
+        width: btnW,
+        height: 40,
+      },
+      `${SEMIOTIC_ICONS.PLAY} ENGAGE LATCH & DROP [W / SPACE / ENTER]`,
+      {
+        id: 'briefing-launch',
+        accent: 'amber',
+        active: true,
+        hovered: state.hoveredButtonId === 'briefing-launch',
+        fontPx: 14,
+      },
+      this.buttons as ChromeButtonHitbox[]
+    );
   }
 
   private drawSectorTallyOverlay(
@@ -2563,41 +2442,35 @@ export class HudRenderer {
     state: HudRenderContext,
     bd: SectorScoreBreakdown
   ): void {
-    ctx.save();
-    const layout = HudRenderer.computeLayoutMetrics(w, h);
-    const minModalTop = layout.safeTopPx + 6;
-    const boxW = Math.min(690, w - 64);
-    const boxH = Math.min(404, Math.max(344, h - minModalTop - 16));
-    const bx = (w - boxW) * 0.5;
-    const by = Math.max(minModalTop, minModalTop + (h - minModalTop - boxH) * 0.5 - 4);
-
-    ctx.fillStyle = 'rgba(8, 19, 12, 0.95)';
-    ctx.fillRect(bx, by, boxW, boxH);
     const gradeColor =
       bd.grade === 'SOFT_KISS'
-        ? COLORS.GREEN_BRIGHT
+        ? THEME.TEXT_PRIMARY
         : bd.grade === 'HARD_SURVIVAL'
-          ? COLORS.AMBER_CAUTION
-          : COLORS.GREEN_PRIMARY;
-    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 18, gradeColor, 2.4);
-
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 21px "Share Tech Mono", monospace';
-    ctx.fillStyle = gradeColor;
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_PRIMARY;
     const gradeBanner =
       bd.grade === 'SOFT_KISS'
         ? 'TOUCHDOWN CONFIRMED // PRECISION KISS LANDING'
         : bd.grade === 'HARD_SURVIVAL'
           ? 'SURVIVAL TOUCHDOWN // HULL & GEAR DAMAGED'
           : 'TOUCHDOWN CONFIRMED // EXTRACTION NOMINAL';
-    ctx.fillText(gradeBanner, bx + 24, by + 36);
 
-    ctx.font = 'bold 14.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_MID;
-    ctx.fillText(
-      `V/S: ${bd.touchdownVs.toFixed(2)} M/S  |  H/S: ${bd.touchdownHs.toFixed(2)} M/S  |  ATT: ${bd.touchdownDeg.toFixed(1)}°  |  RATING: ${bd.accuracyRating} (${bd.accuracyPercent}%)`,
-      bx + 24,
-      by + 59
+    const m = drawModalFrame(
+      ctx,
+      w,
+      h,
+      {
+        title: gradeBanner,
+        subtitle: `V/S ${bd.touchdownVs.toFixed(2)} M/S · H/S ${bd.touchdownHs.toFixed(2)} M/S · ATT ${bd.touchdownDeg.toFixed(1)}° · RATING ${bd.accuracyRating} (${bd.accuracyPercent}%)`,
+        maxWidth: 680,
+        maxHeight: 400,
+        accentColor: gradeColor,
+        rightBadge: {
+          text: `${bd.accuracyRating} (${bd.accuracyPercent}%)`,
+          tone: bd.grade === 'HARD_SURVIVAL' ? 'amber' : 'live',
+        },
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
 
     const anim = Math.max(0, Math.min(1, state.tallyAnimProgress));
@@ -2629,708 +2502,382 @@ export class HudRenderer {
       ],
     ];
 
+    ctx.save();
     rows.forEach(([title, formula, pts], i) => {
-      const ry = by + 94 + i * 31;
-      ctx.font = 'bold 15px "JetBrains Mono", monospace';
+      const ry = m.contentY + 14 + i * 28;
+      ctx.font = font('data', 13);
       ctx.textAlign = 'left';
-      ctx.fillStyle = COLORS.GREEN_PRIMARY;
-      ctx.fillText(title, bx + 24, ry);
+      ctx.fillStyle = THEME.TEXT_PRIMARY;
+      ctx.fillText(title, m.contentX, ry);
 
       ctx.textAlign = 'center';
-      ctx.fillStyle = COLORS.GREEN_MID;
-      ctx.fillText(formula, bx + boxW * 0.63, ry);
+      ctx.fillStyle = THEME.TEXT_SECONDARY;
+      ctx.fillText(formula, m.contentX + m.contentW * 0.64, ry);
 
       ctx.textAlign = 'right';
-      ctx.fillStyle = COLORS.AMBER_CAUTION;
-      ctx.fillText(pts, bx + boxW - 24, ry);
+      ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+      ctx.fillText(pts, m.contentX + m.contentW, ry);
     });
 
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.8;
+    const sumLineY = m.contentY + 162;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.4;
     ctx.beginPath();
-    ctx.moveTo(bx + 24, by + 254);
-    ctx.lineTo(bx + boxW - 24, by + 254);
+    ctx.moveTo(m.contentX, sumLineY);
+    ctx.lineTo(m.contentX + m.contentW, sumLineY);
     ctx.stroke();
 
-    ctx.font = 'bold 21px "Share Tech Mono", monospace';
+    ctx.font = font('display', 19);
     ctx.textAlign = 'left';
-    ctx.fillStyle = COLORS.GREEN_BRIGHT;
-    ctx.fillText('SECTOR TELEMETRY SCORE', bx + 24, by + 284);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
+    ctx.fillText('SECTOR TELEMETRY SCORE', m.contentX, sumLineY + 28);
 
     ctx.textAlign = 'right';
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
-    ctx.fillText(`+${Math.round(bd.sectorTotal * anim).toLocaleString()} PTS`, bx + boxW - 24, by + 284);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+    ctx.fillText(
+      `+${Math.round(bd.sectorTotal * anim).toLocaleString()} PTS`,
+      m.contentX + m.contentW,
+      sumLineY + 28
+    );
 
-    ctx.font = 'bold 15.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
+    ctx.font = font('data', 13);
+    ctx.fillStyle = THEME.TEXT_SECONDARY;
     ctx.fillText(
       state.isPracticeRun
-        ? 'PRACTICE TARGET EXTRACTED // RETURNING TO MAIN MENU'
+        ? 'PRACTICE TARGET EXTRACTED — RETRY SECTOR OR RETURN TO MENU'
         : `CUMULATIVE MISSION TOTAL: ${Math.round(state.missionScore).toLocaleString()} PTS`,
-      bx + boxW - 24,
-      by + 312
-    );
-
-    const isFinalCampaignSector =
-      !state.sector.endlessMode && state.sector.index >= 6;
-    this.addButton(
-      ctx,
-      'tally-next',
-      w * 0.5 - 210,
-      by + boxH - 56,
-      420,
-      42,
-      state.isPracticeRun
-        ? '[SPACE / ENTER] PRACTICE COMPLETE — MAIN MENU'
-        : isFinalCampaignSector
-          ? '[SPACE / ENTER] COMPLETE CAMPAIGN LOG'
-          : '[SPACE / ENTER] PROCEED TO NEXT SECTOR',
-      true,
-      state.hoveredButtonId,
-      state.isPracticeRun ? COLORS.AMBER_BRIGHT : COLORS.GREEN_PRIMARY
+      m.contentX + m.contentW,
+      sumLineY + 54
     );
     ctx.restore();
+
+    if (state.isPracticeRun) {
+      const gap = 10;
+      const halfW = Math.floor((m.contentW - gap) * 0.5);
+      drawChromeButton(
+        ctx,
+        { x: m.contentX, y: m.footerY, width: halfW, height: 40 },
+        `${SEMIOTIC_ICONS.REPLAY} RETRY SECTOR [R]`,
+        {
+          id: 'tally-retry',
+          accent: 'amber',
+          active: true,
+          hovered: state.hoveredButtonId === 'tally-retry',
+          fontPx: 14,
+        },
+        this.buttons as ChromeButtonHitbox[]
+      );
+      drawChromeButton(
+        ctx,
+        { x: m.contentX + halfW + gap, y: m.footerY, width: m.contentW - halfW - gap, height: 40 },
+        '[ENTER] MAIN MENU',
+        {
+          id: 'tally-next',
+          accent: 'green',
+          hovered: state.hoveredButtonId === 'tally-next',
+          fontPx: 14,
+        },
+        this.buttons as ChromeButtonHitbox[]
+      );
+    } else {
+      const isFinalCampaignSector = !state.sector.endlessMode && state.sector.index >= 6;
+      const btnW = Math.min(420, m.contentW);
+      drawChromeButton(
+        ctx,
+        {
+          x: m.contentX + Math.round((m.contentW - btnW) * 0.5),
+          y: m.footerY,
+          width: btnW,
+          height: 40,
+        },
+        isFinalCampaignSector
+          ? `${SEMIOTIC_ICONS.STAR} COMPLETE CAMPAIGN DEBRIEF [ENTER]`
+          : `${SEMIOTIC_ICONS.PLAY} PROCEED TO NEXT SECTOR [ENTER]`,
+        {
+          id: 'tally-next',
+          accent: 'green',
+          active: true,
+          hovered: state.hoveredButtonId === 'tally-next',
+          fontPx: 14,
+        },
+        this.buttons as ChromeButtonHitbox[]
+      );
+    }
   }
 
+  /**
+   * Mid-Run Hull Breach Overlay (ONLY shown while `lives > 0`!).
+   * When `lives <= 0`, game transitions directly into unified `GameOverDebriefModal`!
+   */
   private drawHullBreachOverlay(
     ctx: CanvasRenderingContext2D,
     w: number,
     h: number,
     state: HudRenderContext
   ): void {
-    ctx.save();
-    const layout = HudRenderer.computeLayoutMetrics(w, h);
-    const minModalTop = layout.safeTopPx + 8;
-    const boxW = Math.min(690, w - 56);
-    const boxH = 272;
-    const bx = (w - boxW) * 0.5;
-    const by = Math.max(minModalTop, minModalTop + (h - minModalTop - boxH) * 0.5 - 4);
-    const isGameOver = state.lives <= 0;
-
-    ctx.fillStyle = 'rgba(14, 7, 7, 0.94)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 18, COLORS.RED_KLAXON, 2.6);
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 24px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.RED_KLAXON;
-    ctx.fillText(
-      isGameOver
-        ? 'GAME OVER // ALL 3 DROP-SHUTTLES LOST'
-        : `HULL BREACH // SHUTTLE LOST — ${state.lives} REMAINING`,
-      w * 0.5,
-      by + 40
+    const m = drawModalFrame(
+      ctx,
+      w,
+      h,
+      {
+        title: `HULL BREACH // ${state.lives} SHUTTLE${state.lives === 1 ? '' : 'S'} REMAINING`,
+        subtitle: state.lastFailure?.reason ?? 'CATASTROPHIC STRUCTURAL IMPACT',
+        maxWidth: 640,
+        maxHeight: 260,
+        accentColor: THEME.ALERT_RED_STROKE,
+        rightBadge: { text: `${state.lives}/${state.maxLives} LEFT`, tone: 'red' },
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
 
-    ctx.font = 'bold 15.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_CAUTION;
-    ctx.fillText(state.lastFailure?.reason ?? 'CATASTROPHIC STRUCTURAL IMPACT', w * 0.5, by + 74);
-
+    ctx.save();
+    ctx.textAlign = 'center';
     if (state.lastFailure) {
-      ctx.fillStyle = COLORS.GREEN_PRIMARY;
+      ctx.font = font('data', 14);
+      ctx.fillStyle = THEME.TEXT_BRIGHT;
       ctx.fillText(
-        `IMPACT — V/S: ${state.lastFailure.impactVs.toFixed(1)} M/S | H/S: ${state.lastFailure.impactHs.toFixed(1)} M/S | ATT: ${state.lastFailure.impactDeg.toFixed(1)}°`,
-        w * 0.5,
-        by + 104
+        `IMPACT — V/S: ${state.lastFailure.impactVs.toFixed(1)} M/S  |  H/S: ${state.lastFailure.impactHs.toFixed(1)} M/S  |  ATT: ${state.lastFailure.impactDeg.toFixed(1)}°`,
+        m.contentX + m.contentW * 0.5,
+        m.contentY + 24
       );
     }
 
-    ctx.font = 'bold 14.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = isGameOver ? '#FFB000' : COLORS.GREEN_MID;
+    ctx.font = font('data', 13);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
     ctx.fillText(
-      isGameOver
-        ? state.isPracticeRun
-          ? `PRACTICE RUN ENDED ON ${state.sector.code} // RETURNING TO MAIN MENU`
-          : `FINAL RUN SCORE: ${Math.round(state.missionScore).toLocaleString()} PTS // HIGHEST: ${state.highestSectorCode} // ACC: ${state.avgAccuracyRating} (${state.avgAccuracyPercent}%)`
-        : `RUN SCORE PRESERVED: ${Math.round(state.missionScore).toLocaleString()} PTS // DROP STREAK RESET TO 1X`,
-      w * 0.5,
-      by + 136
+      `RUN SCORE PRESERVED: ${Math.round(state.missionScore).toLocaleString()} PTS  ·  DROP STREAK RESET TO 1X`,
+      m.contentX + m.contentW * 0.5,
+      m.contentY + 56
     );
-
-    if (isGameOver) {
-      const canUplink = state.missionScore > 0 && !state.isPracticeRun;
-      this.addButton(
-        ctx,
-        'breach-end',
-        w * 0.5 - 235,
-        by + boxH - 64,
-        470,
-        44,
-        canUplink
-          ? '[SPACE / ENTER] TRANSMIT SCORE TO GLOBAL MANIFEST'
-          : '[SPACE / ENTER] RETURN TO MAIN MENU',
-        true,
-        state.hoveredButtonId,
-        canUplink ? '#FFB000' : COLORS.GREEN_PRIMARY
-      );
-    } else {
-      this.addButton(
-        ctx,
-        'breach-retry',
-        bx + 24,
-        by + boxH - 64,
-        310,
-        42,
-        `[SPACE / R] REDEPLOY (${state.lives} LEFT)`,
-        true,
-        state.hoveredButtonId,
-        COLORS.AMBER_CAUTION
-      );
-      this.addButton(
-        ctx,
-        'breach-end',
-        bx + boxW - 308,
-        by + boxH - 64,
-        284,
-        42,
-        state.isPracticeRun ? '[Q] RETURN TO MENU' : '[Q] END RUN & UPLINK',
-        false,
-        state.hoveredButtonId,
-        COLORS.GREEN_PRIMARY
-      );
-    }
     ctx.restore();
-  }
 
-  private drawPauseOverlay(
-    ctx: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    state: HudRenderContext
-  ): void {
-    ctx.save();
-    const boxW = 520;
-    const boxH = 388;
-    const bx = (w - boxW) * 0.5;
-    const by = (h - boxH) * 0.5;
-
-    ctx.fillStyle = 'rgba(8, 19, 12, 0.95)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 16, COLORS.GREEN_PRIMARY, 2.2);
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 21.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_CAUTION;
-    ctx.fillText('MU-TH-UR 6000 // COMMAND INTERRUPT', w * 0.5, by + 38);
-
-    this.addButton(
+    const gap = 12;
+    const leftW = Math.floor(m.contentW * 0.55);
+    const rightW = m.contentW - leftW - gap;
+    drawChromeButton(
       ctx,
-      'pause-resume',
-      bx + 36,
-      by + 64,
-      448,
-      42,
-      '[ESC] RESUME DESCENT',
-      state.menuCursor === 0,
-      state.hoveredButtonId
+      { x: m.contentX, y: m.footerY, width: leftW, height: 40 },
+      `${SEMIOTIC_ICONS.PLAY} REDEPLOY SHUTTLE (${state.lives} LEFT) [SPACE / R]`,
+      {
+        id: 'breach-retry',
+        accent: 'amber',
+        active: true,
+        hovered: state.hoveredButtonId === 'breach-retry',
+        fontPx: 13,
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
-    this.addButton(
+    drawChromeButton(
       ctx,
-      'pause-osd',
-      bx + 36,
-      by + 116,
-      448,
-      42,
-      '[TAB] TV SCREEN & AVIONICS OSD',
-      state.menuCursor === 1,
-      state.hoveredButtonId,
-      COLORS.AMBER_BRIGHT
+      { x: m.contentX + leftW + gap, y: m.footerY, width: rightW, height: 40 },
+      state.isPracticeRun ? '[Q] END PRACTICE' : '[Q] END RUN & DEBRIEF',
+      {
+        id: 'breach-end',
+        accent: 'muted',
+        hovered: state.hoveredButtonId === 'breach-end',
+        fontPx: 13,
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
-    this.addButton(
-      ctx,
-      'pause-retry',
-      bx + 36,
-      by + 168,
-      448,
-      42,
-      state.lives > 1
-        ? '[R] JETTISON & REDEPLOY (-1 SHUTTLE)'
-        : '[R] JETTISON LOCKED (FINAL SHUTTLE)',
-      state.menuCursor === 2,
-      state.hoveredButtonId,
-      state.lives > 1 ? COLORS.AMBER_CAUTION : COLORS.RED_DIM
-    );
-    this.addButton(
-      ctx,
-      'pause-abort',
-      bx + 36,
-      by + 220,
-      448,
-      42,
-      state.isPracticeRun ? '[Q] END PRACTICE & RETURN TO MENU' : '[Q] END RUN & TRANSMIT SCORE',
-      state.menuCursor === 3,
-      state.hoveredButtonId,
-      COLORS.RED_KLAXON
-    );
-    this.addButton(
-      ctx,
-      'exit-muthur-os',
-      bx + 36,
-      by + 276,
-      448,
-      44,
-      '[EXIT TO MU-TH-UR OS]',
-      state.menuCursor === 4,
-      state.hoveredButtonId,
-      '#FFB000'
-    );
-
-    ctx.restore();
   }
 
   /**
-   * IN-GAME ON-SCREEN "TV SCREEN & AVIONICS ADJUSTMENTS" OSD MODAL
-   *Rendered directly inside the CRT shader pipeline so every switch, raster bar,
-   *and phosphor label receives authentic scanlines, grille, trails, and glass curvature.
+   * Unified Post-Run Debrief + Inline Opt-In Callsign Modal (shared `PostRunFlow`).
+   * Merges Game Over (`lives <= 0`), Campaign Complete, and Callsign Entry into ONE screen!
    */
-  private drawTvOsdModal(
+  private drawUnifiedDebriefOverlay(
     ctx: CanvasRenderingContext2D,
     w: number,
     h: number,
     state: HudRenderContext
   ): void {
-    ctx.save();
-    const inRun =
-      state.phase === 'FLIGHT' ||
-      state.phase === 'PAUSED' ||
-      state.phase === 'SECTOR_BRIEFING';
-    const extraRunH = inRun ? 58 : 0;
-
-    const boxW = Math.min(700, w - 48);
-    const boxH = Math.min(366 + extraRunH, h - 40);
-    const bx = (w - boxW) * 0.5;
-    const by = (h - boxH) * 0.5;
-
-    ctx.fillStyle = 'rgba(4, 11, 7, 0.97)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 18, COLORS.AMBER_CAUTION, 2.6);
-
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 21.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
-    ctx.fillText('MU-TH-UR 6000 // SYSTEM & COMMAND MENU [TAB]', bx + 22, by + 34);
-
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    ctx.moveTo(bx + 22, by + 42);
-    ctx.lineTo(bx + boxW - 22, by + 42);
-    ctx.stroke();
-
-    let contentTopY = by + 54;
-
-    // Mission Command Actions when [TAB] = MENU is opened mid-flight!
-    if (inRun) {
-      const cmdGap = 10;
-      const cmdW = (boxW - 44 - cmdGap * 2) / 3;
-      this.addButton(
-        ctx,
-        'osd-resume',
-        bx + 22,
-        contentTopY,
-        cmdW,
-        36,
-        '[TAB] RESUME FLIGHT',
-        true,
-        state.hoveredButtonId,
-        COLORS.GREEN_BRIGHT
-      );
-      this.addButton(
-        ctx,
-        'osd-retry',
-        bx + 22 + cmdW + cmdGap,
-        contentTopY,
-        cmdW,
-        36,
-        state.lives > 1 ? '[R] REDEPLOY (-1)' : 'JETTISON LOCKED',
-        false,
-        state.hoveredButtonId,
-        state.lives > 1 ? COLORS.AMBER_CAUTION : COLORS.RED_DIM
-      );
-      this.addButton(
-        ctx,
-        'osd-abort',
-        bx + 22 + (cmdW + cmdGap) * 2,
-        contentTopY,
-        cmdW,
-        36,
-        '[Q] END RUN / MENU',
-        false,
-        state.hoveredButtonId,
-        COLORS.RED_KLAXON
-      );
-
-      contentTopY += 54;
-    }
-
-    // Avionics & Audio Bus Hardware-Style On-Screen Toggles
-    const rowStartY = contentTopY + 4;
-    const rowStep = 50;
-    const switches = [
-      {
-        id: 'osd-sas-toggle',
-        name: 'SAS 50% GENTLE ROLL (NO AUTO-LEVEL)',
-        status: state.bezel.sasEnabled ? '● ON [50% FORCE]' : '○ OFF [100% FORCE]',
-        active: state.bezel.sasEnabled,
-        accent: state.bezel.sasEnabled ? COLORS.GREEN_BRIGHT : COLORS.AMBER_CAUTION,
-      },
-      {
-        id: 'osd-zoom-toggle',
-        name: 'AUTO-ZOOM APPROACH (≤95M)',
-        status: state.bezel.autoZoomEnabled ? '● ENGAGED [AUTO]' : '○ MANUAL SCROLL',
-        active: state.bezel.autoZoomEnabled,
-        accent: state.bezel.autoZoomEnabled ? COLORS.GREEN_BRIGHT : COLORS.AMBER_CAUTION,
-      },
-      {
-        id: 'osd-mute-toggle',
-        name: 'INTERCOM & AUDIO BUS',
-        status: state.bezel.audioMuted ? '▲ BUS MUTED [OFF]' : '● BUS ACTIVE [ON]',
-        active: !state.bezel.audioMuted,
-        accent: state.bezel.audioMuted ? COLORS.RED_KLAXON : COLORS.GREEN_BRIGHT,
-      },
-      {
-        id: 'hud-fullscreen-toggle',
-        name: 'FULLSCREEN DISPLAY MODE',
-        status: state.isFullscreen ? '● FULLSCREEN [ON]' : '○ WINDOWED [OFF]',
-        active: state.isFullscreen,
-        accent: state.isFullscreen ? COLORS.GREEN_BRIGHT : COLORS.AMBER_BRIGHT,
-      },
-      {
-        id: 'osd-open-logs',
-        name: 'MU-TH-UR CREW MANIFEST',
-        status: 'VIEW GLOBAL LEADERBOARD',
-        active: false,
-        accent: COLORS.GREEN_PRIMARY,
-      },
-    ];
-
-    switches.forEach((sw, idx) => {
-      const sy = rowStartY + idx * rowStep;
-      ctx.fillStyle = 'rgba(8, 22, 13, 0.72)';
-      ctx.fillRect(bx + 22, sy, boxW - 44, 42);
-      ctx.strokeStyle = COLORS.GREEN_DIM;
-      ctx.lineWidth = 1.4;
-      ctx.strokeRect(bx + 22, sy, boxW - 44, 42);
-
-      ctx.textAlign = 'left';
-      ctx.font = 'bold 16px "Share Tech Mono", monospace';
-      ctx.fillStyle = COLORS.GREEN_PRIMARY;
-      ctx.fillText(sw.name, bx + 34, sy + 27);
-
-      this.addButton(
-        ctx,
-        sw.id,
-        bx + boxW - 268,
-        sy + 4,
-        234,
-        34,
-        sw.status,
-        sw.active,
-        state.hoveredButtonId,
-        sw.accent
-      );
-    });
-
-    const footGap = 12;
-    const footBtnW = Math.floor((boxW - 44 - footGap) * 0.5);
-    this.addButton(
-      ctx,
-      'osd-close',
-      bx + 22,
-      by + boxH - 48,
-      footBtnW,
-      38,
-      '[TAB / ESC] CLOSE MENU',
-      true,
-      state.hoveredButtonId,
-      COLORS.GREEN_BRIGHT
-    );
-    this.addButton(
-      ctx,
-      'exit-muthur-os',
-      bx + 22 + footBtnW + footGap,
-      by + boxH - 48,
-      footBtnW,
-      38,
-      '[EXIT TO MU-TH-UR OS]',
-      false,
-      state.hoveredButtonId,
-      '#FFB000'
-    );
-
-    ctx.restore();
-  }
-
-  private drawCampaignCompleteOverlay(
-    ctx: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    state: HudRenderContext
-  ): void {
-    ctx.save();
-    const boxW = Math.min(690, w - 56);
-    const boxH = 300;
-    const bx = (w - boxW) * 0.5;
-    const by = (h - boxH) * 0.5;
-
-    ctx.fillStyle = 'rgba(8, 19, 12, 0.96)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 18, COLORS.GREEN_BRIGHT, 2.4);
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 24px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_BRIGHT;
-    ctx.fillText('CAMPAIGN COMPLETE // ALL 6 SECTORS EXTRACTED', w * 0.5, by + 44);
-
-    ctx.font = 'bold 17px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(
-      `FINAL TELEMETRY SCORE: ${Math.round(state.missionScore).toLocaleString()} PTS // AVG ACC: ${state.avgAccuracyRating} (${state.avgAccuracyPercent}%)`,
-      w * 0.5,
-      by + 86
-    );
-
-    ctx.font = 'bold 14.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.fillText(
-      state.isPracticeRun
-        ? 'UNRANKED PRACTICE COMPLETION // RETURNING TO MAIN MENU'
-        : 'USCSS NOSTROMO ORBITAL DOCKING COMPLETE // READY FOR GLOBAL MANIFEST UPLINK',
-      w * 0.5,
-      by + 122
-    );
-
-    this.addButton(
-      ctx,
-      'complete-manifest',
-      bx + 28,
-      by + boxH - 68,
-      316,
-      42,
-      state.isPracticeRun ? '[ENTER] RETURN TO MAIN MENU' : '[ENTER] UPLINK GLOBAL SCORE',
-      true,
-      state.hoveredButtonId,
-      '#FFB000'
-    );
-    this.addButton(
-      ctx,
-      'complete-endless',
-      bx + boxW - 300,
-      by + boxH - 68,
-      272,
-      42,
-      'NEW ENDLESS RUN',
-      false,
-      state.hoveredButtonId,
-      COLORS.GREEN_PRIMARY
-    );
-    ctx.restore();
-  }
-
-  private drawCallsignOverlay(
-    ctx: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    state: HudRenderContext
-  ): void {
-    ctx.save();
-    const boxW = Math.min(680, w - 56);
-    const boxH = 318;
-    const bx = (w - boxW) * 0.5;
-    const by = (h - boxH) * 0.5;
-    const modeLabel = state.endlessMode ? 'ENDLESS' : 'CAMPAIGN';
+    const isVictory = state.debriefOutcome === 'VICTORY';
+    const isAbort = state.debriefOutcome === 'ABORT';
+    const canSubmit = !state.isPracticeRun && state.missionScore > 0;
     const isDone =
       state.uplinkSubmitState === 'CONFIRMED' || state.uplinkSubmitState === 'OFFLINE_SAVED';
     const isSending = state.uplinkSubmitState === 'TRANSMITTING';
 
-    ctx.fillStyle = 'rgba(6, 15, 9, 0.97)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 18, '#FFB000', 2.6);
+    const title = isVictory
+      ? 'CAMPAIGN COMPLETE // ALL 6 SECTORS EXTRACTED'
+      : isAbort
+        ? 'MISSION ABORTED // FINAL TELEMETRY DEBRIEF'
+        : 'GAME OVER // ALL 3 DROP-SHUTTLES LOST';
 
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 22px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(`MU-TH-UR 6000 // ${modeLabel} GLOBAL LEADERBOARD UPLINK`, w * 0.5, by + 38);
+    const subtitle = isVictory
+      ? 'USCSS Nostromo orbital docking complete — telemetry ready for Leaderboard uplink.'
+      : state.lastFailure
+        ? `${state.lastFailure.reason} (V/S ${state.lastFailure.impactVs.toFixed(1)} · H/S ${state.lastFailure.impactHs.toFixed(1)} · ATT ${state.lastFailure.impactDeg.toFixed(0)}°)`
+        : 'Orbital descent telemetry finalized.';
 
-    ctx.font = 'bold 15px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.fillText(
-      `SCORE: ${Math.round(state.missionScore).toLocaleString()} PTS  |  SECTOR: ${state.highestSectorCode}  |  ACCURACY: ${state.avgAccuracyRating} (${state.avgAccuracyPercent}%)`,
-      w * 0.5,
-      by + 70
+    const stats: DebriefStatCard[] = [
+      {
+        label: 'FINAL SCORE',
+        value: `${Math.round(state.missionScore).toLocaleString()}`,
+        accent: 'amber',
+      },
+      {
+        label: 'HIGHEST SECTOR',
+        value: state.highestSectorCode,
+        accent: 'green',
+      },
+      {
+        label: 'ACCURACY',
+        value: `${state.avgAccuracyRating} (${state.avgAccuracyPercent}%)`,
+        accent: 'cyan',
+      },
+      {
+        label: 'SORTIE MODE',
+        value: state.isPracticeRun ? 'PRACTICE' : state.endlessMode ? 'ENDLESS' : 'CAMPAIGN',
+        accent: state.isPracticeRun ? 'green' : 'amber',
+      },
+    ];
+
+    const statusBannerTone: 'green' | 'amber' | 'red' = isDone
+      ? 'green'
+      : isSending
+        ? 'amber'
+        : state.uplinkConfirmText
+          ? 'red'
+          : 'amber';
+
+    const statusBanner = canSubmit
+      ? state.uplinkConfirmText
+      : state.isPracticeRun
+        ? 'Practice sortie complete. Launch Ranked Campaign or Endless Survey to post Leaderboard records.'
+        : 'Score 0 PTS — safely extract at least 1 sector to submit a Ranked Leaderboard record.';
+
+    drawGameOverDebriefModal(
+      ctx,
+      w,
+      h,
+      {
+        title,
+        subtitle,
+        outcomeTone: isVictory ? 'green' : isAbort ? 'amber' : 'red',
+        timeSec: state.timeSec,
+        keylockRemainingSec: state.debriefKeylockSec,
+        stats,
+        isRanked: canSubmit,
+        score: Math.round(state.missionScore),
+        callsignDraft: state.callsignDraft,
+        callsignEditing: state.callsignEditing,
+        scoreSubmitted: isDone,
+        submittingScore: isSending,
+        statusBanner,
+        statusBannerTone,
+        hoveredButtonId: state.hoveredButtonId,
+        playAgainLabel: state.isPracticeRun
+          ? `${SEMIOTIC_ICONS.REPLAY} RETRY SECTOR [R]`
+          : `${SEMIOTIC_ICONS.REPLAY} PLAY AGAIN [R]`,
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
-
-    const inW = Math.min(440, boxW - 80);
-    const inX = w * 0.5 - inW * 0.5;
-    const inY = by + 96;
-    ctx.fillStyle = 'rgba(2, 7, 4, 0.95)';
-    ctx.fillRect(inX, inY, inW, 54);
-    ctx.strokeStyle = isDone ? '#44FF77' : '#FFB000';
-    ctx.lineWidth = 2.4;
-    ctx.strokeRect(inX, inY, inW, 54);
-
-    const blink = !isDone && !isSending && Math.sin(state.timeSec * 10) > 0 ? '_' : '';
-    ctx.font = 'bold 26px "JetBrains Mono", monospace';
-    ctx.fillStyle = isDone ? '#44FF77' : COLORS.AMBER_BRIGHT;
-    ctx.fillText(`${state.callsignDraft}${blink}`, w * 0.5, inY + 36);
-
-    ctx.font = 'bold 14.5px "JetBrains Mono", monospace';
-    if (isDone && state.uplinkConfirmText) {
-      ctx.fillStyle = '#44FF77';
-      ctx.fillText(state.uplinkConfirmText, w * 0.5, by + 182);
-    } else if (isSending) {
-      ctx.fillStyle = '#FFB000';
-      ctx.fillText('TRANSMITTING TELEMETRY PACKET TO MU-TH-UR RELAY...', w * 0.5, by + 182);
-    } else if (state.uplinkConfirmText) {
-      ctx.fillStyle = '#FF5538';
-      ctx.fillText(state.uplinkConfirmText, w * 0.5, by + 182);
-    } else {
-      ctx.fillStyle = COLORS.GREEN_MID;
-      ctx.fillText('ENTER CALLSIGN (A-Z, 0-9, _, -, MAX 12) & PRESS [ENTER]', w * 0.5, by + 182);
-    }
-
-    if (isDone) {
-      this.addButton(
-        ctx,
-        'callsign-finish',
-        w * 0.5 - 190,
-        by + boxH - 62,
-        380,
-        42,
-        '[ENTER / SPACE] VIEW GLOBAL MANIFEST',
-        true,
-        state.hoveredButtonId,
-        '#44FF77'
-      );
-    } else {
-      this.addButton(
-        ctx,
-        'callsign-submit',
-        bx + 44,
-        by + boxH - 62,
-        350,
-        42,
-        isSending ? 'UPLINKING...' : '[ENTER] TRANSMIT TO MU-TH-UR',
-        true,
-        state.hoveredButtonId,
-        '#FFB000'
-      );
-      this.addButton(
-        ctx,
-        'callsign-skip',
-        bx + boxW - 224,
-        by + boxH - 62,
-        180,
-        42,
-        '[ESC] SKIP',
-        false,
-        state.hoveredButtonId,
-        COLORS.GREEN_MID
-      );
-    }
-    ctx.restore();
   }
 
-  private drawFlightLogsModal(
+  /**
+   * Unified `[ESC]` System & Pause Menu (shared `SystemMenuModal`).
+   */
+  private drawSharedSystemMenu(
     ctx: CanvasRenderingContext2D,
     w: number,
     h: number,
     state: HudRenderContext
   ): void {
-    ctx.save();
-    const boxW = Math.min(840, w - 40);
-    const boxH = Math.min(600, h - 36);
-    const bx = (w - boxW) * 0.5;
-    const by = (h - boxH) * 0.5;
+    const inRun =
+      state.phase === 'FLIGHT' ||
+      state.phase === 'PAUSED' ||
+      state.phase === 'SECTOR_BRIEFING' ||
+      state.phase === 'SECTOR_TALLY';
 
-    ctx.fillStyle = 'rgba(5, 13, 8, 0.98)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    this.drawCornerBrackets(ctx, bx, by, boxW, boxH, 18, COLORS.GREEN_PRIMARY, 2.4);
+    const extraRows: SystemMenuExtraRow[] = [
+      {
+        id: 'lander-sas-toggle',
+        label: 'SAS 50% ROLL',
+        value: state.bezel.sasEnabled ? '● ON (50% GENTLE)' : '○ OFF (100% RAW)',
+        accent: state.bezel.sasEnabled ? 'green' : 'amber',
+      },
+      {
+        id: 'lander-zoom-toggle',
+        label: 'AUTO-ZOOM APPROACH',
+        value: state.bezel.autoZoomEnabled ? '● ENGAGED (≤95M)' : '○ MANUAL SCROLL',
+        accent: state.bezel.autoZoomEnabled ? 'green' : 'amber',
+      },
+    ];
 
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 21px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_CAUTION;
-    ctx.fillText('MU-TH-UR 6000 // PERSISTENT CREW MANIFEST', bx + 22, by + 33);
-
-    // Live Firestore Uplink vs Local Archive Status Badge
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 14px "Share Tech Mono", monospace';
-    if (state.uplinkConnectionStatus === 'LOADING') {
-      ctx.fillStyle = '#FFB000';
-      ctx.fillText('◌ SYNCING ORBITAL RELAY...', bx + boxW - 22, by + 33);
-    } else if (state.manifestShowingArchive) {
-      ctx.fillStyle = '#FFB000';
-      ctx.fillText('[LOCAL / ARCHIVE FALLBACK]', bx + boxW - 22, by + 33);
+    if (inRun) {
+      extraRows.push({
+        id: 'lander-jettison',
+        label: 'JETTISON SHUTTLE',
+        value:
+          state.lives > 1
+            ? `REDEPLOY (-1 HULL · ${state.lives - 1} LEFT)`
+            : 'LOCKED (FINAL SHUTTLE)',
+        accent: state.lives > 1 ? 'red' : 'muted',
+        disabled: state.lives <= 1,
+      });
     } else {
-      ctx.fillStyle = '#44FF77';
-      ctx.fillText('● LIVE GLOBAL TELEMETRY (TOP 15)', bx + boxW - 22, by + 33);
+      extraRows.push({
+        id: 'menu-toggle-mobile',
+        label: 'CONTROL MODE',
+        value: state.mobileMode ? 'MOBILE MODE' : 'DESKTOP MODE',
+        accent: 'cyan',
+      });
     }
 
-    // Dual-Mode Switcher Tabs: [ CAMPAIGN MANIFEST ] vs [ ENDLESS DEEP-SURVEY MANIFEST ]
-    const tabY = by + 46;
-    const tabGap = 12;
-    const tabW = (boxW - 44 - tabGap) * 0.5;
-    this.addButton(
+    drawSystemMenuModal(
       ctx,
-      'logs-tab-campaign',
-      bx + 22,
-      tabY,
-      tabW,
-      36,
-      'CAMPAIGN MANIFEST',
-      state.manifestTab === 'CAMPAIGN',
-      state.hoveredButtonId,
-      state.manifestTab === 'CAMPAIGN' ? '#FFB000' : COLORS.GREEN_PRIMARY
+      w,
+      h,
+      {
+        programTitle: 'LUNAR LANDER',
+        activeProgramId: 'lander',
+        crtPreset: state.crtPreset,
+        phosphorTheme: state.phosphorTheme,
+        masterVolume: state.masterVolume,
+        audioMuted: state.bezel.audioMuted,
+        isFullscreen: state.isFullscreen,
+        hoveredButtonId: state.hoveredButtonId,
+        extraRows,
+        canRestart: inRun,
+        restartLabel: state.isPracticeRun
+          ? `${SEMIOTIC_ICONS.REPLAY} RESTART SECTOR`
+          : `${SEMIOTIC_ICONS.REPLAY} RESTART RUN`,
+        confirmExitPending: state.confirmExitPending,
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
-    this.addButton(
-      ctx,
-      'logs-tab-endless',
-      bx + 22 + tabW + tabGap,
-      tabY,
-      tabW,
-      36,
-      'ENDLESS DEEP-SURVEY MANIFEST',
-      state.manifestTab === 'ENDLESS',
-      state.hoveredButtonId,
-      state.manifestTab === 'ENDLESS' ? '#FFB000' : COLORS.GREEN_PRIMARY
-    );
+  }
 
-    const headY = by + 102;
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_MID;
-    ctx.textAlign = 'left';
-    ctx.fillText('RNK', bx + 22, headY);
-    ctx.fillText('CALLSIGN', bx + 84, headY);
-    ctx.fillText('SECTOR', bx + 324, headY);
-    ctx.fillText('ACCURACY', bx + 428, headY);
-    ctx.fillText('DATE', bx + 558, headY);
-    ctx.textAlign = 'right';
-    ctx.fillText('SCORE', bx + boxW - 22, headY);
+  /**
+   * Unified Global Leaderboard Manifest (shared `PostRunFlow`).
+   * Proportional columns: RNK | CALLSIGN | SCORE | SECTOR | ACC | DATE + boxed ★ JUST ADDED + PLAY AGAIN [R / ENTER]!
+   */
+  private drawSharedGlobalManifest(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    state: HudRenderContext
+  ): void {
+    const uplinkStatus: UplinkStatus =
+      state.uplinkConnectionStatus === 'LOADING'
+        ? 'SYNCING'
+        : state.manifestShowingArchive
+          ? 'LOCAL'
+          : 'LIVE';
 
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    ctx.moveTo(bx + 22, headY + 8);
-    ctx.lineTo(bx + boxW - 22, headY + 8);
-    ctx.stroke();
-
-    const availRowsH = boxH - 210;
-    const maxRows = Math.min(15, Math.max(8, Math.floor(availRowsH / 24)));
-    const rowStep = Math.min(25, Math.floor(availRowsH / maxRows));
-    const playerTag = state.playerSavedCallsign.trim().toUpperCase();
     const recentRun =
       state.lastSubmittedRun && state.lastSubmittedRun.mode === state.manifestTab
         ? state.lastSubmittedRun
         : null;
 
-    let matchedJustSubmittedIdx = -1;
-    const visibleEntries = state.manifestEntries.slice(0, maxRows);
+    let matchedIdx = -1;
     if (recentRun) {
       if (recentRun.docId) {
-        matchedJustSubmittedIdx = visibleEntries.findIndex((e) => e.id === recentRun.docId);
+        matchedIdx = state.manifestEntries.findIndex((e) => e.id === recentRun.docId);
       }
-      if (matchedJustSubmittedIdx === -1) {
-        matchedJustSubmittedIdx = visibleEntries.findIndex(
+      if (matchedIdx === -1) {
+        matchedIdx = state.manifestEntries.findIndex(
           (e) =>
             e.callsign.toUpperCase() === recentRun.callsign.toUpperCase() &&
             e.score === recentRun.score &&
@@ -3339,120 +2886,60 @@ export class HudRenderer {
       }
     }
 
-    const pulseNew = 0.5 + 0.5 * Math.sin(state.timeSec * 8.5);
+    const rows: ManifestRowData[] = state.manifestEntries.map((entry, idx) => ({
+      rank: idx + 1,
+      callsign: entry.callsign,
+      score: entry.score,
+      stats: [
+        entry.highestSector,
+        `${entry.accuracyRating} (${entry.accuracyPercent}%)`,
+        entry.isArchiveFallback ? 'ARCHIVE' : entry.date,
+      ],
+      isJustAdded: idx === matchedIdx,
+      isLocalFallback: entry.isArchiveFallback,
+    }));
 
-    visibleEntries.forEach((entry, idx) => {
-      const ry = headY + 27 + idx * rowStep;
-      const isJustSubmitted = idx === matchedJustSubmittedIdx;
-      const isPlayer = playerTag.length > 0 && entry.callsign.toUpperCase() === playerTag;
-      const isRank1 = idx === 0 && !entry.isArchiveFallback;
+    const justAddedBanner = recentRun
+      ? `${SEMIOTIC_ICONS.STAR} RUN LOGGED: RANK #${String(matchedIdx >= 0 ? matchedIdx + 1 : recentRun.rank).padStart(2, '0')} — ${recentRun.callsign} · ${recentRun.score.toLocaleString()} PTS (${recentRun.highestSector}) ${SEMIOTIC_ICONS.STAR}`
+      : null;
 
-      if (isJustSubmitted) {
-        // Unmistakable high-contrast pulsing Emerald/White row highlight for the JUST-SUBMITTED run!
-        ctx.fillStyle = `rgba(68, 255, 119, ${(0.18 + pulseNew * 0.14).toFixed(3)})`;
-        ctx.fillRect(bx + 16, ry - 17, boxW - 32, rowStep);
-        ctx.strokeStyle = '#44FF77';
-        ctx.lineWidth = 2.2;
-        ctx.strokeRect(bx + 16, ry - 17, boxW - 32, rowStep);
-      } else if (isPlayer) {
-        ctx.fillStyle = 'rgba(255, 176, 0, 0.06)';
-        ctx.fillRect(bx + 18, ry - 16, boxW - 36, rowStep - 2);
-      }
+    const inMidRunPeek =
+      !state.manifestOpenedPostRun &&
+      (state.phase === 'FLIGHT' ||
+        state.phase === 'PAUSED' ||
+        state.phase === 'SECTOR_BRIEFING' ||
+        state.phase === 'SECTOR_TALLY');
 
-      ctx.font = 'bold 15px "JetBrains Mono", monospace';
-      ctx.textAlign = 'left';
-      ctx.fillStyle = isJustSubmitted
-        ? '#FFFFFF'
-        : isPlayer || isRank1
-          ? '#FFB000'
-          : COLORS.GREEN_PRIMARY;
-      ctx.fillText(
-        isJustSubmitted ? `►#${String(idx + 1).padStart(2, '0')}` : `#${String(idx + 1).padStart(2, '0')}`,
-        isJustSubmitted ? bx + 18 : bx + 22,
-        ry
-      );
-      ctx.fillText(entry.callsign, bx + 84, ry);
-
-      // High-contrast "★ JUST ADDED" badge right next to the newly submitted callsign!
-      if (isJustSubmitted) {
-        const callW = ctx.measureText(entry.callsign).width;
-        const badgeX = Math.min(bx + 216, bx + 92 + callW);
-        const badgeW = 98;
-        ctx.fillStyle = 'rgba(10, 44, 22, 0.96)';
-        ctx.fillRect(badgeX, ry - 14, badgeW, 18);
-        ctx.strokeStyle = '#44FF77';
-        ctx.lineWidth = 1.6;
-        ctx.strokeRect(badgeX, ry - 14, badgeW, 18);
-        ctx.font = 'bold 12px "Share Tech Mono", monospace';
-        ctx.fillStyle = '#FFFFFF';
-        ctx.textAlign = 'center';
-        ctx.fillText('★ JUST ADDED', badgeX + badgeW * 0.5, ry - 1);
-        ctx.font = 'bold 15px "JetBrains Mono", monospace';
-        ctx.textAlign = 'left';
-        ctx.fillStyle = '#FFFFFF';
-      }
-
-      ctx.fillText(entry.highestSector, bx + 324, ry);
-      ctx.fillText(`${entry.accuracyRating} (${entry.accuracyPercent}%)`, bx + 428, ry);
-      ctx.fillStyle = isJustSubmitted
-        ? '#7BFF9E'
-        : isPlayer
-          ? COLORS.AMBER_BRIGHT
-          : COLORS.GREEN_MID;
-      ctx.fillText(entry.isArchiveFallback ? 'ARCHIVE' : entry.date, bx + 558, ry);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = isJustSubmitted
-        ? '#FFFFFF'
-        : isPlayer || isRank1
-          ? '#FFB000'
-          : COLORS.GREEN_BRIGHT;
-      ctx.fillText(entry.score.toLocaleString(), bx + boxW - 22, ry);
-    });
-
-    const logY = by + boxH - 88;
-    ctx.strokeStyle = COLORS.GREEN_DIM;
-    ctx.beginPath();
-    ctx.moveTo(bx + 22, logY);
-    ctx.lineTo(bx + boxW - 22, logY);
-    ctx.stroke();
-
-    if (recentRun) {
-      const dispRank =
-        matchedJustSubmittedIdx >= 0 ? matchedJustSubmittedIdx + 1 : recentRun.rank;
-      const rankTag = `#${String(dispRank).padStart(2, '0')}`;
-      ctx.fillStyle = 'rgba(26, 78, 42, 0.55)';
-      ctx.fillRect(bx + 22, logY + 6, boxW - 44, 26);
-      ctx.strokeStyle = '#44FF77';
-      ctx.lineWidth = 1.6;
-      ctx.strokeRect(bx + 22, logY + 6, boxW - 44, 26);
-
-      ctx.textAlign = 'center';
-      ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-      ctx.fillStyle = '#7BFF9E';
-      ctx.fillText(
-        `★ YOUR JUST-COMPLETED RUN: RANK ${rankTag} — ${recentRun.callsign} // ${recentRun.score.toLocaleString()} PTS (${recentRun.highestSector}) ★`,
-        w * 0.5,
-        logY + 24
-      );
-    } else {
-      ctx.textAlign = 'left';
-      ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-      ctx.fillStyle = COLORS.GREEN_MID;
-      const recent = state.sessionLogs[state.sessionLogs.length - 1] ?? 'ORBITAL TELEMETRY READY';
-      ctx.fillText(`LOG> ${recent}`, bx + 22, logY + 23);
-    }
-
-    this.addButton(
+    drawGlobalManifestModal(
       ctx,
-      'logs-close',
-      w * 0.5 - 165,
-      by + boxH - 46,
-      330,
-      34,
-      '[ESC / CLICK] CLOSE MANIFEST',
-      true,
-      state.hoveredButtonId
+      w,
+      h,
+      {
+        title: 'LV-426 LUNAR LANDER // LEADERBOARD',
+        uplinkStatus,
+        timeSec: state.timeSec,
+        columns: LANDER_MANIFEST_COLUMNS,
+        rows,
+        tabs: [
+          {
+            id: 'CAMPAIGN',
+            label: 'CAMPAIGN (6 SECTORS)',
+            active: state.manifestTab === 'CAMPAIGN',
+          },
+          {
+            id: 'ENDLESS',
+            label: 'ENDLESS SURVEY',
+            active: state.manifestTab === 'ENDLESS',
+          },
+        ],
+        justAddedBanner,
+        showPlayAgain: !inMidRunPeek,
+        playAgainLabel: state.manifestOpenedPostRun
+          ? `${SEMIOTIC_ICONS.PLAY} PLAY AGAIN [R / ENTER]`
+          : `${SEMIOTIC_ICONS.PLAY} LAUNCH SORTIE [R / ENTER]`,
+        hoveredButtonId: state.hoveredButtonId,
+      },
+      this.buttons as ChromeButtonHitbox[]
     );
-    ctx.restore();
   }
 }

@@ -1,8 +1,23 @@
-import { COLORS } from '../constants';
+import {
+  drawChromeButton,
+  type ChromeButtonAccent,
+  type ChromeButtonHitbox,
+} from '../render/chrome/ModalFrame';
+import {
+  drawCornerBrackets,
+  drawEllipsizedText,
+  font,
+  isCrt1979Typography,
+  SEMIOTIC_ICONS,
+  THEME,
+  wrapTextLines,
+} from '../render/theme';
+import { CRT_PRESET_CONFIG } from '../render/WebGLCRT';
 import { HubLeadersService } from '../services/hubLeaders';
 import type {
   Cartridge,
   CartridgeProgramId,
+  CrtPreset,
   CrtShaderFrameParams,
   HostEnvironment,
   PhosphorTheme,
@@ -11,67 +26,94 @@ import type { ViewportRect } from '../types';
 
 interface TerminalLine {
   text: string;
-  tone: 'green' | 'bright' | 'amber' | 'dim' | 'red';
-  clickableCmd?: string;
-  clickableId?: string;
-  programId?: CartridgeProgramId;
+  tone: 'green' | 'bright' | 'amber' | 'secondary' | 'red' | 'cyan';
 }
 
 interface TerminalHitBox {
   id: string;
   rect: ViewportRect;
-  autoTypeCmd?: string;
-  action?: () => void;
+  action: () => void;
 }
 
-const INITIAL_HEADER_LINES: TerminalLine[] = [
+interface CartridgeBaySpec {
+  slotCode: string;
+  keyNum: '1' | '2' | '3' | '4';
+  programId: CartridgeProgramId;
+  title: string;
+  ruleset: string;
+  icon: string;
+  accent: string;
+  accentKind: ChromeButtonAccent;
+}
+
+const CARTRIDGE_BAYS: readonly CartridgeBaySpec[] = [
+  {
+    slotCode: 'SLOT 01',
+    keyNum: '1',
+    programId: 'lander',
+    title: 'LUNAR LANDER',
+    ruleset: '6 SECTORS / ENDLESS',
+    icon: SEMIOTIC_ICONS.TRIANGLE,
+    accent: THEME.TEXT_PRIMARY,
+    accentKind: 'green',
+  },
+  {
+    slotCode: 'SLOT 02',
+    keyNum: '2',
+    programId: 'perimeter',
+    title: "HADLEY'S PERIMETER",
+    ruleset: 'ENDLESS SIEGE // CAD',
+    icon: SEMIOTIC_ICONS.HEX,
+    accent: THEME.ACCENT_AMBER,
+    accentKind: 'amber',
+  },
+  {
+    slotCode: 'SLOT 03',
+    keyNum: '3',
+    programId: 'flak',
+    title: 'FLAK NET',
+    ruleset: 'ORBITAL INTERCEPT WAVES',
+    icon: SEMIOTIC_ICONS.DIAMOND,
+    accent: THEME.TEXT_BRIGHT,
+    accentKind: 'green',
+  },
+  {
+    slotCode: 'SLOT 04',
+    keyNum: '4',
+    programId: 'trench',
+    title: 'DERELICT TRENCH',
+    ruleset: '3D VECTOR JET SORTIE',
+    icon: SEMIOTIC_ICONS.CROSS,
+    accent: THEME.ACCENT_CYAN,
+    accentKind: 'cyan',
+  },
+];
+
+const INITIAL_HEADER_LINES: readonly TerminalLine[] = [
   {
     text: 'WEYLAND-YUTANI CORP // INTERFACE 2037 // MU-TH-UR 6000',
     tone: 'amber',
   },
   {
-    text: '64K RAM SYSTEM READY // TELEMETRY UPLINK: ACTIVE',
+    text: '64K RAM READY // ORBITAL TELEMETRY RELAY ACTIVE',
     tone: 'green',
   },
-  { text: '', tone: 'dim' },
-  { text: 'INSTALLED SIMULATION PROGRAMS:', tone: 'bright' },
   {
-    text: '  1. ORBITAL DESCENT TELEMETRY',
-    tone: 'green',
-    clickableCmd: 'RUN 1',
-    clickableId: 'prog-row-1',
-    programId: 'lander',
+    text: 'PRESS [1-4] OR CLICK ANY SYSTEM PROGRAM TO LAUNCH INSTANTLY.',
+    tone: 'bright',
   },
   {
-    text: "  2. HADLEY'S PERIMETER",
-    tone: 'green',
-    clickableCmd: 'RUN 2',
-    clickableId: 'prog-row-2',
-    programId: 'perimeter',
-  },
-  {
-    text: '  3. ORBITAL INTERCEPT // FLAK',
-    tone: 'green',
-    clickableCmd: 'RUN 3',
-    clickableId: 'prog-row-3',
-    programId: 'flak',
-  },
-  {
-    text: '  4. DERELICT TRENCH // VECTOR',
-    tone: 'green',
-    clickableCmd: 'RUN 4',
-    clickableId: 'prog-row-4',
-    programId: 'trench',
-  },
-  { text: '', tone: 'dim' },
-  {
-    text: "ENTER [1-4], 'HELP', 'QUERY <TEXT>', 'SCORES', OR 'PHOSPHOR AMBER':",
-    tone: 'amber',
+    text: "CLI DIRECTIVES: 'HELP', 'LEADERBOARD', 'DIAG', 'QUERY <TEXT>', [TAB] COMPLETE.",
+    tone: 'secondary',
   },
 ];
 
 const AUTOCOMPLETE_COMMANDS = [
   'HELP',
+  'LEADERBOARD',
+  'SCORES',
+  'DIAG',
+  'STATUS',
   'RUN 1',
   'RUN 2',
   'RUN 3',
@@ -80,7 +122,6 @@ const AUTOCOMPLETE_COMMANDS = [
   'PERIMETER',
   'FLAK',
   'TRENCH',
-  'VECTOR',
   'QUERY ',
   'ASK ',
   'CREW',
@@ -90,22 +131,22 @@ const AUTOCOMPLETE_COMMANDS = [
   'SIGNAL',
   'DECODE',
   'BEACON',
-  'DIAG',
-  'STATUS',
   'DESTRUCT',
-  'SELF-DESTRUCT',
   'ABORT',
+  'CRT ON',
+  'CRT OFF',
+  'CRT 1979',
+  'CRT CRISP',
   'PHOSPHOR GREEN',
   'PHOSPHOR AMBER',
   'PHOSPHOR CYAN',
-  'THEME ',
-  'SCORES',
-  'LEADERBOARD',
   'ORDER 937',
   'DIR',
   'CLS',
   'MUTE',
 ];
+
+const MAX_SCROLLBACK_LINES = 140;
 
 export class MuthurTerminalCartridge implements Cartridge {
   public readonly id = 'terminal';
@@ -122,16 +163,17 @@ export class MuthurTerminalCartridge implements Cartridge {
   private lines: TerminalLine[] = [];
   private revealedCharCount = 0;
   private totalLineChars = 0;
+  /** Number of wrapped display lines scrolled upward from the bottom (0 = pinned to newest) */
+  private scrollOffsetLines = 0;
+  private lastMaxScrollOffset = 0;
 
   private inputBuffer = '';
   private commandHistory: string[] = [];
   private historyIndex = -1;
 
-  // Auto-typing state when user clicks a program row or shortcut
-  private autoTypeQueue = '';
-  private autoTypeTimer = 0;
-  private pendingLaunchProgram: CartridgeProgramId | null = null;
-  private pendingLaunchTimer = 0;
+  // Ship Ops submenu & guarded destruct latch (prevents stray clicks triggering cold reboot!)
+  private shipOpsOpen = false;
+  private destructConfirmArmed = false;
 
   private hitBoxes: TerminalHitBox[] = [];
   private hoveredHitId: string | null = null;
@@ -177,11 +219,10 @@ export class MuthurTerminalCartridge implements Cartridge {
     this.resize(vp.width, vp.height, vp.offsetX, vp.offsetY);
 
     this.inputBuffer = '';
-    this.autoTypeQueue = '';
-    this.autoTypeTimer = 0;
-    this.pendingLaunchProgram = null;
-    this.pendingLaunchTimer = 0;
     this.hoveredHitId = null;
+    this.scrollOffsetLines = 0;
+    this.shipOpsOpen = false;
+    this.destructConfirmArmed = false;
 
     this.bioscanActive = false;
     this.bioscanElapsed = 0;
@@ -192,14 +233,22 @@ export class MuthurTerminalCartridge implements Cartridge {
     this.destructLastAnnouncedSec = 11;
     this.destructWhiteoutTimer = 0;
 
+    // Lift #mobile-callsign-input maxlength to 48 while Hub CLI is active (restored to 12 on unmount)
+    const mobileInput = document.getElementById('mobile-callsign-input') as HTMLInputElement | null;
+    if (mobileInput) {
+      mobileInput.maxLength = 48;
+      mobileInput.setAttribute('maxlength', '48');
+      mobileInput.value = '';
+    }
+
     this.resetLinesToPrompt(!this.hasCompletedInitialBootReveal);
     if (this.returnBannerMessage) {
       this.appendLines(
         [
           { text: `SYS> ${this.returnBannerMessage}`, tone: 'amber' },
-          { text: 'READY FOR NEXT OPERATOR DIRECTIVE.', tone: 'dim' },
+          { text: 'READY FOR NEXT CARTRIDGE OR CLI DIRECTIVE.', tone: 'secondary' },
         ],
-        true
+        false
       );
       this.returnBannerMessage = null;
     }
@@ -215,15 +264,21 @@ export class MuthurTerminalCartridge implements Cartridge {
     }
     this.stopTerminalSequencesAudio();
     this.hoveredHitId = null;
-    this.autoTypeQueue = '';
-    this.pendingLaunchProgram = null;
+    this.shipOpsOpen = false;
+    this.destructConfirmArmed = false;
     this.destructActive = false;
     this.bioscanActive = false;
     this.signalActive = false;
     document.body.style.cursor = 'default';
+
+    // Restore #mobile-callsign-input maxlength to 12 for game Callsign inputs
     const mobileInput = document.getElementById('mobile-callsign-input') as HTMLInputElement | null;
-    if (mobileInput && document.activeElement === mobileInput) {
-      mobileInput.blur();
+    if (mobileInput) {
+      mobileInput.maxLength = 12;
+      mobileInput.setAttribute('maxlength', '12');
+      if (document.activeElement === mobileInput) {
+        mobileInput.blur();
+      }
     }
   }
 
@@ -263,6 +318,7 @@ export class MuthurTerminalCartridge implements Cartridge {
 
   private resetLinesToPrompt(animateFromZero: boolean): void {
     this.lines = INITIAL_HEADER_LINES.map((l) => ({ ...l }));
+    this.scrollOffsetLines = 0;
     this.recomputeTotalChars();
     this.revealedCharCount = animateFromZero ? 0 : this.totalLineChars;
   }
@@ -276,13 +332,10 @@ export class MuthurTerminalCartridge implements Cartridge {
     for (const nl of newLines) {
       this.lines.push(nl);
     }
-    // Keep terminal scrollback crisp & bounded while always preserving top header + 4 program rows
-    const maxExtraLines = 15;
-    const baseCount = INITIAL_HEADER_LINES.length;
-    if (this.lines.length > baseCount + maxExtraLines) {
-      const overflow = this.lines.length - (baseCount + maxExtraLines);
-      this.lines.splice(baseCount, overflow);
+    if (this.lines.length > MAX_SCROLLBACK_LINES) {
+      this.lines.splice(0, this.lines.length - MAX_SCROLLBACK_LINES);
     }
+    this.scrollOffsetLines = 0;
     this.recomputeTotalChars();
     if (animateNew) {
       const newCount = newLines.reduce((acc, l) => acc + Math.max(1, l.text.length), 0);
@@ -290,6 +343,21 @@ export class MuthurTerminalCartridge implements Cartridge {
     } else {
       this.revealedCharCount = this.totalLineChars;
     }
+  }
+
+  private adjustScroll(deltaLines: number): void {
+    this.scrollOffsetLines = Math.max(
+      0,
+      Math.min(this.lastMaxScrollOffset, this.scrollOffsetLines + deltaLines)
+    );
+  }
+
+  private launchCartridgeInstant(programId: CartridgeProgramId): void {
+    this.stopTerminalSequencesAudio();
+    this.destructActive = false;
+    this.destructConfirmArmed = false;
+    this.shipOpsOpen = false;
+    this.host.quickSwitchProgram(programId);
   }
 
   private handleTabAutocomplete(): void {
@@ -301,7 +369,6 @@ export class MuthurTerminalCartridge implements Cartridge {
     }
     const matches = AUTOCOMPLETE_COMMANDS.filter((c) => c.startsWith(raw));
     if (matches.length > 0) {
-      // If exact match already in list, cycle to next matching command
       const exactIdx = matches.indexOf(raw);
       const next =
         exactIdx >= 0 && matches.length > 1
@@ -316,25 +383,69 @@ export class MuthurTerminalCartridge implements Cartridge {
 
   private bindListeners(signal: AbortSignal): void {
     window.addEventListener(
+      'wheel',
+      (e) => {
+        if (this.destructWhiteoutTimer > 0) return;
+        const dir = e.deltaY < 0 ? 3 : -3;
+        if (this.lastMaxScrollOffset > 0) {
+          e.preventDefault();
+          this.adjustScroll(dir);
+        }
+      },
+      { signal, passive: false }
+    );
+
+    window.addEventListener(
       'keydown',
       (e) => {
         const mobileInput = document.getElementById('mobile-callsign-input');
         if (mobileInput && e.target === mobileInput) {
           return;
         }
-        if (
-          this.pendingLaunchProgram !== null ||
-          this.autoTypeQueue.length > 0 ||
-          this.destructWhiteoutTimer > 0
-        ) {
+        if (this.destructWhiteoutTimer > 0) {
           return;
         }
         void this.host.audio.unlock();
 
+        // Instant reveal if typewriter still catching up
         if (this.revealedCharCount < this.totalLineChars) {
           this.revealedCharCount = this.totalLineChars;
-          if (e.code === 'Escape' || (e.code === 'Space' && this.inputBuffer.length === 0)) {
+        }
+
+        // CLI Scrollback keys (PgUp / PgDn / Shift+Arrows)
+        if (e.code === 'PageUp') {
+          e.preventDefault();
+          this.adjustScroll(6);
+          return;
+        }
+        if (e.code === 'PageDown') {
+          e.preventDefault();
+          this.adjustScroll(-6);
+          return;
+        }
+        if (e.shiftKey && e.code === 'ArrowUp') {
+          e.preventDefault();
+          this.adjustScroll(2);
+          return;
+        }
+        if (e.shiftKey && e.code === 'ArrowDown') {
+          e.preventDefault();
+          this.adjustScroll(-2);
+          return;
+        }
+
+        // Instant [1-4] cartridge launch when CLI input buffer is empty!
+        if (
+          !this.destructActive &&
+          this.inputBuffer.length === 0 &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          !e.altKey
+        ) {
+          const directBay = CARTRIDGE_BAYS.find((b) => b.keyNum === e.key);
+          if (directBay) {
             e.preventDefault();
+            this.launchCartridgeInstant(directBay.programId);
             return;
           }
         }
@@ -354,6 +465,7 @@ export class MuthurTerminalCartridge implements Cartridge {
 
         if (e.code === 'Backspace') {
           e.preventDefault();
+          this.scrollOffsetLines = 0;
           if (this.inputBuffer.length > 0) {
             this.inputBuffer = this.inputBuffer.slice(0, -1);
             this.host.audio.playSfx('ui_keyclick', { pitch: 0.88, volume: 0.85 });
@@ -365,9 +477,15 @@ export class MuthurTerminalCartridge implements Cartridge {
 
         if (e.code === 'Escape') {
           e.preventDefault();
-          if (this.inputBuffer.length > 0) {
+          this.destructConfirmArmed = false;
+          if (this.shipOpsOpen) {
+            this.shipOpsOpen = false;
+            this.host.audio.playSfx('ui_keyclick', { pitch: 0.88 });
+          } else if (this.inputBuffer.length > 0) {
             this.inputBuffer = '';
             this.host.audio.playSfx('keypress_return', { pitch: 0.82, volume: 0.75 });
+          } else if (this.scrollOffsetLines > 0) {
+            this.scrollOffsetLines = 0;
           }
           return;
         }
@@ -381,6 +499,7 @@ export class MuthurTerminalCartridge implements Cartridge {
               this.historyIndex = Math.max(0, this.historyIndex - 1);
             }
             this.inputBuffer = this.commandHistory[this.historyIndex] ?? '';
+            this.scrollOffsetLines = 0;
             this.host.audio.playSfx('ui_keyclick', { pitch: 1.04 });
           }
           return;
@@ -396,6 +515,7 @@ export class MuthurTerminalCartridge implements Cartridge {
             } else {
               this.inputBuffer = this.commandHistory[this.historyIndex] ?? '';
             }
+            this.scrollOffsetLines = 0;
             this.host.audio.playSfx('ui_keyclick', { pitch: 0.98 });
           }
           return;
@@ -405,6 +525,7 @@ export class MuthurTerminalCartridge implements Cartridge {
           if (e.code === 'Space') {
             e.preventDefault();
           }
+          this.scrollOffsetLines = 0;
           if (this.inputBuffer.length < 48) {
             this.inputBuffer += e.key.toUpperCase();
             this.host.audio.playSfx('ui_keyclick', {
@@ -444,13 +565,7 @@ export class MuthurTerminalCartridge implements Cartridge {
       'pointerdown',
       (e) => {
         if (e.pointerType === 'mouse' && e.button !== 0) return;
-        if (
-          this.pendingLaunchProgram !== null ||
-          this.autoTypeQueue.length > 0 ||
-          this.destructWhiteoutTimer > 0
-        ) {
-          return;
-        }
+        if (this.destructWhiteoutTimer > 0) return;
 
         void this.host.audio.unlock();
 
@@ -469,15 +584,14 @@ export class MuthurTerminalCartridge implements Cartridge {
           if (this.revealedCharCount < this.totalLineChars) {
             this.revealedCharCount = this.totalLineChars;
           }
-          if (hit.autoTypeCmd) {
-            this.triggerAutoTypeCommand(hit.autoTypeCmd);
-          } else if (hit.action) {
-            this.host.audio.playButtonLatchLock(0.95, 0.9);
-            hit.action();
+          if (hit.id !== 'shipops-destruct') {
+            this.destructConfirmArmed = false;
           }
+          hit.action();
           return;
         }
 
+        this.destructConfirmArmed = false;
         if (this.revealedCharCount < this.totalLineChars) {
           this.revealedCharCount = this.totalLineChars;
           this.host.audio.playSfx('ui_keyclick');
@@ -495,6 +609,7 @@ export class MuthurTerminalCartridge implements Cartridge {
           if (nextVal !== this.inputBuffer) {
             this.inputBuffer = nextVal;
             mobileInput.value = nextVal;
+            this.scrollOffsetLines = 0;
             this.host.audio.playSfx('ui_keyclick', { volume: 0.85 });
           }
         },
@@ -532,12 +647,6 @@ export class MuthurTerminalCartridge implements Cartridge {
     return null;
   }
 
-  private triggerAutoTypeCommand(cmd: string): void {
-    this.inputBuffer = '';
-    this.autoTypeQueue = cmd.toUpperCase();
-    this.autoTypeTimer = 0.014;
-  }
-
   private focusMobileKeyboard(): void {
     const mobileInput = document.getElementById('mobile-callsign-input') as HTMLInputElement | null;
     if (!mobileInput) return;
@@ -558,7 +667,6 @@ export class MuthurTerminalCartridge implements Cartridge {
     if (!ctx || !dest) return;
     const now = ctx.currentTime;
 
-    // Eerie 1979 LV-426 low-frequency acoustic modulated distress/warning beacon (3.0s)
     const carrier = ctx.createOscillator();
     carrier.type = 'sawtooth';
     carrier.frequency.setValueAtTime(118, now);
@@ -609,7 +717,6 @@ export class MuthurTerminalCartridge implements Cartridge {
     if (!ctx || !dest) return;
     const now = ctx.currentTime;
 
-    // Rising Nostromo reactor core whine
     const whine = ctx.createOscillator();
     whine.type = 'sawtooth';
     whine.frequency.setValueAtTime(74, now);
@@ -707,9 +814,10 @@ export class MuthurTerminalCartridge implements Cartridge {
     const trimmed = raw.trim().toUpperCase().replace(/\s+/g, ' ');
     this.inputBuffer = '';
     this.historyIndex = -1;
+    this.scrollOffsetLines = 0;
 
     if (!trimmed) {
-      this.appendLines([{ text: 'MU-TH-UR>', tone: 'dim' }], false);
+      this.appendLines([{ text: 'MU-TH-UR>', tone: 'secondary' }], false);
       return;
     }
 
@@ -725,16 +833,14 @@ export class MuthurTerminalCartridge implements Cartridge {
     // Handle ABORT during active Self-Destruct sequence FIRST!
     if (this.destructActive && (trimmed === 'ABORT' || trimmed === 'CANCEL' || trimmed === 'STOP')) {
       this.destructActive = false;
+      this.destructConfirmArmed = false;
       this.stopTerminalSequencesAudio();
       this.playSteamVentAbortAudio();
       this.glitchPulse = 0.45;
       this.appendLines(
         [
           echoLine,
-          {
-            text: '>>> EMERGENCY DESTRUCT ABORTED // VENTING COOLING UNITS... <<<',
-            tone: 'bright',
-          },
+          { text: '>>> EMERGENCY DESTRUCT ABORTED // COOLING UNITS VENTING <<<', tone: 'bright' },
           { text: 'REACTOR STABILIZED. MU-TH-UR 6000 RETURNING TO STANDBY.', tone: 'green' },
         ],
         true
@@ -742,7 +848,7 @@ export class MuthurTerminalCartridge implements Cartridge {
       return;
     }
 
-    // 1. Program 1: Lunar Lander
+    // 1. Direct Program Launches (instant relay switch!)
     if (
       trimmed === '1' ||
       trimmed === '01' ||
@@ -753,25 +859,10 @@ export class MuthurTerminalCartridge implements Cartridge {
       trimmed === 'LANDER' ||
       trimmed === 'LUNAR LANDER'
     ) {
-      this.stopTerminalSequencesAudio();
-      this.destructActive = false;
-      this.appendLines(
-        [
-          echoLine,
-          {
-            text: 'MOUNTING CARTRIDGE 01 // ORBITAL DESCENT TELEMETRY (LV-426)...',
-            tone: 'amber',
-          },
-        ],
-        false
-      );
-      this.glitchPulse = 0.65;
-      this.pendingLaunchProgram = 'lander';
-      this.pendingLaunchTimer = 0.34;
+      this.launchCartridgeInstant('lander');
       return;
     }
 
-    // 2. Program 2: Hadley's Perimeter
     if (
       trimmed === '2' ||
       trimmed === '02' ||
@@ -786,25 +877,10 @@ export class MuthurTerminalCartridge implements Cartridge {
       trimmed === "HADLEY'S PERIMETER" ||
       trimmed === 'HADLEYS PERIMETER'
     ) {
-      this.stopTerminalSequencesAudio();
-      this.destructActive = false;
-      this.appendLines(
-        [
-          echoLine,
-          {
-            text: "MOUNTING CARTRIDGE 02 // HADLEY'S PERIMETER (UA 571-C TACTICAL NET)...",
-            tone: 'amber',
-          },
-        ],
-        false
-      );
-      this.glitchPulse = 0.65;
-      this.pendingLaunchProgram = 'perimeter';
-      this.pendingLaunchTimer = 0.34;
+      this.launchCartridgeInstant('perimeter');
       return;
     }
 
-    // 3. Program 3: Orbital Intercept // Flak Net
     if (
       trimmed === '3' ||
       trimmed === '03' ||
@@ -818,25 +894,10 @@ export class MuthurTerminalCartridge implements Cartridge {
       trimmed === 'ORBITAL' ||
       trimmed === 'ORBITAL INTERCEPT'
     ) {
-      this.stopTerminalSequencesAudio();
-      this.destructActive = false;
-      this.appendLines(
-        [
-          echoLine,
-          {
-            text: 'CALIBRATING SURFACE-TO-ORBIT RADAR 03 // FLAK NET...',
-            tone: 'amber',
-          },
-        ],
-        false
-      );
-      this.glitchPulse = 0.65;
-      this.pendingLaunchProgram = 'flak';
-      this.pendingLaunchTimer = 0.34;
+      this.launchCartridgeInstant('flak');
       return;
     }
 
-    // 4. Program 4: Derelict Trench // Vector Run
     if (
       trimmed === '4' ||
       trimmed === '04' ||
@@ -849,21 +910,7 @@ export class MuthurTerminalCartridge implements Cartridge {
       trimmed === 'VECTOR RUN' ||
       trimmed === 'DERELICT TRENCH'
     ) {
-      this.stopTerminalSequencesAudio();
-      this.destructActive = false;
-      this.appendLines(
-        [
-          echoLine,
-          {
-            text: 'ENGAGING DROP-SHIP FLIGHT VECTOR 04 // DERELICT TRENCH...',
-            tone: 'amber',
-          },
-        ],
-        false
-      );
-      this.glitchPulse = 0.65;
-      this.pendingLaunchProgram = 'trench';
-      this.pendingLaunchTimer = 0.34;
+      this.launchCartridgeInstant('trench');
       return;
     }
 
@@ -880,29 +927,17 @@ export class MuthurTerminalCartridge implements Cartridge {
       this.appendLines(
         [
           echoLine,
-          {
-            text: 'SIMULATIONS   : RUN [1-4] | LANDER | PERIMETER | FLAK | TRENCH | SCORES',
-            tone: 'bright',
-          },
-          {
-            text: 'SHIP SYSTEMS  : CREW | BIOSCAN | SIGNAL | DIAG | STATUS | DIR | CLS',
-            tone: 'green',
-          },
-          {
-            text: 'CLASSIFIED    : QUERY <TEXT> | ASK <TEXT> | ORDER 937 | DESTRUCT',
-            tone: 'amber',
-          },
-          {
-            text: 'DISPLAY/AUDIO : PHOSPHOR <GREEN|AMBER|CYAN> | MUTE | [TAB] AUTOCOMPLETE',
-            tone: 'green',
-          },
+          { text: 'PROGRAMS    : [1] LANDER | [2] PERIMETER | [3] FLAK | [4] TRENCH', tone: 'bright' },
+          { text: 'TELEMETRY   : LEADERBOARD | DIAG | DIR | CLS | WHEEL / PGUP / PGDN SCROLL', tone: 'green' },
+          { text: 'SHIP OPS    : CREW | BIOSCAN | SIGNAL | QUERY <TEXT> | ORDER 937 | DESTRUCT', tone: 'amber' },
+          { text: 'MONITOR     : CRT <ON|OFF> | PHOSPHOR <GREEN|AMBER|CYAN> | MUTE', tone: 'cyan' },
         ],
         true
       );
       return;
     }
 
-    // 7. QUERY <text> / ASK <text> — Ripley-vs-MU-TH-UR Interrogation Parser!
+    // 7. QUERY <text> / ASK <text>
     if (trimmed.startsWith('QUERY') || trimmed.startsWith('ASK')) {
       const q = trimmed.replace(/^(QUERY|ASK)\s*/, '').trim();
       this.host.audio.playAlienComputerActivity(0.45);
@@ -910,7 +945,7 @@ export class MuthurTerminalCartridge implements Cartridge {
         this.appendLines(
           [
             echoLine,
-            { text: 'SYNTAX: QUERY <SUBJECT> (E.G. ALIEN, CHANCES, KILL, COURSE)', tone: 'amber' },
+            { text: 'SYNTAX: QUERY <SUBJECT> (E.G. ALIEN, CHANCES, KILL, COURSE, JONES)', tone: 'amber' },
           ],
           true
         );
@@ -966,7 +1001,7 @@ export class MuthurTerminalCartridge implements Cartridge {
       return;
     }
 
-    // 9. BIOSCAN / MEDBAY (2-second animated phosphor chest-cavity scan!)
+    // 9. BIOSCAN / MEDBAY
     if (trimmed === 'BIOSCAN' || trimmed === 'MEDBAY') {
       this.bioscanActive = true;
       this.bioscanElapsed = 0;
@@ -983,7 +1018,7 @@ export class MuthurTerminalCartridge implements Cartridge {
       return;
     }
 
-    // 10. SIGNAL / DECODE / BEACON (3-second animated waveform + acoustic beacon!)
+    // 10. SIGNAL / DECODE / BEACON
     if (trimmed === 'SIGNAL' || trimmed === 'DECODE' || trimmed === 'BEACON') {
       this.signalActive = true;
       this.signalElapsed = 0;
@@ -1000,7 +1035,7 @@ export class MuthurTerminalCartridge implements Cartridge {
       return;
     }
 
-    // 11. DESTRUCT / SELF-DESTRUCT (Interactive 10-second Nostromo Self-Destruct!)
+    // 11. DESTRUCT / SELF-DESTRUCT
     if (trimmed === 'DESTRUCT' || trimmed === 'SELF-DESTRUCT' || trimmed === 'SELFDESTRUCT') {
       if (this.destructActive) {
         this.appendLines(
@@ -1010,6 +1045,8 @@ export class MuthurTerminalCartridge implements Cartridge {
         return;
       }
       this.destructActive = true;
+      this.destructConfirmArmed = false;
+      this.shipOpsOpen = false;
       this.destructRemaining = 10.0;
       this.destructLastAnnouncedSec = 11;
       this.destructKlaxonPulseTimer = 0;
@@ -1031,7 +1068,34 @@ export class MuthurTerminalCartridge implements Cartridge {
       return;
     }
 
-    // 12. PHOSPHOR <GREEN | AMBER | CYAN> / THEME
+    // 12a. CRT <ON | OFF | 1979 | CRISP>
+    if (trimmed.startsWith('CRT')) {
+      const arg = trimmed.replace(/^CRT\s*/, '').trim();
+      const order: CrtPreset[] = ['CLASSIC_1979', 'CRISP'];
+      let next: CrtPreset | null = null;
+      if (!arg) {
+        next = order[(order.indexOf(this.host.getCrtPreset()) + 1) % order.length];
+      } else if (arg === 'OFF' || arg === 'CRISP' || arg === 'FLAT' || arg === 'CLEAN' || arg === 'MODERN') {
+        next = 'CRISP';
+      } else if (arg === 'ON' || arg === '1979' || arg === 'CLASSIC' || arg === 'CLASSIC_1979') {
+        next = 'CLASSIC_1979';
+      }
+      if (!next) {
+        this.appendLines(
+          [echoLine, { text: 'SYNTAX: CRT <ON | OFF>', tone: 'amber' }],
+          true
+        );
+        return;
+      }
+      this.host.setCrtPreset(next);
+      this.appendLines(
+        [echoLine, { text: `1979 CRT DISPLAY MODE -> ${CRT_PRESET_CONFIG[next].label}`, tone: 'bright' }],
+        true
+      );
+      return;
+    }
+
+    // 12b. PHOSPHOR <GREEN | AMBER | CYAN>
     if (trimmed.startsWith('PHOSPHOR') || trimmed.startsWith('THEME')) {
       const arg = trimmed.replace(/^(PHOSPHOR|THEME)\s*/, '').trim();
       const cycleOrder: PhosphorTheme[] = ['GREEN', 'AMBER', 'CYAN'];
@@ -1049,17 +1113,14 @@ export class MuthurTerminalCartridge implements Cartridge {
 
       if (!nextTheme) {
         this.appendLines(
-          [
-            echoLine,
-            { text: 'SYNTAX: PHOSPHOR <GREEN | AMBER | CYAN>', tone: 'amber' },
-          ],
+          [echoLine, { text: 'SYNTAX: PHOSPHOR <GREEN | AMBER | CYAN>', tone: 'amber' }],
           true
         );
         return;
       }
       this.host.setPhosphorTheme(nextTheme);
-      this.glitchPulse = 0.4;
-      this.host.audio.playButtonLatchLock(1.04, 0.9);
+      this.glitchPulse = 0.32;
+      this.host.audio.playButtonLatchLock(1.04, 0.85);
       const label =
         nextTheme === 'GREEN'
           ? 'P39 PHOSPHOR GREEN (NOSTROMO STANDARD)'
@@ -1073,38 +1134,39 @@ export class MuthurTerminalCartridge implements Cartridge {
       return;
     }
 
-    // 13. SCORES / LEADERBOARD (Unified Top-5 Board across all 4 arcade games!)
+    // 13. SCORES / LEADERBOARD — Vertically stacked (1 entry per line, zero horizontal squishing!)
     if (trimmed === 'SCORES' || trimmed === 'LEADERBOARD' || trimmed === 'HIGHSCORES') {
       this.host.audio.playAlienComputerActivity(0.45);
-      const formatTop = (id: CartridgeProgramId, label: string): TerminalLine[] => {
-        const list = this.hubLeaders.getTopScores(id);
-        const st = this.hubLeaders.getLeaderState(id).status;
-        if (list.length === 0) {
-          return [
-            {
-              text: `  ${label.padEnd(12)} ${st === 'LOADING' ? '[SYNCING UPLINK...]' : '[NO HUMAN SCORES YET]'}`,
-              tone: 'dim',
-            },
-          ];
-        }
-        const compact = list
-          .slice(0, 5)
-          .map((e, i) => `#${i + 1} ${e.callsign.slice(0, 10)}:${e.score.toLocaleString()}`)
-          .join(' | ');
-        return [{ text: `  ${label.padEnd(11)} ${compact}`, tone: 'green' }];
-      };
+      const out: TerminalLine[] = [
+        echoLine,
+        { text: 'ORBITAL RELAY // LEADERBOARD ACROSS ALL 4 PROGRAMS (SCROLL FOR FULL LIST):', tone: 'amber' },
+      ];
 
-      this.appendLines(
-        [
-          echoLine,
-          { text: 'GLOBAL TELEMETRY TOP-5 MANIFEST // ALL 4 SIMULATIONS:', tone: 'amber' },
-          ...formatTop('lander', '01 LANDER'),
-          ...formatTop('perimeter', '02 PERIMTR'),
-          ...formatTop('flak', '03 FLAKNET'),
-          ...formatTop('trench', '04 TRENCH'),
-        ],
-        true
-      );
+      for (const bay of CARTRIDGE_BAYS) {
+        const list = this.hubLeaders.getTopScores(bay.programId);
+        const st = this.hubLeaders.getLeaderState(bay.programId).status;
+        out.push({ text: `[${bay.slotCode}] ${bay.title}`, tone: 'bright' });
+        if (list.length === 0) {
+          out.push({
+            text:
+              st === 'LOADING'
+                ? '  ◌ SYNCING ORBITAL RELAY...'
+                : '  ○ NO VERIFIED RECORDS LOGGED YET',
+            tone: 'secondary',
+          });
+        } else {
+          list.slice(0, 3).forEach((entry, idx) => {
+            const rankStr = `#${String(idx + 1).padStart(2, '0')}`;
+            const csStr = entry.callsign.slice(0, 12).padEnd(13);
+            out.push({
+              text: `  ${rankStr}  ${csStr} ${entry.score.toLocaleString()} PTS`,
+              tone: idx === 0 ? 'amber' : 'green',
+            });
+          });
+        }
+      }
+
+      this.appendLines(out, true);
       return;
     }
 
@@ -1118,10 +1180,10 @@ export class MuthurTerminalCartridge implements Cartridge {
             text: 'VOLUME 180924609 // MAGNETIC TAPE ARCHIVE [64K FREE: 4,096 BYTES]',
             tone: 'amber',
           },
-          { text: '  01  ORBITAL_DESCENT.SIM     28,672 B   [LV-426 DROP TELEMETRY]', tone: 'green' },
-          { text: '  02  HADLEYS_PERIMETER.SIM   34,816 B   [UA 571-C SENTRY CAD]', tone: 'green' },
-          { text: '  03  FLAK_NET_RADAR.SIM      31,744 B   [M90 + BOSS INTERCEPT]', tone: 'green' },
-          { text: '  04  DERELICT_TRENCH.SIM     36,864 B   [3D VECTOR FLIGHT RUN]', tone: 'green' },
+          { text: '  01  LUNAR_LANDER.SIM        28,672 B   [6 SECTORS / ENDLESS]', tone: 'green' },
+          { text: '  02  HADLEYS_PERIMETER.SIM   34,816 B   [ENDLESS SIEGE CAD]', tone: 'green' },
+          { text: '  03  FLAK_NET.SIM            31,744 B   [ORBITAL INTERCEPT]', tone: 'green' },
+          { text: '  04  DERELICT_TRENCH.SIM     36,864 B   [3D VECTOR SORTIE]', tone: 'green' },
           { text: '  99  SPECIAL_ORDER_937.ENC    1,024 B   [EYES ONLY // RESTRICTED]', tone: 'amber' },
         ],
         true
@@ -1129,30 +1191,28 @@ export class MuthurTerminalCartridge implements Cartridge {
       return;
     }
 
-    // 15. DIAG / STATUS (Live ship subsystems + Firestore Uplink telemetry!)
+    // 15. DIAG / STATUS (Diegetic Orbital Relay copy — zero backend/Firestore leaks!)
     if (trimmed === 'STATUS' || trimmed === 'DIAG' || trimmed === 'SYSTEM') {
       this.host.audio.playAlienComputerActivity(0.45);
-      const audState = this.host.isMuted() ? 'MUTED' : 'NOMINAL';
+      const audState = this.host.isMuted()
+        ? 'MUTED'
+        : `ACTIVE (${Math.round(this.host.getMasterVolume() * 100)}%)`;
       const theme = this.host.getPhosphorTheme();
+      const preset = CRT_PRESET_CONFIG[this.host.getCrtPreset()].label;
       const uplink = this.hubLeaders.getUplinkSummary();
-      const pingTxt =
+      const relayTxt =
         uplink.liveCount > 0
-          ? `ONLINE (${uplink.liveCount}/${uplink.totalCount} DBs · ${uplink.avgPingMs ?? 24}MS)`
-          : 'OFFLINE / LOCAL ARCHIVE';
+          ? `LIVE (${uplink.liveCount}/${uplink.totalCount} CHANNELS · ${uplink.avgPingMs ?? 24}MS)`
+          : 'LOCAL TAPE ARCHIVE (OFFLINE)';
       this.appendLines(
         [
           echoLine,
-          { text: 'USCSS NOSTROMO // FULL HARDWARE & SUBSYSTEM DIAGNOSTIC:', tone: 'amber' },
+          { text: 'USCSS NOSTROMO // HARDWARE & TELEMETRY DIAGNOSTIC:', tone: 'amber' },
+          { text: '  HYPERSLEEP PODS : 7/7 STANDBY  |  COOLING UNITS 1-4: NOMINAL', tone: 'green' },
+          { text: `  DISPLAY PROFILE : ${preset}  |  PHOSPHOR: ${theme}`, tone: 'green' },
+          { text: `  ACOUSTIC BUS    : ${audState}`, tone: 'green' },
           {
-            text: `  HYPERSLEEP PODS : 7/7 STANDBY  |  ATMOS PROCESSOR : COOLING UNITS 1-4 OK`,
-            tone: 'green',
-          },
-          {
-            text: `  CORE 64K MEMORY : 65,536 BYTES OK  |  PHOSPHOR : ${theme}  |  AUDIO: ${audState}`,
-            tone: 'green',
-          },
-          {
-            text: `  FIRESTORE UPLINK: ${pingTxt}`,
+            text: `  ORBITAL RELAY   : ${relayTxt}`,
             tone: uplink.liveCount > 0 ? 'bright' : 'amber',
           },
         ],
@@ -1161,7 +1221,7 @@ export class MuthurTerminalCartridge implements Cartridge {
       return;
     }
 
-    // 16. Special Order 937 Classified Easter Egg
+    // 16. Special Order 937
     if (
       trimmed === '937' ||
       trimmed === 'ORDER 937' ||
@@ -1174,18 +1234,9 @@ export class MuthurTerminalCartridge implements Cartridge {
       this.appendLines(
         [
           echoLine,
-          {
-            text: '>>> DECRYPTING WEYLAND-YUTANI CLASSIFIED DIRECTIVE [SPECIAL ORDER 937] <<<',
-            tone: 'amber',
-          },
-          {
-            text: 'SCIENCE OFFICER EYES ONLY: PRIORITY ONE — INSURE RETURN OF ORGANISM',
-            tone: 'amber',
-          },
-          {
-            text: 'FOR ANALYSIS. ALL OTHER CONSIDERATIONS SECONDARY. CREW EXPENDABLE.',
-            tone: 'red',
-          },
+          { text: '>>> DECRYPTING WEYLAND-YUTANI CLASSIFIED DIRECTIVE [ORDER 937] <<<', tone: 'amber' },
+          { text: 'SCIENCE OFFICER EYES ONLY: PRIORITY ONE — INSURE RETURN OF ORGANISM', tone: 'amber' },
+          { text: 'FOR ANALYSIS. ALL OTHER CONSIDERATIONS SECONDARY. CREW EXPENDABLE.', tone: 'red' },
         ],
         true
       );
@@ -1208,7 +1259,7 @@ export class MuthurTerminalCartridge implements Cartridge {
       [
         echoLine,
         {
-          text: "DOES NOT COMPUTE // ENTER [1-4], 'HELP', 'QUERY <TEXT>', OR PRESS [TAB].",
+          text: "DOES NOT COMPUTE // PRESS [1-4] FOR CARTRIDGES, TYPE 'HELP', OR PRESS [TAB].",
           tone: 'amber',
         },
       ],
@@ -1227,14 +1278,12 @@ export class MuthurTerminalCartridge implements Cartridge {
       this.glitchPulse = Math.max(0, this.glitchPulse - clampedDt * 1.8);
     }
 
-    // Ambient computer thinking chirp
     this.ambientTimer -= clampedDt;
     if (this.ambientTimer <= 0 && !this.destructActive) {
       this.ambientTimer = 22 + Math.random() * 14;
       this.host.audio.playAlienComputerActivity(0.2);
     }
 
-    // 1. Step BIOSCAN 2-second animated sequence
     if (this.bioscanActive) {
       this.bioscanElapsed += clampedDt;
       if (this.bioscanElapsed >= this.bioscanDuration) {
@@ -1253,7 +1302,6 @@ export class MuthurTerminalCartridge implements Cartridge {
       }
     }
 
-    // 2. Step SIGNAL 3-second animated waveform sequence
     if (this.signalActive) {
       this.signalElapsed += clampedDt;
       if (this.signalElapsed >= this.signalDuration) {
@@ -1271,16 +1319,14 @@ export class MuthurTerminalCartridge implements Cartridge {
       }
     }
 
-    // 3. Step Interactive 10-second Nostromo SELF-DESTRUCT Sequence!
     if (this.destructWhiteoutTimer > 0) {
       this.destructWhiteoutTimer -= clampedDt;
-      // Dramatic CRT white-out static burst before cold reboot!
       ctx.save();
       const p = Math.max(0, this.destructWhiteoutTimer / 1.15);
       ctx.fillStyle = p > 0.35 ? '#FFF8EE' : '#080C09';
       ctx.fillRect(0, 0, this.viewportWidth, this.viewportHeight);
       for (let i = 0; i < 42; i++) {
-        ctx.fillStyle = i % 2 === 0 ? '#FFFFFF' : '#FFB000';
+        ctx.fillStyle = i % 2 === 0 ? '#FFFFFF' : THEME.ACCENT_AMBER;
         const ry = Math.random() * this.viewportHeight;
         ctx.fillRect(0, ry, this.viewportWidth, 2 + Math.random() * 8);
       }
@@ -1295,6 +1341,7 @@ export class MuthurTerminalCartridge implements Cartridge {
         glitch: 1.0,
         overdrive: 1.0,
         tubeTurnOn: 0.4,
+        chromaScale: 0.22,
       };
     }
 
@@ -1306,7 +1353,7 @@ export class MuthurTerminalCartridge implements Cartridge {
         this.appendLines(
           [
             {
-              text: `EMERGENCY DESTRUCT SYSTEM ARMED — T-MINUS ${String(secInt).padStart(2, '0')}...  (TYPE 'ABORT' TO CANCEL)`,
+              text: `EMERGENCY DESTRUCT ARMED — T-MINUS ${String(secInt).padStart(2, '0')}S (TYPE 'ABORT' TO CANCEL)`,
               tone: secInt <= 3 ? 'red' : 'amber',
             },
           ],
@@ -1329,58 +1376,54 @@ export class MuthurTerminalCartridge implements Cartridge {
       }
     }
 
-    // Pending program launch delay
-    if (this.pendingLaunchProgram !== null) {
-      this.pendingLaunchTimer -= clampedDt;
-      if (this.pendingLaunchTimer <= 0) {
-        const target = this.pendingLaunchProgram;
-        this.pendingLaunchProgram = null;
-        this.host.launchProgram(target);
-        return {
-          interference: 0.06,
-          glitch: 0.85,
-          overdrive: 0,
-          tubeTurnOn: 0,
-        };
-      }
-    }
-
-    // Typewriter output reveal with mechanical clacks
+    // Fast snappy typewriter reveal (~150 chars/sec so Hub feels responsive immediately)
     if (this.revealedCharCount < this.totalLineChars) {
       const prev = this.revealedCharCount;
       this.revealedCharCount = Math.min(
         this.totalLineChars,
-        this.revealedCharCount + clampedDt * 92
+        this.revealedCharCount + clampedDt * 165
       );
-      if (Math.floor(this.revealedCharCount / 3.2) > Math.floor(prev / 3.2)) {
-        this.host.audio.playAsmrScrollClack(0.7);
-      }
-    } else if (this.autoTypeQueue.length > 0) {
-      this.autoTypeTimer -= clampedDt;
-      if (this.autoTypeTimer <= 0) {
-        this.autoTypeTimer = 0.036;
-        const ch = this.autoTypeQueue[0];
-        this.autoTypeQueue = this.autoTypeQueue.slice(1);
-        this.inputBuffer += ch;
-        this.host.audio.playSfx('ui_keyclick', {
-          pitch: 0.96 + Math.random() * 0.12,
-          volume: 0.88,
-        });
-        if (this.autoTypeQueue.length === 0) {
-          this.host.audio.playSfx('keypress_return', { pitch: 0.96, volume: 0.95 });
-          this.executeCommand(this.inputBuffer);
-        }
+      if (Math.floor(this.revealedCharCount / 4.0) > Math.floor(prev / 4.0)) {
+        this.host.audio.playAsmrScrollClack(0.65);
       }
     }
 
     this.renderTerminal(ctx, totalTimeSec);
 
     return {
-      interference: this.destructActive ? 0.09 : 0.015,
+      interference: this.destructActive ? 0.09 : 0.014,
       glitch: this.glitchPulse,
       overdrive: this.destructActive ? 0.45 : 0,
       tubeTurnOn: 0,
+      chromaScale: 0.22,
     };
+  }
+
+  private pushChromeActionButton(
+    ctx: CanvasRenderingContext2D,
+    rect: ViewportRect,
+    label: string,
+    id: string,
+    accent: ChromeButtonAccent,
+    action: () => void,
+    opts?: { active?: boolean; fontPx?: number; subLabel?: string }
+  ): void {
+    const tmp: ChromeButtonHitbox[] = [];
+    drawChromeButton(
+      ctx,
+      rect,
+      label,
+      {
+        id,
+        accent,
+        hovered: this.hoveredHitId === id,
+        active: opts?.active,
+        fontPx: opts?.fontPx ?? 13,
+        subLabel: opts?.subLabel,
+      },
+      tmp
+    );
+    this.hitBoxes.push({ id, rect, action });
   }
 
   private renderTerminal(ctx: CanvasRenderingContext2D, timeSec: number): void {
@@ -1389,10 +1432,10 @@ export class MuthurTerminalCartridge implements Cartridge {
     this.hitBoxes = [];
 
     ctx.save();
-    ctx.fillStyle = COLORS.BG_DEEP;
+    ctx.fillStyle = THEME.BG_VOID;
     ctx.fillRect(0, 0, w, h);
 
-    // Subtle cathode glow (or pulsing red/amber alarm flood during Self-Destruct!)
+    // Subtle Nostromo cathode background gradient
     const glow = ctx.createRadialGradient(
       w * 0.45,
       h * 0.48,
@@ -1406,383 +1449,827 @@ export class MuthurTerminalCartridge implements Cartridge {
       glow.addColorStop(0, `rgba(180, 28, 12, ${alarmPulse.toFixed(3)})`);
       glow.addColorStop(1, 'rgba(20, 2, 1, 0.78)');
     } else {
-      glow.addColorStop(0, 'rgba(26, 86, 44, 0.15)');
-      glow.addColorStop(1, 'rgba(0, 0, 0, 0.52)');
+      glow.addColorStop(0, 'rgba(26, 86, 44, 0.14)');
+      glow.addColorStop(1, 'rgba(0, 0, 0, 0.54)');
     }
     ctx.fillStyle = glow;
     ctx.fillRect(0, 0, w, h);
 
-    const pad = Math.max(12, Math.round(Math.min(w, h) * 0.018));
-    const outerCol = this.destructActive
-      ? Math.sin(timeSec * 16) > 0
-        ? COLORS.RED_KLAXON
-        : '#FFB000'
-      : COLORS.GREEN_DIM;
-    this.drawCornerBrackets(ctx, pad, pad, w - pad * 2, h - pad * 2, 26, outerCol, this.destructActive ? 3.5 : 2.2);
-
-    // Pulsing warning border frame during Self-Destruct
-    if (this.destructActive) {
-      ctx.strokeStyle = Math.sin(timeSec * 16) > 0 ? COLORS.RED_KLAXON : '#FFB000';
-      ctx.lineWidth = 3.2;
-      ctx.strokeRect(pad + 4, pad + 4, w - pad * 2 - 8, h - pad * 2 - 8);
-    }
-
-    // Top Hardware Header Strip (with bigger readable pills!)
-    const topBarBottom = pad + 52;
-    ctx.strokeStyle = this.destructActive ? COLORS.RED_KLAXON : COLORS.GREEN_DIM;
-    ctx.lineWidth = 1.8;
+    // =========================================================================
+    // 1. UNIFIED 46PX TOP HEADER BAR (Non-overlapping even on <780px viewports!)
+    // =========================================================================
+    const topBarH = 46;
+    ctx.fillStyle = 'rgba(4, 11, 7, 0.96)';
+    ctx.fillRect(0, 0, w, topBarH);
+    ctx.strokeStyle = this.destructActive ? THEME.ALERT_RED_STROKE : THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.moveTo(pad + 14, topBarBottom);
-    ctx.lineTo(w - pad - 14, topBarBottom);
+    ctx.moveTo(0, topBarH - 0.5);
+    ctx.lineTo(w, topBarH - 0.5);
     ctx.stroke();
 
-    const isCompact = w < 780;
-    ctx.font = isCompact
-      ? 'bold 15px "Share Tech Mono", monospace'
-      : 'bold 19px "Share Tech Mono", monospace';
-    ctx.fillStyle = this.destructActive ? COLORS.RED_KLAXON : COLORS.GREEN_PRIMARY;
-    ctx.textAlign = 'left';
-    ctx.fillText(
-      this.destructActive
-        ? `⚠ EMERGENCY DESTRUCT ARMED // T-MINUS ${this.destructRemaining.toFixed(1)}S ⚠`
-        : isCompact
-          ? 'MU-TH-UR 6000 // OS HUB'
-          : 'INTERFACE 2037 // USCSS NOSTROMO // MU-TH-UR 6000 OS HUB',
-      pad + 16,
-      pad + 33
-    );
-
-    // Top-Right Hardware Pills (Phosphor Theme, Audio Mute, Fullscreen)
+    const isNarrow = w < 860;
+    const isUltraNarrow = w < 640;
+    const crtPreset = this.host.getCrtPreset();
+    const phosphor = this.host.getPhosphorTheme();
     const muted = this.host.isMuted();
     const isFs = this.host.getViewport().isFullscreen;
-    const theme = this.host.getPhosphorTheme();
 
-    const pills: Array<{
+    const crtOn = crtPreset === 'CLASSIC_1979';
+    const phosShort = phosphor === 'GREEN' ? 'GRN' : phosphor === 'AMBER' ? 'AMB' : 'CYN';
+
+    const topPills: Array<{
       id: string;
       label: string;
-      w: number;
-      accent: string;
-      onClick: () => void;
+      accent: ChromeButtonAccent;
+      active?: boolean;
+      action: () => void;
     }> = [
       {
+        id: 'hub-crt-preset',
+        label: isUltraNarrow
+          ? crtOn
+            ? '1979:ON'
+            : '1979:OFF'
+          : isNarrow
+            ? crtOn
+              ? '1979: ON'
+              : '1979: OFF'
+            : crtOn
+              ? '1979 CRT: ON'
+              : '1979 CRT: OFF',
+        accent: crtOn ? 'amber' : 'muted',
+        active: crtOn,
+        action: () => {
+          this.host.toggle1979Crt();
+        },
+      },
+      {
         id: 'hub-phosphor-cycle',
-        label: `CRT: ${theme}`,
-        w: isCompact ? 96 : 124,
-        accent: '#FFB000',
-        onClick: () => {
+        label: isUltraNarrow ? phosShort : isNarrow ? `P:${phosShort}` : `PHOSPHOR: ${phosphor}`,
+        accent: phosphor === 'AMBER' ? 'amber' : phosphor === 'CYAN' ? 'cyan' : 'green',
+        action: () => {
           const order: PhosphorTheme[] = ['GREEN', 'AMBER', 'CYAN'];
-          const next = order[(order.indexOf(theme) + 1) % order.length];
+          const next = order[(order.indexOf(phosphor) + 1) % order.length];
           this.host.setPhosphorTheme(next);
-          this.glitchPulse = 0.35;
+          this.host.audio.playButtonLatchLock(1.04, 0.85);
+          this.glitchPulse = 0.25;
         },
       },
       {
         id: 'hub-audio-toggle',
-        label: muted ? 'AUDIO: OFF' : 'AUDIO: ON',
-        w: isCompact ? 96 : 124,
-        accent: muted ? COLORS.RED_KLAXON : COLORS.GREEN_BRIGHT,
-        onClick: () => {
-          this.host.setMuted(!this.host.isMuted());
+        label: muted ? 'MUTED' : isUltraNarrow ? 'AUD' : 'AUDIO: ON',
+        accent: muted ? 'red' : 'green',
+        action: () => {
+          this.host.setMuted(!muted);
+          if (muted) this.host.audio.playButtonLatchLock(1.0, 0.8);
         },
       },
       {
         id: 'hub-fullscreen',
-        label: isFs ? 'EXIT FULL' : 'FULLSCR',
-        w: isCompact ? 90 : 118,
-        accent: COLORS.GREEN_PRIMARY,
-        onClick: () => {
+        label: isFs ? (isUltraNarrow ? 'WIN' : 'EXIT FS') : isUltraNarrow ? 'FS' : 'FULLSCR',
+        accent: 'muted',
+        action: () => {
+          this.host.audio.playButtonLatchLock(1.0, 0.8);
           this.host.toggleFullscreen();
         },
       },
     ];
 
-    let pillX = w - pad - 16;
-    const pillY = pad + 6;
-    const pillH = 38;
-    for (let i = pills.length - 1; i >= 0; i--) {
-      const p = pills[i];
-      pillX -= p.w;
-      const rect: ViewportRect = { x: pillX, y: pillY, width: p.w, height: pillH };
-      this.hitBoxes.push({ id: p.id, rect, action: p.onClick });
-      const hov = this.hoveredHitId === p.id;
+    const pillH = 32;
+    const pillY = 7;
+    const pillGap = isNarrow ? 5 : 8;
+    const pillFontPx = isNarrow ? 12 : 13;
 
-      ctx.fillStyle = hov ? 'rgba(68, 255, 119, 0.24)' : 'rgba(6, 16, 10, 0.92)';
-      ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-      ctx.strokeStyle = hov ? '#FFFFFF' : p.accent;
-      ctx.lineWidth = hov ? 2.2 : 1.8;
-      ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-
-      ctx.font = isCompact
-        ? 'bold 13.5px "Share Tech Mono", monospace'
-        : 'bold 15.5px "Share Tech Mono", monospace';
-      ctx.fillStyle = hov ? '#FFFFFF' : p.accent;
-      ctx.textAlign = 'center';
-      ctx.fillText(p.label, rect.x + rect.width * 0.5, rect.y + 24);
-      pillX -= 8;
+    let pillCursorX = w - (isNarrow ? 8 : 14);
+    for (let i = topPills.length - 1; i >= 0; i--) {
+      const p = topPills[i];
+      ctx.font = pillFontPx >= 13 ? font('button', pillFontPx) : font('micro', 12);
+      const pw = Math.max(isUltraNarrow ? 54 : 80, Math.ceil(ctx.measureText(p.label).width) + 26);
+      pillCursorX -= pw;
+      this.pushChromeActionButton(
+        ctx,
+        { x: pillCursorX, y: pillY, width: pw, height: pillH },
+        p.label,
+        p.id,
+        p.accent,
+        p.action,
+        { fontPx: pillFontPx, active: p.active }
+      );
+      pillCursorX -= pillGap;
     }
 
-    // Significantly Larger Bottom Quick-Command Deck (2 generous rows or spacious full-width buttons!)
-    const bottomDeckH = w < 1120 ? 108 : 58;
-    const showAuxRack = w >= 1020 && h >= 540;
-    const contentTop = topBarBottom + 12;
-    const contentBottom = h - pad - bottomDeckH - 12;
-    const contentH = Math.max(200, contentBottom - contentTop);
-    const auxW = showAuxRack ? Math.min(352, Math.round(w * 0.275)) : 0;
-    const mainX = pad + 16;
-    const mainW = w - pad * 2 - 32 - (showAuxRack ? auxW + 16 : 0);
+    const leftMaxW = Math.max(80, pillCursorX - 14);
+    ctx.font = font('head', isNarrow ? 14 : 17);
+    ctx.fillStyle = this.destructActive ? THEME.ALERT_RED_TEXT : THEME.TEXT_PRIMARY;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const headerTitle = this.destructActive
+      ? `⚠ EMERGENCY DESTRUCT // T-${this.destructRemaining.toFixed(1)}S ⚠`
+      : isNarrow
+        ? 'MU-TH-UR 6000'
+        : 'INTERFACE 2037 // MU-TH-UR 6000 OS HUB';
+    drawEllipsizedText(ctx, headerTitle, isNarrow ? 10 : 14, topBarH * 0.5 + 0.5, leftMaxW);
 
-    ctx.fillStyle = 'rgba(4, 11, 7, 0.86)';
-    ctx.fillRect(mainX, contentTop, mainW, contentH);
-    this.drawCornerBrackets(
+    // =========================================================================
+    // 2. CLEAN 2-ZONE LAYOUT (Desktop: Left CLI + Right 4 Cartridge Bays)
+    // =========================================================================
+    const pad = isNarrow ? 10 : 14;
+    const bodyTop = topBarH + pad;
+    const bodyH = Math.max(220, h - bodyTop - pad);
+    const bodyW = w - pad * 2;
+
+    if (!isNarrow) {
+      const gap = 14;
+      const bayPanelW = Math.max(340, Math.min(460, Math.round(bodyW * 0.42)));
+      const cliPanelW = bodyW - bayPanelW - gap;
+
+      this.renderCliZone(ctx, pad, bodyTop, cliPanelW, bodyH, timeSec);
+      this.renderCartridgeBayZone(ctx, pad + cliPanelW + gap, bodyTop, bayPanelW, bodyH, timeSec, false);
+    } else {
+      // Compact vertical 2-zone stack for narrow / mobile screens (Top: 2x2 Cartridge Bays, Bottom: CLI)
+      const bayH = Math.min(220, Math.max(176, Math.round(bodyH * 0.42)));
+      const cliY = bodyTop + bayH + 10;
+      const cliH = Math.max(160, bodyTop + bodyH - cliY);
+
+      this.renderCartridgeBayZone(ctx, pad, bodyTop, bodyW, bayH, timeSec, true);
+      this.renderCliZone(ctx, pad, cliY, bodyW, cliH, timeSec);
+    }
+
+    // Pulsing warning frame border during active Self-Destruct
+    if (this.destructActive) {
+      ctx.strokeStyle = Math.sin(timeSec * 16) > 0 ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER;
+      ctx.lineWidth = 3.0;
+      ctx.strokeRect(2, topBarH + 2, w - 4, h - topBarH - 4);
+    }
+
+    ctx.restore();
+  }
+
+  private renderCliZone(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    timeSec: number
+  ): void {
+    const chipBarH = 38;
+    const shipOpsSubH = this.shipOpsOpen && !this.destructActive ? 38 : 0;
+    const trayReserve = chipBarH + (shipOpsSubH > 0 ? shipOpsSubH + 6 : 0) + 10;
+    const consoleH = Math.max(120, h - trayReserve);
+
+    ctx.save();
+    ctx.fillStyle = THEME.BG_PANEL;
+    ctx.fillRect(x, y, w, consoleH);
+    ctx.strokeStyle = this.destructActive ? THEME.ALERT_RED_STROKE : THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.4;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, consoleH - 1);
+    drawCornerBrackets(
       ctx,
-      mainX,
-      contentTop,
-      mainW,
-      contentH,
-      18,
-      this.destructActive ? COLORS.RED_KLAXON : COLORS.GREEN_PRIMARY,
+      x,
+      y,
+      w,
+      consoleH,
+      16,
+      this.destructActive ? THEME.ALERT_RED_STROKE : THEME.TEXT_PRIMARY,
       2.2
     );
 
-    // Responsive Monospace Font Sizing inside Main Terminal
-    const fontPx = Math.max(13.5, Math.min(18.5, Math.floor(Math.min(mainW / 44, contentH / 25))));
-    const lineStep = Math.round(fontPx * 1.56);
-    const textLeft = mainX + Math.max(14, Math.round(fontPx * 1.0));
-    let curY = contentTop + Math.max(26, Math.round(fontPx * 1.75));
+    // Console Header Bar
+    const hdrH = 30;
+    ctx.fillStyle = 'rgba(10, 26, 16, 0.78)';
+    ctx.fillRect(x + 2, y + 2, w - 4, hdrH - 2);
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.0;
+    ctx.beginPath();
+    ctx.moveTo(x + 8, y + hdrH);
+    ctx.lineTo(x + w - 8, y + hdrH);
+    ctx.stroke();
 
-    ctx.font = `bold ${fontPx}px "JetBrains Mono", monospace`;
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
     ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('MU-TH-UR // COMMAND INTERPRETER', x + 12, y + hdrH * 0.5 + 0.5);
 
+    if (this.scrollOffsetLines > 0) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = THEME.ACCENT_CYAN;
+      ctx.fillText(`↑ SCROLLBACK (+${this.scrollOffsetLines})`, x + w - 12, y + hdrH * 0.5 + 0.5);
+    } else {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = THEME.TEXT_SECONDARY;
+      ctx.fillText('WHEEL / PGUP SCROLL', x + w - 12, y + hdrH * 0.5 + 0.5);
+    }
+
+    // Prompt input bar pinned cleanly at bottom of CLI pane (taller chunky terminal in 1979 Mode)
+    const is1979 = isCrt1979Typography();
+    const promptH = is1979 ? 40 : 34;
+    const promptBoxY = y + consoleH - promptH - 6;
+    const animOverlayH = this.bioscanActive || this.signalActive ? 124 : 0;
+    const logTop = y + hdrH + 8;
+    const logBottom = promptBoxY - 6 - animOverlayH;
+    const logAvailH = Math.max(40, logBottom - logTop);
+
+    // Build wrapped display lines from revealed text (chunky large 1979 mainframe terminal font when ON)
+    const fontPx = is1979 ? (w < 520 ? 13 : 15) : w < 520 ? 12 : 13;
+    const lineStep = is1979 ? Math.round((fontPx * 1.15 + 0.6) * 1.48) : Math.round(fontPx * 1.54);
+    const textLeft = x + 12;
+    const scrollBarReserve = 14;
+    const textMaxW = Math.max(120, w - 24 - scrollBarReserve);
+
+    ctx.font = font('data', fontPx);
+    const wrappedRows: Array<{ text: string; tone: TerminalLine['tone'] }> = [];
     let remChars = Math.floor(this.revealedCharCount);
-    let activeRevealCursorDrawn = false;
-
-    const animOverlayReserve = this.bioscanActive || this.signalActive ? 132 : 0;
-    const maxTextY = contentBottom - lineStep * 2.1 - animOverlayReserve;
 
     for (let i = 0; i < this.lines.length; i++) {
       if (remChars <= 0) break;
       const line = this.lines[i];
-      const lineCost = Math.max(1, line.text.length);
-      const shownText = line.text.slice(0, remChars);
-      remChars -= lineCost;
+      const cost = Math.max(1, line.text.length);
+      const shown = line.text.slice(0, remChars);
+      remChars -= cost;
 
-      if (curY > maxTextY) {
-        break;
-      }
-
-      // Clickable program row interactive highlight box (bigger & easier to click!)
-      if (line.clickableCmd && line.clickableId && shownText.length > 4) {
-        const stackedBadge = Boolean(line.programId && mainW < 700);
-        const rowH = stackedBadge
-          ? Math.round(lineStep * 1.78)
-          : Math.round(lineStep * 1.12);
-        const rowRect: ViewportRect = {
-          x: textLeft - 8,
-          y: curY - Math.round(fontPx * 1.08),
-          width: Math.min(mainW - (textLeft - mainX) * 2 + 16, Math.max(300, mainW - 32)),
-          height: rowH,
-        };
-        this.hitBoxes.push({
-          id: line.clickableId,
-          rect: rowRect,
-          autoTypeCmd: line.clickableCmd,
-        });
-
-        const isRowHovered = this.hoveredHitId === line.clickableId;
-        ctx.fillStyle = isRowHovered
-          ? 'rgba(255, 176, 0, 0.24)'
-          : 'rgba(59, 224, 104, 0.08)';
-        ctx.fillRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height);
-        ctx.strokeStyle = isRowHovered ? '#FFB000' : 'rgba(59, 224, 104, 0.42)';
-        ctx.lineWidth = isRowHovered ? 2.2 : 1.4;
-        ctx.strokeRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height);
-
-        const prefix = isRowHovered ? shownText.replace(/^  /, '► ') : shownText;
-
-        if (line.programId && shownText.length >= line.text.length) {
-          const badgeText = this.hubLeaders.formatBadgeText(line.programId);
-          const leaderState = this.hubLeaders.getLeaderState(line.programId);
-          const hasChamp = Boolean(leaderState.leader);
-
-          if (!stackedBadge) {
-            ctx.save();
-            const badgeFontPx = Math.max(12, Math.min(fontPx - 0.5, 15.5));
-            ctx.font = `bold ${badgeFontPx}px "JetBrains Mono", monospace`;
-            const badgeW = ctx.measureText(badgeText).width;
-            const maxLeftW = Math.max(140, rowRect.width - badgeW - 24);
-
-            ctx.font = `bold ${fontPx}px "JetBrains Mono", monospace`;
-            ctx.textAlign = 'left';
-            ctx.fillStyle = isRowHovered ? '#FFD466' : '#44FF77';
-            ctx.fillText(prefix, textLeft, curY, maxLeftW);
-
-            ctx.font = `bold ${badgeFontPx}px "JetBrains Mono", monospace`;
-            ctx.textAlign = 'right';
-            ctx.fillStyle = hasChamp
-              ? isRowHovered
-                ? '#FFF6CC'
-                : '#FFB000'
-              : 'rgba(255, 176, 0, 0.68)';
-            ctx.fillText(badgeText, rowRect.x + rowRect.width - 10, curY);
-            ctx.restore();
-          } else {
-            ctx.fillStyle = isRowHovered ? '#FFD466' : '#44FF77';
-            ctx.fillText(prefix, textLeft, curY, rowRect.width - 16);
-
-            ctx.save();
-            ctx.font = `bold ${Math.max(11.5, fontPx - 2)}px "JetBrains Mono", monospace`;
-            ctx.textAlign = 'left';
-            ctx.fillStyle = hasChamp ? '#FFB000' : 'rgba(255, 176, 0, 0.68)';
-            ctx.fillText(`    ${badgeText}`, textLeft, curY + Math.round(lineStep * 0.74), rowRect.width - 20);
-            ctx.restore();
-          }
-        } else {
-          ctx.fillStyle = isRowHovered ? '#FFD466' : '#44FF77';
-          ctx.fillText(prefix, textLeft, curY);
-        }
-
-        curY += stackedBadge ? Math.round(lineStep * 0.92) : Math.round(lineStep * 0.16);
+      if (shown.length === 0) {
+        wrappedRows.push({ text: '', tone: line.tone });
       } else {
-        ctx.fillStyle =
-          line.tone === 'amber'
-            ? '#FFB000'
-            : line.tone === 'bright'
-              ? '#8EF5AB'
-              : line.tone === 'red'
-                ? COLORS.RED_KLAXON
-                : line.tone === 'dim'
-                  ? COLORS.GREEN_MID
-                  : '#44FF77';
-        ctx.fillText(shownText, textLeft, curY, mainW - (textLeft - mainX) - 14);
+        const subLines = wrapTextLines(ctx, shown, textMaxW);
+        for (const sl of subLines) {
+          wrappedRows.push({ text: sl, tone: line.tone });
+        }
       }
-
-      if (remChars <= 0 && this.revealedCharCount < this.totalLineChars && !activeRevealCursorDrawn) {
-        activeRevealCursorDrawn = true;
-        const tw = ctx.measureText(shownText).width;
-        ctx.fillStyle = '#FFB000';
-        ctx.fillRect(textLeft + tw + 4, curY - fontPx + 2, Math.round(fontPx * 0.62), fontPx);
-      }
-
-      curY += line.text.length === 0 ? Math.round(lineStep * 0.48) : lineStep;
     }
 
-    // Live Animated Movie Sequence Panes (BIOSCAN chest scan OR SIGNAL Fourier waveform!)
+    const visibleCapacity = Math.max(1, Math.floor(logAvailH / lineStep));
+    const maxScroll = Math.max(0, wrappedRows.length - visibleCapacity);
+    this.lastMaxScrollOffset = maxScroll;
+    if (this.scrollOffsetLines > maxScroll) {
+      this.scrollOffsetLines = maxScroll;
+    }
+
+    const endIdx = Math.max(0, wrappedRows.length - this.scrollOffsetLines);
+    const startIdx = Math.max(0, endIdx - visibleCapacity);
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    let curY = logTop + Math.round(lineStep * 0.5);
+    for (let i = startIdx; i < endIdx; i++) {
+      const row = wrappedRows[i];
+      ctx.fillStyle =
+        row.tone === 'amber'
+          ? THEME.ACCENT_AMBER_HI
+          : row.tone === 'bright'
+            ? THEME.TEXT_BRIGHT
+            : row.tone === 'red'
+              ? THEME.ALERT_RED_TEXT
+              : row.tone === 'cyan'
+                ? THEME.ACCENT_CYAN
+                : row.tone === 'secondary'
+                  ? THEME.TEXT_SECONDARY
+                  : THEME.TEXT_PRIMARY;
+      ctx.fillText(row.text, textLeft, curY);
+      curY += lineStep;
+    }
+
+    // Visual scrollback thumb rail on right edge of CLI log area
+    if (maxScroll > 0) {
+      const trackX = x + w - 10;
+      const trackY = logTop;
+      const trackH = logAvailH;
+      ctx.fillStyle = 'rgba(28, 92, 49, 0.35)';
+      ctx.fillRect(trackX, trackY, 4, trackH);
+
+      const thumbFrac = Math.max(0.14, visibleCapacity / Math.max(1, wrappedRows.length));
+      const thumbH = Math.max(18, Math.round(trackH * thumbFrac));
+      const scrollFrac = 1 - this.scrollOffsetLines / Math.max(1, maxScroll);
+      const thumbY = trackY + Math.round((trackH - thumbH) * scrollFrac);
+      ctx.fillStyle = THEME.TEXT_PRIMARY;
+      ctx.fillRect(trackX, thumbY, 4, thumbH);
+    }
+
+    // Live Animated Movie Sequence Panes (BIOSCAN or SIGNAL)
     if (this.bioscanActive) {
-      this.renderBioscanOverlay(ctx, textLeft, contentBottom - 164, mainW - 44, 118, timeSec);
+      this.renderBioscanOverlay(ctx, x + 10, logBottom + 4, w - 20, 114, timeSec);
     } else if (this.signalActive) {
-      this.renderSignalDecodeOverlay(ctx, textLeft, contentBottom - 164, mainW - 44, 118, timeSec);
+      this.renderSignalDecodeOverlay(ctx, x + 10, logBottom + 4, w - 20, 114, timeSec);
     }
 
-    // Live Interactive Command Prompt Row: `MU-TH-UR> █`
-    if (this.revealedCharCount >= this.totalLineChars) {
-      const promptY = Math.min(contentBottom - 18, Math.max(curY + 4, contentBottom - 26));
-      const promptPrefix = this.destructActive ? 'ABORT?> ' : 'MU-TH-UR> ';
-      ctx.font = `bold ${fontPx + 1}px "JetBrains Mono", monospace`;
-      ctx.fillStyle = this.destructActive ? COLORS.RED_KLAXON : '#44FF77';
-      ctx.fillText(promptPrefix, textLeft, promptY);
+    // Interactive Prompt Input Line (`MU-TH-UR> █`)
+    const promptRect: ViewportRect = { x: x + 8, y: promptBoxY, width: w - 16, height: promptH };
+    ctx.fillStyle = 'rgba(2, 8, 5, 0.96)';
+    ctx.fillRect(promptRect.x, promptRect.y, promptRect.width, promptRect.height);
+    ctx.strokeStyle = this.destructActive ? THEME.ALERT_RED_STROKE : THEME.TEXT_PRIMARY;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(
+      promptRect.x + 0.5,
+      promptRect.y + 0.5,
+      promptRect.width - 1,
+      promptRect.height - 1
+    );
 
-      const prefixW = ctx.measureText(promptPrefix).width;
-      ctx.fillStyle = '#FFB000';
-      ctx.fillText(this.inputBuffer, textLeft + prefixW, promptY);
+    const promptPrefix = this.destructActive ? 'ABORT?> ' : 'MU-TH-UR> ';
+    ctx.font = font('data', 14);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const py = promptRect.y + promptRect.height * 0.5 + 0.5;
+    ctx.fillStyle = this.destructActive ? THEME.ALERT_RED_TEXT : THEME.TEXT_PRIMARY;
+    ctx.fillText(promptPrefix, promptRect.x + 10, py);
 
-      const inputW = ctx.measureText(this.inputBuffer).width;
-      const cursorBlink = Math.sin(timeSec * 9.5) > -0.15 || this.autoTypeQueue.length > 0;
-      if (cursorBlink) {
-        ctx.fillStyle = this.destructActive ? COLORS.RED_KLAXON : '#44FF77';
-        ctx.fillRect(
-          textLeft + prefixW + inputW + 3,
-          promptY - fontPx + 1,
-          Math.max(10, Math.round(fontPx * 0.64)),
-          fontPx + 2
-        );
-      }
+    const prefixW = ctx.measureText(promptPrefix).width;
+    const availInputW = Math.max(40, promptRect.width - prefixW - 30);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+    const drawnInputW = drawEllipsizedText(
+      ctx,
+      this.inputBuffer,
+      promptRect.x + 10 + prefixW,
+      py,
+      availInputW
+    );
 
-      this.hitBoxes.push({
-        id: 'prompt-input-line',
-        rect: {
-          x: textLeft - 4,
-          y: promptY - fontPx - 6,
-          width: mainW - 36,
-          height: fontPx + 16,
+    if (Math.sin(timeSec * 9.5) > -0.15) {
+      ctx.fillStyle = this.destructActive ? THEME.ALERT_RED_TEXT : THEME.TEXT_PRIMARY;
+      const curH = is1979 ? 22 : 18;
+      const curW = is1979 ? 11 : 9;
+      ctx.fillRect(
+        promptRect.x + 12 + prefixW + drawnInputW,
+        promptRect.y + Math.round((promptRect.height - curH) * 0.5),
+        curW,
+        curH
+      );
+    }
+
+    this.hitBoxes.push({
+      id: 'prompt-input-line',
+      rect: promptRect,
+      action: () => this.focusMobileKeyboard(),
+    });
+
+    ctx.restore();
+
+    // Optional Guarded [SHIP OPS] Submenu Tray (CREW | BIOSCAN | SIGNAL | GUARDED DESTRUCT)
+    let trayY = y + consoleH + 8;
+    if (this.shipOpsOpen && !this.destructActive) {
+      const subGap = 6;
+      const subItems: Array<{
+        id: string;
+        label: string;
+        accent: ChromeButtonAccent;
+        action: () => void;
+      }> = [
+        {
+          id: 'shipops-crew',
+          label: '[CREW]',
+          accent: 'green',
+          action: () => {
+            this.host.audio.playButtonLatchLock(1.0, 0.85);
+            this.executeCommand('CREW');
+          },
         },
-        action: () => this.focusMobileKeyboard(),
+        {
+          id: 'shipops-bioscan',
+          label: '[BIOSCAN]',
+          accent: 'cyan',
+          action: () => {
+            this.host.audio.playButtonLatchLock(1.0, 0.85);
+            this.executeCommand('BIOSCAN');
+          },
+        },
+        {
+          id: 'shipops-signal',
+          label: '[SIGNAL]',
+          accent: 'amber',
+          action: () => {
+            this.host.audio.playButtonLatchLock(1.0, 0.85);
+            this.executeCommand('SIGNAL');
+          },
+        },
+        {
+          id: 'shipops-destruct',
+          label: this.destructConfirmArmed ? 'CONFIRM DESTRUCT?' : 'ARM DESTRUCT',
+          accent: 'red',
+          action: () => {
+            if (!this.destructConfirmArmed) {
+              this.destructConfirmArmed = true;
+              this.host.audio.playMutedAvionicsIndicatorBeep(true);
+              this.appendLines(
+                [
+                  {
+                    text: 'SAFETY INTERLOCK: CLICK [CONFIRM DESTRUCT?] AGAIN TO ARM SELF-DESTRUCT.',
+                    tone: 'red',
+                  },
+                ],
+                false
+              );
+            } else {
+              this.destructConfirmArmed = false;
+              this.executeCommand('DESTRUCT');
+            }
+          },
+        },
+      ];
+      const sw = Math.floor((w - subGap * (subItems.length - 1)) / subItems.length);
+      subItems.forEach((item, idx) => {
+        const bw = idx === subItems.length - 1 ? w - (sw + subGap) * idx : sw;
+        this.pushChromeActionButton(
+          ctx,
+          { x: x + idx * (sw + subGap), y: trayY, width: bw, height: shipOpsSubH },
+          item.label,
+          item.id,
+          item.accent,
+          item.action,
+          { active: item.id === 'shipops-destruct' && this.destructConfirmArmed, fontPx: 12 }
+        );
+      });
+      trayY += shipOpsSubH + 6;
+    }
+
+    // Clean 4-Chip Utility Bar: [HELP] | [SCORES] | [DIAG] | [SHIP OPS]
+    if (this.destructActive) {
+      this.pushChromeActionButton(
+        ctx,
+        { x, y: trayY, width: w, height: chipBarH },
+        '⚠ ABORT SELF-DESTRUCT SEQUENCE ⚠',
+        'chip-abort',
+        'red',
+        () => this.executeCommand('ABORT'),
+        { active: true, fontPx: 14 }
+      );
+    } else {
+      const chips: Array<{
+        id: string;
+        label: string;
+        accent: ChromeButtonAccent;
+        active?: boolean;
+        action: () => void;
+      }> = [
+        {
+          id: 'chip-help',
+          label: '[HELP]',
+          accent: 'green',
+          action: () => {
+            this.host.audio.playButtonLatchLock(1.0, 0.8);
+            this.executeCommand('HELP');
+          },
+        },
+        {
+          id: 'chip-scores',
+          label: '[LEADERBOARD]',
+          accent: 'amber',
+          action: () => {
+            this.host.audio.playButtonLatchLock(1.0, 0.8);
+            this.executeCommand('SCORES');
+          },
+        },
+        {
+          id: 'chip-diag',
+          label: '[DIAG]',
+          accent: 'cyan',
+          action: () => {
+            this.host.audio.playButtonLatchLock(1.0, 0.8);
+            this.executeCommand('DIAG');
+          },
+        },
+        {
+          id: 'chip-shipops',
+          label: this.shipOpsOpen ? '[SHIP OPS ▲]' : '[SHIP OPS ▼]',
+          accent: this.shipOpsOpen ? 'amber' : 'muted',
+          active: this.shipOpsOpen,
+          action: () => {
+            this.host.audio.playButtonLatchLock(0.98, 0.85);
+            this.shipOpsOpen = !this.shipOpsOpen;
+            this.destructConfirmArmed = false;
+          },
+        },
+      ];
+      const gap = 8;
+      const cw = Math.floor((w - gap * (chips.length - 1)) / chips.length);
+      chips.forEach((chip, idx) => {
+        const bw = idx === chips.length - 1 ? w - (cw + gap) * idx : cw;
+        this.pushChromeActionButton(
+          ctx,
+          { x: x + idx * (cw + gap), y: trayY, width: bw, height: chipBarH },
+          chip.label,
+          chip.id,
+          chip.accent,
+          chip.action,
+          { active: chip.active, fontPx: 13 }
+        );
       });
     }
+  }
 
-    // =========================================================================
-    // SIGNIFICANTLY LARGER BOTTOM QUICK-COMMAND BUTTON DECK!
-    // =========================================================================
-    const quickChips: Array<{ id: string; label: string; cmd: string; accent: string }> =
-      this.destructActive
-        ? [
-            { id: 'chip-abort', label: '⚠ ABORT SELF-DESTRUCT ⚠', cmd: 'ABORT', accent: COLORS.RED_KLAXON },
-          ]
-        : [
-            { id: 'chip-run-1', label: '[1] LANDER', cmd: 'RUN 1', accent: '#44FF77' },
-            { id: 'chip-run-2', label: '[2] PERIMETER', cmd: 'RUN 2', accent: '#FFB000' },
-            { id: 'chip-run-3', label: '[3] FLAK NET', cmd: 'RUN 3', accent: '#8EF5AB' },
-            { id: 'chip-run-4', label: '[4] VECTOR RUN', cmd: 'RUN 4', accent: '#FFF6CC' },
-            { id: 'chip-scores', label: '[SCORES]', cmd: 'SCORES', accent: '#FFB000' },
-            { id: 'chip-bioscan', label: '[BIOSCAN]', cmd: 'BIOSCAN', accent: '#44FF77' },
-            { id: 'chip-signal', label: '[SIGNAL]', cmd: 'SIGNAL', accent: '#8EF5AB' },
-            { id: 'chip-destruct', label: '[DESTRUCT]', cmd: 'DESTRUCT', accent: COLORS.RED_KLAXON },
-            { id: 'chip-help', label: '[HELP]', cmd: 'HELP', accent: '#44FF77' },
-          ];
+  private renderCartridgeBayZone(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    _timeSec: number,
+    compactGrid: boolean
+  ): void {
+    ctx.save();
+    ctx.fillStyle = THEME.BG_PANEL;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.4;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    drawCornerBrackets(ctx, x, y, w, h, 16, THEME.TEXT_PRIMARY, 2.0);
 
-    const deckX = mainX;
-    const deckW = w - pad * 2 - 32;
-    const deckY = contentBottom + 10;
-    const twoRows = w < 1120 && quickChips.length > 1;
-    const rowCount = twoRows ? 2 : 1;
-    const perRow = twoRows ? Math.ceil(quickChips.length / 2) : quickChips.length;
-    const gap = 9;
-    const btnH = twoRows ? 48 : 50;
+    // Authentic 1979 MU-TH-UR Mainframe Header Bar (monochrome P39 green + amber accents only)
+    const hdrH = 30;
+    ctx.fillStyle = 'rgba(10, 26, 16, 0.78)';
+    ctx.fillRect(x + 2, y + 2, w - 4, hdrH - 2);
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
+    ctx.lineWidth = 1.0;
+    ctx.beginPath();
+    ctx.moveTo(x + 8, y + hdrH);
+    ctx.lineTo(x + w - 8, y + hdrH);
+    ctx.stroke();
 
-    for (let r = 0; r < rowCount; r++) {
-      const slice = quickChips.slice(r * perRow, (r + 1) * perRow);
-      const count = slice.length;
-      if (count === 0) continue;
-      const bw = Math.floor((deckW - gap * (count - 1)) / count);
-      const by = deckY + r * (btnH + 8);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
+    drawEllipsizedText(ctx, 'SYSTEM PROGRAM DIRECTORY // ROM [1-4]', x + 12, y + hdrH * 0.5 + 0.5, w - 24);
 
-      for (let c = 0; c < count; c++) {
-        const chip = slice[c];
-        const rect: ViewportRect = {
-          x: deckX + c * (bw + gap),
-          y: by,
-          width: bw,
-          height: btnH,
+    const padInner = 12;
+    const availW = w - padInner * 2;
+    const listTop = y + hdrH + 10;
+
+    const formatChamp = (programId: CartridgeProgramId): { text: string; live: boolean } => {
+      const st = this.hubLeaders.getLeaderState(programId);
+      if (st.leader) {
+        return {
+          text: `#01 ${st.leader.callsign}  ${st.leader.score.toLocaleString()} PTS`,
+          live: true,
         };
-        this.hitBoxes.push({ id: chip.id, rect, autoTypeCmd: chip.cmd });
-        const hov = this.hoveredHitId === chip.id;
-
-        ctx.fillStyle = hov
-          ? 'rgba(255, 176, 0, 0.28)'
-          : chip.accent === COLORS.RED_KLAXON
-            ? 'rgba(42, 8, 6, 0.92)'
-            : 'rgba(6, 20, 11, 0.94)';
-        ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-        ctx.strokeStyle = hov ? '#FFFFFF' : chip.accent;
-        ctx.lineWidth = hov ? 2.6 : 1.9;
-        ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-
-        const btnFontPx = bw < 115 ? 14 : 16.5;
-        ctx.font = `bold ${btnFontPx}px "Share Tech Mono", monospace`;
-        ctx.fillStyle = hov ? '#FFFFFF' : chip.accent;
-        ctx.textAlign = 'center';
-        ctx.fillText(
-          chip.label,
-          rect.x + rect.width * 0.5,
-          rect.y + rect.height * 0.5 + btnFontPx * 0.35,
-          rect.width - 10
-        );
       }
-    }
+      return {
+        text: st.status === 'LOADING' ? 'SYNCING RELAY...' : 'UNCLAIMED',
+        live: false,
+      };
+    };
 
-    // Optional Right-Side Nostromo Auxiliary Telemetry & BIGGER Clickable Cartridge Slots!
-    if (showAuxRack) {
-      const auxX = mainX + mainW + 16;
-      this.renderAuxiliaryMainframeRack(ctx, auxX, contentTop, auxW, contentH, timeSec);
+    if (compactGrid) {
+      // Compact 2x2 Mainframe ROM Selector for narrow viewports
+      const availH = Math.max(110, y + h - listTop - 10);
+      const gap = 8;
+      const cellW = Math.floor((availW - gap) * 0.5);
+      const cellH = Math.floor((availH - gap) * 0.5);
+
+      CARTRIDGE_BAYS.forEach((bay, idx) => {
+        const col = idx % 2;
+        const row = Math.floor(idx / 2);
+        const bx = x + padInner + col * (cellW + gap);
+        const by = listTop + row * (cellH + gap);
+        const bw = col === 1 ? availW - cellW - gap : cellW;
+        const rect: ViewportRect = { x: bx, y: by, width: bw, height: cellH };
+        const id = `bay-slot-${bay.keyNum}`;
+        const hov = this.hoveredHitId === id;
+
+        this.hitBoxes.push({
+          id,
+          rect,
+          action: () => this.launchCartridgeInstant(bay.programId),
+        });
+
+        ctx.fillStyle = hov ? 'rgba(68, 255, 119, 0.14)' : 'rgba(5, 15, 9, 0.92)';
+        ctx.fillRect(bx, by, bw, cellH);
+        ctx.strokeStyle = hov ? THEME.ACCENT_AMBER_HI : THEME.BORDER_SUBTLE;
+        ctx.lineWidth = hov ? 1.8 : 1.1;
+        ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, cellH - 1);
+
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.font = font('head', 13);
+        ctx.fillStyle = hov ? THEME.ACCENT_AMBER_HI : THEME.TEXT_PRIMARY;
+        drawEllipsizedText(ctx, `[0${bay.keyNum}] ${bay.title}`, bx + 10, by + cellH * 0.34, bw - 18);
+
+        ctx.font = font('micro', 12);
+        ctx.fillStyle = THEME.TEXT_SECONDARY;
+        const champ = formatChamp(bay.programId);
+        drawEllipsizedText(ctx, champ.text, bx + 10, by + cellH * 0.72, bw - 18);
+      });
+    } else {
+      // Authentic 1979 CRT Program Directory: fixed crisp rows (NEVER stretched into hollow boxes!)
+      // + Live Selected Program Dossier & Top Leaderboard telemetry filling lower viewport cleanly
+      const is1979Dir = isCrt1979Typography();
+      const availH = Math.max(180, y + h - listTop - 12);
+      const rowGap = 6;
+      const minRowH = is1979Dir ? 64 : 58;
+      const maxRowH = is1979Dir ? 78 : 72;
+      const rowH = Math.max(minRowH, Math.min(maxRowH, Math.floor((availH - 170 - rowGap * 3) / 4)));
+      const effectiveRowH = availH < 400 ? Math.max(54, Math.floor((availH - rowGap * 3) / 4)) : rowH;
+
+      let focusedBay: CartridgeBaySpec = CARTRIDGE_BAYS[0];
+      for (const b of CARTRIDGE_BAYS) {
+        if (this.hoveredHitId === `bay-slot-${b.keyNum}`) {
+          focusedBay = b;
+          break;
+        }
+      }
+
+      // Column micro-header rule
+      const colHdrY = listTop + 6;
+      ctx.font = font('micro', 12);
+      ctx.fillStyle = THEME.TEXT_SECONDARY;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('ROM // PROGRAM', x + padInner + 8, colHdrY);
+      ctx.textAlign = 'right';
+      ctx.fillText('EXEC', x + padInner + availW - 8, colHdrY);
+
+      ctx.strokeStyle = THEME.BORDER_SUBTLE;
+      ctx.lineWidth = 1.0;
+      ctx.beginPath();
+      ctx.moveTo(x + padInner, listTop + 18);
+      ctx.lineTo(x + padInner + availW, listTop + 18);
+      ctx.stroke();
+
+      const rowsStartY = listTop + 26;
+
+      CARTRIDGE_BAYS.forEach((bay, idx) => {
+        const bx = x + padInner;
+        const by = rowsStartY + idx * (effectiveRowH + rowGap);
+        const rect: ViewportRect = { x: bx, y: by, width: availW, height: effectiveRowH };
+        const id = `bay-slot-${bay.keyNum}`;
+        const hov = this.hoveredHitId === id;
+
+        this.hitBoxes.push({
+          id,
+          rect,
+          action: () => this.launchCartridgeInstant(bay.programId),
+        });
+
+        // Clean monochrome CRT directory row (no thick rainbow stripes or SaaS card chrome)
+        ctx.fillStyle = hov ? 'rgba(68, 255, 119, 0.14)' : idx % 2 === 0 ? 'rgba(6, 18, 11, 0.84)' : 'rgba(4, 13, 8, 0.84)';
+        ctx.fillRect(bx, by, availW, effectiveRowH);
+        ctx.strokeStyle = hov ? THEME.ACCENT_AMBER_HI : THEME.BORDER_SUBTLE;
+        ctx.lineWidth = hov ? 1.8 : 1.0;
+        ctx.strokeRect(bx + 0.5, by + 0.5, availW - 1, effectiveRowH - 1);
+
+        // Subtle left cursor chevron on hover only
+        if (hov) {
+          ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+          ctx.fillRect(bx + 2, by + 2, 3, effectiveRowH - 4);
+        }
+
+        // Row 1: Left-aligned Program Title + Right-aligned Execute Tag
+        const line1Y = by + Math.round(effectiveRowH * 0.30);
+        const line2Y = by + Math.round(effectiveRowH * 0.72);
+        const textX = bx + 12;
+        const execRight = bx + availW - 10;
+
+        const execTag = hov ? '► RUN' : `[${bay.keyNum}]`;
+        ctx.font = font('data', 13);
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = hov ? THEME.ACCENT_AMBER_HI : THEME.TEXT_SECONDARY;
+        ctx.fillText(execTag, execRight, line1Y);
+        const execReserve = hov ? 62 : 40;
+
+        const titleMaxW = Math.max(120, availW - 24 - execReserve);
+        ctx.textAlign = 'left';
+        ctx.font = font('head', 15);
+        ctx.fillStyle = hov ? THEME.ACCENT_AMBER_HI : THEME.TEXT_PRIMARY;
+        drawEllipsizedText(ctx, `0${bay.keyNum}  ${bay.title}`, textX, line1Y, titleMaxW);
+
+        // Row 2: Full-width split — Mode left, #01 Leader right (zero truncation on long callsigns!)
+        const champ = formatChamp(bay.programId);
+        const champCompact = champ.text.replace(/\s+PTS$/, '');
+        ctx.font = font('micro', 12);
+        const champW = Math.min(availW * 0.56, Math.ceil(ctx.measureText(champCompact).width) + 4);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = hov ? THEME.ACCENT_AMBER_HI : THEME.TEXT_BRIGHT;
+        drawEllipsizedText(ctx, champCompact, execRight, line2Y, champW);
+
+        ctx.textAlign = 'left';
+        ctx.fillStyle = hov ? THEME.TEXT_BRIGHT : THEME.TEXT_SECONDARY;
+        const modeMaxW = Math.max(80, availW - 24 - champW - 10);
+        drawEllipsizedText(ctx, bay.ruleset, textX, line2Y, modeMaxW);
+      });
+
+      // Lower Right Mainframe Telemetry Panel: Selected Program Brief + Live Top-3 Leaderboard
+      const dossierTop = rowsStartY + 4 * (effectiveRowH + rowGap) + 8;
+      const dossierH = y + h - 12 - dossierTop;
+      if (dossierH >= 116) {
+        const dx = x + padInner;
+        const dw = availW;
+        ctx.fillStyle = 'rgba(3, 10, 6, 0.92)';
+        ctx.fillRect(dx, dossierTop, dw, dossierH);
+        ctx.strokeStyle = THEME.BORDER_SUBTLE;
+        ctx.lineWidth = 1.2;
+        ctx.strokeRect(dx + 0.5, dossierTop + 0.5, dw - 1, dossierH - 1);
+
+        // Header line
+        ctx.fillStyle = 'rgba(10, 26, 16, 0.72)';
+        ctx.fillRect(dx + 1, dossierTop + 1, dw - 2, 26);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.font = font('micro', 12);
+        ctx.fillStyle = THEME.ACCENT_AMBER;
+        drawEllipsizedText(
+          ctx,
+          `ROM 0${focusedBay.keyNum} TELEMETRY // ${focusedBay.title}`,
+          dx + 10,
+          dossierTop + 14,
+          dw - 20
+        );
+
+        const BRIEF_BY_ID: Record<CartridgeProgramId, { brief: string; keys: string }> = {
+          lander: {
+            brief: '6-sector precision orbital descent & Endless Deep-Survey.',
+            keys: 'W/A/D Thr · S Retro · LMB Radar · SPC 1X',
+          },
+          perimeter: {
+            brief: 'USCM turret killbox defense across escalating colony sectors.',
+            keys: '1-8 Build · Drag Aim · E Rearm · F/O/V/L/C/X Skills',
+          },
+          flak: {
+            brief: 'Surface-to-orbit ballistic intercept & shockwave deflections.',
+            keys: 'LMB/A/D Flak · RMB/SPACE/S EMP · Chain 2X Lead',
+          },
+          trench: {
+            brief: 'Low-altitude canyon strike jet run ahead of the Purge Wave.',
+            keys: 'Mouse Stick · W/S Thr · LMB Gun · RMB/SPC Missile',
+          },
+        };
+        const info = BRIEF_BY_ID[focusedBay.programId];
+
+        let curY = dossierTop + (is1979Dir ? 44 : 42);
+        const briefStep = is1979Dir ? 21 : 17;
+        ctx.font = font('prose', 12);
+        ctx.fillStyle = THEME.TEXT_BRIGHT;
+        const briefLines = wrapTextLines(ctx, info.brief, dw - 20, 2);
+        for (const bl of briefLines) {
+          ctx.fillText(bl, dx + 10, curY);
+          curY += briefStep;
+        }
+
+        ctx.font = font('micro', 12);
+        ctx.fillStyle = THEME.TEXT_SECONDARY;
+        drawEllipsizedText(ctx, `KEYS: ${info.keys}`, dx + 10, curY + 3, dw - 20);
+        curY += is1979Dir ? 25 : 22;
+
+        // Live Leaderboard Preview (fills vertical space cleanly on fullscreen desktops!)
+        if (dossierTop + dossierH - curY >= 46) {
+          ctx.strokeStyle = THEME.BORDER_SUBTLE;
+          ctx.lineWidth = 1.0;
+          ctx.beginPath();
+          ctx.moveTo(dx + 10, curY - 4);
+          ctx.lineTo(dx + dw - 10, curY - 4);
+          ctx.stroke();
+
+          const boardRowStep = is1979Dir ? 24 : 21;
+          const maxBoardRows = dossierH >= (is1979Dir ? 290 : 260) ? 5 : 3;
+          ctx.font = font('micro', 12);
+          ctx.fillStyle = THEME.ACCENT_AMBER;
+          ctx.fillText(`LIVE LEADERBOARD // TOP ${maxBoardRows}`, dx + 10, curY + 10);
+          curY += is1979Dir ? 27 : 24;
+
+          const top = this.hubLeaders.getTopScores(focusedBay.programId).slice(0, maxBoardRows);
+          if (top.length === 0) {
+            ctx.font = font('data', 12);
+            ctx.fillStyle = THEME.TEXT_SECONDARY;
+            ctx.fillText('AWAITING ORBITAL TELEMETRY...', dx + 10, curY + 4);
+          } else {
+            top.forEach((entry, idx) => {
+              if (curY + 30 > dossierTop + dossierH - 6) return;
+              ctx.font = font('data', 12);
+              ctx.textAlign = 'left';
+              ctx.fillStyle = idx === 0 ? THEME.ACCENT_AMBER_HI : THEME.TEXT_PRIMARY;
+              ctx.fillText(`#0${idx + 1}  ${entry.callsign}`, dx + 10, curY + 4);
+              ctx.textAlign = 'right';
+              ctx.fillStyle = idx === 0 ? THEME.ACCENT_AMBER_HI : THEME.TEXT_BRIGHT;
+              ctx.fillText(`${entry.score.toLocaleString()} PTS`, dx + dw - 10, curY + 4);
+              curY += boardRowStep;
+            });
+          }
+        }
+
+        // Bottom mainframe status bar inside telemetry dossier
+        if (dossierH >= 150) {
+          const footY = dossierTop + dossierH - 22;
+          ctx.strokeStyle = THEME.BORDER_SUBTLE;
+          ctx.lineWidth = 1.0;
+          ctx.beginPath();
+          ctx.moveTo(dx + 8, footY - 4);
+          ctx.lineTo(dx + dw - 8, footY - 4);
+          ctx.stroke();
+
+          ctx.font = font('micro', 12);
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = THEME.TEXT_SECONDARY;
+          drawEllipsizedText(
+            ctx,
+            `PRESS [1-4] OR CLICK ROW TO EXECUTE ROM 0${focusedBay.keyNum}`,
+            dx + 10,
+            footY + 9,
+            dw - 20
+          );
+        }
+      }
     }
 
     ctx.restore();
@@ -1798,66 +2285,69 @@ export class MuthurTerminalCartridge implements Cartridge {
   ): void {
     const p = Math.max(0, Math.min(1, this.bioscanElapsed / this.bioscanDuration));
     ctx.save();
-    ctx.fillStyle = 'rgba(3, 14, 8, 0.95)';
+    ctx.fillStyle = 'rgba(3, 14, 8, 0.96)';
     ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = p > 0.72 ? COLORS.RED_KLAXON : '#44FF77';
-    ctx.lineWidth = 2.0;
-    ctx.strokeRect(x, y, w, h);
+    ctx.strokeStyle = p > 0.72 ? THEME.ALERT_RED_STROKE : THEME.TEXT_PRIMARY;
+    ctx.lineWidth = 1.8;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 
-    // Creepy vector ribcage + parasitic anomaly silhouette on left
-    const cx = x + 68;
+    const cx = x + 60;
     const cy = y + h * 0.52;
-    ctx.strokeStyle = '#44FF77';
-    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = THEME.TEXT_PRIMARY;
+    ctx.lineWidth = 1.5;
     for (let r = -3; r <= 3; r++) {
-      const ry = cy + r * 11;
-      const rw = 36 - Math.abs(r) * 4;
+      const ry = cy + r * 10;
+      const rw = 32 - Math.abs(r) * 3.5;
       ctx.beginPath();
-      ctx.ellipse(cx, ry, rw, 5, 0, 0, Math.PI * 2);
+      ctx.ellipse(cx, ry, rw, 4.5, 0, 0, Math.PI * 2);
       ctx.stroke();
     }
-    // Pulsing parasitic embryo anomaly detected inside thorax!
     if (p > 0.32) {
       const anomPulse = 0.65 + 0.35 * Math.sin(timeSec * 22);
       ctx.strokeStyle = `rgba(255, 68, 34, ${anomPulse.toFixed(2)})`;
-      ctx.lineWidth = 2.4;
+      ctx.lineWidth = 2.2;
       ctx.beginPath();
-      ctx.arc(cx + 4, cy + 4, 14, 0, Math.PI * 2);
-      ctx.moveTo(cx + 4, cy + 18);
-      ctx.quadraticCurveTo(cx + 22, cy + 28, cx + 10, cy + 40);
+      ctx.arc(cx + 4, cy + 3, 12, 0, Math.PI * 2);
+      ctx.moveTo(cx + 4, cy + 15);
+      ctx.quadraticCurveTo(cx + 20, cy + 25, cx + 10, cy + 36);
       ctx.stroke();
     }
 
-    // Sweeping vertical phosphor scanner bar across thorax
     const scanY = y + 8 + p * (h - 16);
     ctx.strokeStyle = '#FFF6CC';
-    ctx.lineWidth = 2.2;
+    ctx.lineWidth = 2.0;
     ctx.beginPath();
-    ctx.moveTo(x + 12, scanY);
-    ctx.lineTo(x + 126, scanY);
+    ctx.moveTo(x + 10, scanY);
+    ctx.lineTo(x + 114, scanY);
     ctx.stroke();
 
+    const tx = x + 128;
+    const tw = Math.max(80, w - 138);
     ctx.textAlign = 'left';
-    ctx.font = 'bold 14.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(`MEDBAY AUTO-DOC // THORACIC SCAN ${Math.round(p * 100)}%`, x + 144, y + 28);
-    ctx.font = 'bold 13px "JetBrains Mono", monospace';
-    ctx.fillStyle = p > 0.55 ? COLORS.RED_KLAXON : '#8EF5AB';
-    ctx.fillText('SUBJECT: EXEC. OFFICER KANE // RESPIRATORY TRACT', x + 144, y + 54);
-    ctx.fillText(
+    ctx.textBaseline = 'middle';
+    ctx.font = font('head', 14);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+    drawEllipsizedText(ctx, `MEDBAY AUTO-DOC // THORACIC SCAN ${Math.round(p * 100)}%`, tx, y + 24, tw);
+
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = p > 0.55 ? THEME.ALERT_RED_TEXT : THEME.TEXT_BRIGHT;
+    drawEllipsizedText(ctx, 'SUBJECT: EXEC. OFFICER KANE // RESPIRATORY TRACT', tx, y + 48, tw);
+    drawEllipsizedText(
+      ctx,
       p > 0.45
         ? 'BIO-MASS DENSITY: SILICON-CARBON EXOSKELETON DETECTED'
         : 'MAPPING PULMONARY ARTERIES & STERNUM...',
-      x + 144,
-      y + 78,
-      w - 156
+      tx,
+      y + 72,
+      tw
     );
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+    drawEllipsizedText(
+      ctx,
       p > 0.72 ? 'WARNING: MOLECULAR ACID HEMOLYMPH — DO NOT CUT!' : 'ANALYZING CELLULAR STRUCTURE...',
-      x + 144,
-      y + 102,
-      w - 156
+      tx,
+      y + 96,
+      tw
     );
     ctx.restore();
   }
@@ -1872,32 +2362,34 @@ export class MuthurTerminalCartridge implements Cartridge {
   ): void {
     const p = Math.max(0, Math.min(1, this.signalElapsed / this.signalDuration));
     ctx.save();
-    ctx.fillStyle = 'rgba(4, 12, 8, 0.95)';
+    ctx.fillStyle = 'rgba(4, 12, 8, 0.96)';
     ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = '#FFB000';
-    ctx.lineWidth = 2.0;
-    ctx.strokeRect(x, y, w, h);
+    ctx.strokeStyle = THEME.ACCENT_AMBER;
+    ctx.lineWidth = 1.8;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 
     ctx.textAlign = 'left';
-    ctx.font = 'bold 14px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(
+    ctx.textBaseline = 'middle';
+    ctx.font = font('head', 13);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+    drawEllipsizedText(
+      ctx,
       `LV-426 ACOUSTIC BEACON // FOURIER DECODE ${Math.round(p * 100)}% [INTERVAL: 12.0S]`,
-      x + 14,
-      y + 24
+      x + 12,
+      y + 20,
+      w - 24
     );
 
-    // Live animated oscilloscope modulated beacon waveform!
-    const waveTop = y + 36;
-    const waveH = h - 54;
+    const waveTop = y + 34;
+    const waveH = h - 56;
     const midY = waveTop + waveH * 0.5;
-    ctx.strokeStyle = '#44FF77';
+    ctx.strokeStyle = THEME.TEXT_PRIMARY;
     ctx.lineWidth = 2.0;
     ctx.beginPath();
     const samples = 88;
     for (let i = 0; i <= samples; i++) {
       const f = i / samples;
-      const px = x + 14 + f * (w - 28);
+      const px = x + 12 + f * (w - 24);
       const env = Math.sin(f * Math.PI);
       const mod =
         Math.sin(f * 26 + timeSec * 15) * 0.55 +
@@ -1909,243 +2401,17 @@ export class MuthurTerminalCartridge implements Cartridge {
     }
     ctx.stroke();
 
-    ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#8EF5AB';
-    ctx.fillText(
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
+    drawEllipsizedText(
+      ctx,
       p > 0.65
         ? 'SYNTAX MATCH: NON-HUMAN ACOUSTIC WARNING PATTERN IDENTIFIED'
         : 'ISOLATING CARRIER HARMONICS FROM ATMOSPHERIC STATIC...',
-      x + 14,
-      y + h - 10
+      x + 12,
+      y + h - 14,
+      w - 24
     );
     ctx.restore();
-  }
-
-  private renderAuxiliaryMainframeRack(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    timeSec: number
-  ): void {
-    ctx.save();
-    ctx.fillStyle = 'rgba(4, 11, 7, 0.88)';
-    ctx.fillRect(x, y, w, h);
-    this.drawCornerBrackets(ctx, x, y, w, h, 18, COLORS.AMBER_CAUTION, 2.2);
-
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 16.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText('MU-TH-UR // TELEMETRY BUS', x + 14, y + 27);
-
-    ctx.strokeStyle = COLORS.AMBER_DIM;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x + 14, y + 36);
-    ctx.lineTo(x + w - 14, y + 36);
-    ctx.stroke();
-
-    // Dual Animated Magnetic Tape Reels Vector Graphic (compact cleanly at top to give big room for Slot Cards!)
-    const reelY = y + 76;
-    const reelR = 24;
-    const r1X = x + w * 0.31;
-    const r2X = x + w * 0.69;
-    const spin = timeSec * (this.destructActive ? 4.5 : 1.35);
-
-    [r1X, r2X].forEach((rx, idx) => {
-      const ang = idx === 0 ? spin : -spin * 0.85;
-      ctx.strokeStyle = COLORS.GREEN_PRIMARY;
-      ctx.lineWidth = 2.0;
-      ctx.beginPath();
-      ctx.arc(rx, reelY, reelR, 0, Math.PI * 2);
-      ctx.stroke();
-
-      ctx.strokeStyle = COLORS.GREEN_DIM;
-      ctx.beginPath();
-      ctx.arc(rx, reelY, reelR * 0.36, 0, Math.PI * 2);
-      ctx.stroke();
-
-      for (let s = 0; s < 3; s++) {
-        const sa = ang + (s * Math.PI * 2) / 3;
-        ctx.strokeStyle = '#FFB000';
-        ctx.lineWidth = 2.0;
-        ctx.beginPath();
-        ctx.moveTo(rx + Math.cos(sa) * 7, reelY + Math.sin(sa) * 7);
-        ctx.lineTo(rx + Math.cos(sa) * (reelR - 4), reelY + Math.sin(sa) * (reelR - 4));
-        ctx.stroke();
-      }
-    });
-
-    ctx.strokeStyle = COLORS.AMBER_BRIGHT;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(r1X, reelY + reelR);
-    ctx.lineTo(x + w * 0.5, reelY + reelR + 8);
-    ctx.lineTo(r2X, reelY + reelR);
-    ctx.stroke();
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 12px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_MID;
-    ctx.fillText('TAPE DRIVE 01-B // LOCKED', x + w * 0.5, reelY + reelR + 23);
-
-    // Compact Live 64K Core Memory Hex Matrix (4 crisp rows)
-    const regTop = reelY + reelR + 40;
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 13.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_BRIGHT;
-    ctx.fillText('CORE 64K // HEX MONITOR', x + 14, regTop);
-
-    ctx.font = 'bold 12px "JetBrains Mono", monospace';
-    const step = Math.floor(timeSec * 6);
-    const hexRows = h > 620 ? 5 : 3;
-    for (let r = 0; r < hexRows; r++) {
-      const addr = (0x2037 + r * 16).toString(16).toUpperCase();
-      const b0 = (((step + r * 41) * 251) & 0xff).toString(16).toUpperCase().padStart(2, '0');
-      const b1 = (((step + r * 19) * 509) & 0xff).toString(16).toUpperCase().padStart(2, '0');
-      const b2 = (((step + r * 73) * 811) & 0xff).toString(16).toUpperCase().padStart(2, '0');
-      const b3 = (((step + r * 11) * 397) & 0xff).toString(16).toUpperCase().padStart(2, '0');
-      ctx.fillStyle = r === step % hexRows ? '#FFB000' : COLORS.GREEN_PRIMARY;
-      ctx.fillText(`${addr}: ${b0} ${b1} ${b2} ${b3}`, x + 14, regTop + 18 + r * 17);
-    }
-
-    // =========================================================================
-    // SIGNIFICANTLY BIGGER, CLICKABLE CARTRIDGE LAUNCH CARDS (SLOT 01 .. 04)!
-    // Fills the rest of the Telemetry Bus cleanly with bold, easy-to-hit cards!
-    // =========================================================================
-    const cardsAreaTop = regTop + 26 + hexRows * 17;
-    const cardsAreaBottom = y + h - 12;
-    const cardsAvailH = Math.max(160, cardsAreaBottom - cardsAreaTop);
-    const cardGap = 10;
-    const cardH = Math.max(48, Math.min(84, Math.floor((cardsAvailH - cardGap * 3 - 22) / 4)));
-
-    ctx.font = 'bold 13px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText('SIMULATION CARTRIDGE SLOTS [CLICK]:', x + 14, cardsAreaTop + 10);
-
-    const slotSub = (id: CartridgeProgramId): string => {
-      const st = this.hubLeaders.getLeaderState(id);
-      if (st.leader) {
-        return `TOP: ${st.leader.callsign} // ${st.leader.score.toLocaleString()}`;
-      }
-      return st.status === 'LOADING' ? 'SYNCING UPLINK...' : 'RECORD UNCLAIMED';
-    };
-
-    const cards: Array<{
-      id: string;
-      cmd: string;
-      title: string;
-      rankedTag: string;
-      sub: string;
-      col: string;
-    }> = [
-      {
-        id: 'slot-card-1',
-        cmd: 'RUN 1',
-        title: 'SLOT 01: LUNAR LANDER',
-        rankedTag: '★ RANKED: 6-SEC / ENDLESS',
-        sub: slotSub('lander'),
-        col: '#44FF77',
-      },
-      {
-        id: 'slot-card-2',
-        cmd: 'RUN 2',
-        title: 'SLOT 02: PERIMETER CAD',
-        rankedTag: '★ RANKED: ENDLESS SIEGE',
-        sub: slotSub('perimeter'),
-        col: '#FFB000',
-      },
-      {
-        id: 'slot-card-3',
-        cmd: 'RUN 3',
-        title: 'SLOT 03: FLAK NET RADAR',
-        rankedTag: '★ RANKED: ARCADE WAVES',
-        sub: slotSub('flak'),
-        col: '#8EF5AB',
-      },
-      {
-        id: 'slot-card-4',
-        cmd: 'RUN 4',
-        title: 'SLOT 04: DERELICT TRENCH',
-        rankedTag: '★ RANKED: JET SORTIE',
-        sub: slotSub('trench'),
-        col: '#FFF6CC',
-      },
-    ];
-
-    const startCardY = cardsAreaTop + 20;
-    cards.forEach((c, idx) => {
-      const cy = startCardY + idx * (cardH + cardGap);
-      const rect: ViewportRect = { x: x + 12, y: cy, width: w - 24, height: cardH };
-      this.hitBoxes.push({ id: c.id, rect, autoTypeCmd: c.cmd });
-      const hov = this.hoveredHitId === c.id;
-
-      ctx.fillStyle = hov ? 'rgba(255, 176, 0, 0.24)' : 'rgba(10, 26, 15, 0.84)';
-      ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-      ctx.strokeStyle = hov ? '#FFFFFF' : c.col;
-      ctx.lineWidth = hov ? 2.4 : 1.8;
-      ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-
-      const titleFont = cardH >= 64 ? 16 : 14.5;
-      const rankFont = cardH >= 64 ? 12 : 11;
-      const subFont = cardH >= 64 ? 13 : 12;
-
-      ctx.textAlign = 'left';
-      ctx.font = `bold ${titleFont}px "Share Tech Mono", monospace`;
-      ctx.fillStyle = hov ? '#FFFFFF' : c.col;
-      ctx.fillText(
-        hov ? `► ${c.title}` : c.title,
-        rect.x + 12,
-        rect.y + Math.round(cardH * 0.34),
-        rect.width - 24
-      );
-
-      ctx.font = `bold ${rankFont}px "Share Tech Mono", monospace`;
-      ctx.fillStyle = '#FFE28A';
-      ctx.fillText(
-        c.rankedTag,
-        rect.x + 12,
-        rect.y + Math.round(cardH * 0.61),
-        rect.width - 24
-      );
-
-      ctx.font = `bold ${subFont}px "JetBrains Mono", monospace`;
-      ctx.fillStyle = hov ? '#FFF6CC' : '#FFB000';
-      ctx.fillText(c.sub, rect.x + 12, rect.y + Math.round(cardH * 0.87), rect.width - 24);
-    });
-
-    ctx.restore();
-  }
-
-  private drawCornerBrackets(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    len: number,
-    color: string,
-    lineWidth: number
-  ): void {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = lineWidth;
-    ctx.beginPath();
-    ctx.moveTo(x, y + len);
-    ctx.lineTo(x, y);
-    ctx.lineTo(x + len, y);
-
-    ctx.moveTo(x + w - len, y);
-    ctx.lineTo(x + w, y);
-    ctx.lineTo(x + w, y + len);
-
-    ctx.moveTo(x, y + h - len);
-    ctx.lineTo(x, y + h);
-    ctx.lineTo(x + len, y + h);
-
-    ctx.moveTo(x + w - len, y + h);
-    ctx.lineTo(x + w, y + h);
-    ctx.lineTo(x + w, y + h - len);
-    ctx.stroke();
   }
 }

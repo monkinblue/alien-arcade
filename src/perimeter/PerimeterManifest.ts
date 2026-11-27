@@ -264,6 +264,7 @@ export class PerimeterManifest {
     rank: number;
     offlineFallback: boolean;
     docId?: string;
+    submittedScore?: number;
     rejectedReason?: string;
   }> {
     const validation = validateCallsignForSubmit(entry.callsign);
@@ -287,12 +288,13 @@ export class PerimeterManifest {
     }
 
     const callsign = this.saveCallsign(validation.callsign);
-    const score = Math.max(1, Math.min(SCORE_CAPS.perimeter.score, Math.round(entry.score)));
-    const waves = Math.max(1, Math.min(SCORE_CAPS.perimeter.waves, Math.round(entry.waves)));
-    const kills = Math.max(0, Math.min(SCORE_CAPS.perimeter.kills, Math.round(entry.kills)));
+    const rawScore = Number.isFinite(entry.score) ? Math.round(entry.score) : 1;
+    const rawWaves = Number.isFinite(entry.waves) ? Math.round(entry.waves) : 1;
+    const rawKills = Number.isFinite(entry.kills) ? Math.round(entry.kills) : 0;
+    const score = Math.max(1, Math.min(SCORE_CAPS.perimeter.score, rawScore));
+    const waves = Math.max(1, Math.min(SCORE_CAPS.perimeter.waves, rawWaves));
+    const kills = Math.max(0, Math.min(SCORE_CAPS.perimeter.kills, rawKills));
     const firestoreMode: 'ENDLESS' = 'ENDLESS';
-
-    recordSubmissionTimestamp('perimeter');
 
     // Always mirror locally as offline fallback
     const localId = `local-${Date.now()}`;
@@ -310,13 +312,20 @@ export class PerimeterManifest {
     this.saveLocal();
 
     if (!this.db) {
+      recordSubmissionTimestamp('perimeter');
       const localIdx = this.localEntries.indexOf(fullLocal);
-      return { ok: false, rank: localIdx >= 0 ? localIdx + 1 : 1, offlineFallback: true, docId: localId };
+      return {
+        ok: false,
+        rank: localIdx >= 0 ? localIdx + 1 : 1,
+        offlineFallback: true,
+        docId: localId,
+        submittedScore: score,
+      };
     }
 
     try {
       // EXACT 6-key Firestore document schema:
-      // callsign (^[A-Z0-9_-]{1,12}$), score (1..1000000), waves (1..200), kills (0..25000), mode ('CAMPAIGN' | 'ENDLESS'), createdAt
+      // callsign (^[A-Z0-9_-]{1,12}$), score (1..50000000), waves (1..200), kills (0..100000), mode ('CAMPAIGN' | 'ENDLESS'), createdAt
       const docRef = await addDoc(collection(this.db, 'perimeter_scores'), {
         callsign,
         score,
@@ -325,16 +334,29 @@ export class PerimeterManifest {
         mode: firestoreMode,
         createdAt: serverTimestamp(),
       });
+      recordSubmissionTimestamp('perimeter');
 
       let higherCount = 0;
       for (const item of this.onlineEntries) {
         if (item.score > score) higherCount++;
       }
-      return { ok: true, rank: higherCount + 1, offlineFallback: false, docId: docRef.id };
+      return {
+        ok: true,
+        rank: higherCount + 1,
+        offlineFallback: false,
+        docId: docRef.id,
+        submittedScore: score,
+      };
     } catch (err) {
       console.warn('[PERIMETER UPLINK] Firestore perimeter_scores write fell back to local archive:', err);
       const localIdx = this.localEntries.indexOf(fullLocal);
-      return { ok: false, rank: localIdx >= 0 ? localIdx + 1 : 1, offlineFallback: true, docId: localId };
+      return {
+        ok: false,
+        rank: localIdx >= 0 ? localIdx + 1 : 1,
+        offlineFallback: true,
+        docId: localId,
+        submittedScore: score,
+      };
     }
   }
 }

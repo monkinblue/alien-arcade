@@ -1,9 +1,14 @@
 :root {
   --crt-bg: #030805;
-  --p39-green: #3BE068;
-  --p39-dim: #103D1F;
-  --telemetry-amber: #FF8C00;
+  --p39-green: #44FF77;
+  --p39-bright: #9EF7B8;
+  --p39-secondary: #52B872;
+  --p39-dim: #1C5C31;
+  --telemetry-amber: #FFB000;
+  --telemetry-amber-hi: #FFE48F;
   --klaxon-red: #FF3318;
+  --alert-red-text: #FF6247;
+  --accent-cyan: #4CEEFF;
   --chassis-dark: #0A0D0B;
   --target-size: 24px;
 }

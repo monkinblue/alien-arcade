@@ -1,12 +1,31 @@
-import { COLORS, PHYSICS } from '../constants';
+import { PHYSICS } from '../constants';
 import type { SafeAreaInsets } from '../types';
 import type { SectorMapSummary } from './CampaignMapRenderer';
 import {
+  drawControlsCardModal,
+  drawModalFrame,
+  drawPauseBanner,
+  drawStatusToast,
+  formatUplinkBadge,
+  POST_RUN_IDS,
+  SYSTEM_MENU_IDS,
+  TOP_CHROME_IDS,
+  type ChromeButtonHitbox,
+} from './chrome';
+import {
   HudRenderer,
+  LANDER_CONTROLS_SPEC,
   type CrtInteractiveButton,
   type HudRenderContext,
 } from './HudRenderer';
 import { drawRankedHudPill, drawRankedTitleRibbon } from './RankedBadge';
+import {
+  drawEllipsizedText,
+  font,
+  SEMIOTIC_ICONS,
+  THEME,
+  wrapTextLines,
+} from './theme';
 
 export interface MobileActiveTouchState {
   thrust: boolean;
@@ -55,12 +74,24 @@ export class MobileHudRenderer {
     } else {
       this.drawMobileTopBar(ctx, w, state, insets, buttonsOut);
 
-      if (state.phase === 'SECTOR_BRIEFING') {
+      if (state.phase === 'SECTOR_BRIEFING' && !state.inlineTeletypeHold) {
         this.drawMobileBriefingModal(ctx, w, h, state, buttonsOut);
       } else {
         this.drawMobileGoNoGoAndWarnings(ctx, w, h, state, insets);
 
-        if (state.phase === 'FLIGHT') {
+        if (state.phase === 'SECTOR_BRIEFING' && state.inlineTeletypeHold) {
+          this.drawMobileTeletypeHoldStrip(ctx, w, h, state, insets, buttonsOut);
+          this.drawMobileTouchFlightDeck(
+            ctx,
+            w,
+            h,
+            state,
+            insets,
+            touchHoldState,
+            buttonsOut,
+            touchControlsOut
+          );
+        } else if (state.phase === 'FLIGHT') {
           this.drawMobileTouchFlightDeck(
             ctx,
             w,
@@ -72,21 +103,57 @@ export class MobileHudRenderer {
             touchControlsOut
           );
         } else if (state.phase === 'PAUSED') {
-          this.drawMobileSystemMenuModal(ctx, w, h, state, buttonsOut);
+          drawPauseBanner(
+            ctx,
+            w,
+            h,
+            'Tap RESUME to continue descent, CONTROLS for key-card, or MENU for settings.',
+            buttonsOut as ChromeButtonHitbox[],
+            state.hoveredButtonId,
+            state.timeSec
+          );
         } else if (state.phase === 'SECTOR_TALLY' && state.lastBreakdown) {
           this.drawMobileTallyModal(ctx, w, h, state, buttonsOut);
-        } else if (state.phase === 'HULL_BREACH') {
+        } else if (state.phase === 'HULL_BREACH' && state.lives > 0) {
           this.drawMobileBreachModal(ctx, w, h, state, buttonsOut);
-        } else if (state.phase === 'CALLSIGN_ENTRY') {
+        } else if (
+          state.phase === 'CALLSIGN_ENTRY' ||
+          state.phase === 'CAMPAIGN_COMPLETE' ||
+          (state.phase === 'HULL_BREACH' && state.lives <= 0)
+        ) {
           this.drawMobileCallsignModal(ctx, w, h, state, buttonsOut);
-        } else if (state.phase === 'CAMPAIGN_COMPLETE') {
-          this.drawMobileCampaignCompleteModal(ctx, w, h, state, buttonsOut);
         }
       }
     }
 
+    // Transient status toast when no full top modal is open
+    if (
+      state.statusBannerText &&
+      state.statusBannerTimer > 0 &&
+      !state.bezel.osdMenuOpen &&
+      !state.controlsCardOpen &&
+      !state.bezel.flightLogsOpen
+    ) {
+      const corridor = MobileHudRenderer.getSafeCorridor(w, h, insets, state.isFullscreen);
+      const toastY = Math.max(corridor.topPx + 6, corridor.bottomPx - 74);
+      const alpha = Math.min(1, state.statusBannerTimer / 0.25);
+      drawStatusToast(ctx, w, toastY, state.statusBannerText, state.statusBannerTone, alpha);
+    }
+
+    // Top-most global modals (always clear underlying hitboxes via drawModalFrame!)
     if (state.bezel.osdMenuOpen) {
       this.drawMobileSystemMenuModal(ctx, w, h, state, buttonsOut);
+    } else if (state.controlsCardOpen) {
+      drawControlsCardModal(
+        ctx,
+        w,
+        h,
+        {
+          ...LANDER_CONTROLS_SPEC,
+          hoveredButtonId: state.hoveredButtonId,
+        },
+        buttonsOut as ChromeButtonHitbox[]
+      );
     } else if (state.bezel.flightLogsOpen) {
       this.drawMobileManifestModal(ctx, w, h, state, insets, buttonsOut);
     }
@@ -103,47 +170,61 @@ export class MobileHudRenderer {
     label: string,
     selected: boolean,
     hoveredId: string | null,
-    accent: string = COLORS.GREEN_PRIMARY,
+    accent: string = THEME.TEXT_PRIMARY,
     solidFill = false,
-    fontPx = 15
+    fontPx = 14,
+    disabled = false
   ): void {
-    buttonsOut.push({ id, rect: { x, y, width: w, height: h }, label });
-    const active = selected || hoveredId === id;
+    buttonsOut.push({
+      id,
+      rect: { x, y, width: w, height: h },
+      label,
+      ...(disabled ? { disabled: true } : {}),
+    });
+    const active = !disabled && (selected || hoveredId === id);
 
-    let fitPx = fontPx;
-    ctx.font = `bold ${fitPx}px "Share Tech Mono", monospace`;
-    while (fitPx > 11 && ctx.measureText(label).width > w - 10) {
-      fitPx -= 0.5;
-      ctx.font = `bold ${fitPx}px "Share Tech Mono", monospace`;
-    }
-    const textBaseY = y + h * 0.5 + Math.round(fitPx * 0.34);
+    const clampedPx = Math.max(12, Math.round(fontPx));
+    ctx.font = clampedPx >= 13 ? font('button', clampedPx) : font('micro', 12);
+    const textBaseY = y + h * 0.5 + Math.round(clampedPx * 0.34);
 
-    if (solidFill) {
-      ctx.fillStyle = active ? COLORS.AMBER_BRIGHT : COLORS.AMBER_CAUTION;
+    if (disabled) {
+      ctx.fillStyle = 'rgba(6, 14, 9, 0.72)';
       ctx.fillRect(x, y, w, h);
-      ctx.strokeStyle = '#FFF2CC';
-      ctx.lineWidth = 2.4;
+      ctx.strokeStyle = 'rgba(36, 74, 48, 0.62)';
+      ctx.lineWidth = 1.4;
       ctx.strokeRect(x, y, w, h);
-
-      ctx.fillStyle = '#040905';
+      ctx.fillStyle = THEME.TEXT_MUTED;
       ctx.textAlign = 'center';
-      ctx.fillText(label, x + w * 0.5, textBaseY);
+      drawEllipsizedText(ctx, label, x + w * 0.5, textBaseY, w - 10);
       return;
     }
 
-    ctx.fillStyle = active ? 'rgba(54, 201, 94, 0.22)' : 'rgba(6, 16, 10, 0.92)';
+    if (solidFill) {
+      ctx.fillStyle = active ? THEME.ACCENT_AMBER_HI : THEME.ACCENT_AMBER;
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = '#FFF2CC';
+      ctx.lineWidth = 2.2;
+      ctx.strokeRect(x, y, w, h);
+
+      ctx.fillStyle = THEME.INK_INVERSE;
+      ctx.textAlign = 'center';
+      drawEllipsizedText(ctx, label, x + w * 0.5, textBaseY, w - 10);
+      return;
+    }
+
+    ctx.fillStyle = active ? 'rgba(68, 255, 119, 0.22)' : 'rgba(6, 16, 10, 0.92)';
     ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = active ? accent : COLORS.GREEN_DIM;
-    ctx.lineWidth = active ? 2.4 : 1.7;
+    ctx.strokeStyle = active ? accent : THEME.BORDER_SUBTLE;
+    ctx.lineWidth = active ? 2.2 : 1.6;
     ctx.strokeRect(x, y, w, h);
 
     ctx.fillStyle = active ? '#FFFFFF' : accent;
     ctx.textAlign = 'center';
-    ctx.fillText(label, x + w * 0.5, textBaseY);
+    drawEllipsizedText(ctx, label, x + w * 0.5, textBaseY, w - 10);
   }
 
   // =========================================================================
-  // 1. MOBILE MAIN MENU (WITH RED RANKED HEADER, 6-SECTOR MAP & [COMMIT])
+  // 1. MOBILE MAIN MENU (WEYLAND-YUTANI AMBER TITLE, 6-SECTOR MAP & LAUNCH)
   // =========================================================================
 
   private drawMobileTitleMenu(
@@ -156,11 +237,11 @@ export class MobileHudRenderer {
     buttonsOut: CrtInteractiveButton[]
   ): void {
     ctx.save();
-    ctx.fillStyle = COLORS.BG_DEEP;
+    ctx.fillStyle = THEME.BG_VOID;
     ctx.fillRect(0, 0, w, h);
 
     // Subtle background grid
-    ctx.strokeStyle = 'rgba(20, 62, 34, 0.22)';
+    ctx.strokeStyle = 'rgba(28, 92, 49, 0.22)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let gx = 0; gx < w; gx += 42) {
@@ -181,39 +262,39 @@ export class MobileHudRenderer {
     const cx = w * 0.5;
     const leftX = cx - contentW * 0.5;
 
-    // Top Quick Utility Bar (>=44px touch targets, including DESKTOP mode toggle)
+    // Top Quick Utility Bar (>=44px touch targets: ◄ OS top-left + DESKTOP MODE 1-click return!)
     const utilH = 44;
     const utilGap = 5;
     const utilW = Math.floor((contentW - utilGap * 4) / 5);
     const utils = [
       {
-        id: 'hud-mute-toggle',
-        label: state.bezel.audioMuted ? 'SND:OFF' : 'SND:ON',
-        accent: state.bezel.audioMuted ? COLORS.RED_KLAXON : COLORS.GREEN_BRIGHT,
-        active: !state.bezel.audioMuted,
-      },
-      {
-        id: 'hud-fullscreen-toggle',
-        label: state.isFullscreen ? 'EXIT FL' : 'FULLSCR',
-        accent: COLORS.AMBER_BRIGHT,
-        active: state.isFullscreen,
-      },
-      {
-        id: 'hud-logs-toggle',
-        label: 'SCORES',
-        accent: '#FFB000',
-        active: state.bezel.flightLogsOpen,
+        id: TOP_CHROME_IDS.HUB,
+        label: '◄ OS',
+        accent: THEME.TEXT_PRIMARY,
+        active: false,
       },
       {
         id: 'menu-toggle-mobile',
         label: 'DESKTOP',
-        accent: COLORS.GREEN_PRIMARY,
-        active: false,
+        accent: THEME.ACCENT_CYAN,
+        active: true,
       },
       {
-        id: 'hud-osd-toggle',
+        id: TOP_CHROME_IDS.AUDIO,
+        label: state.bezel.audioMuted ? 'MUTED' : 'AUDIO',
+        accent: state.bezel.audioMuted ? THEME.ALERT_RED_TEXT : THEME.TEXT_BRIGHT,
+        active: !state.bezel.audioMuted,
+      },
+      {
+        id: 'hud-logs-toggle',
+        label: utilW >= 92 ? 'LEADERBOARD' : 'RANKS',
+        accent: THEME.ACCENT_AMBER,
+        active: state.bezel.flightLogsOpen,
+      },
+      {
+        id: TOP_CHROME_IDS.MENU,
         label: 'MENU',
-        accent: COLORS.GREEN_BRIGHT,
+        accent: THEME.TEXT_BRIGHT,
         active: state.bezel.osdMenuOpen,
       },
     ];
@@ -231,7 +312,7 @@ export class MobileHudRenderer {
         state.hoveredButtonId,
         u.accent,
         false,
-        14
+        13
       );
     });
 
@@ -241,11 +322,11 @@ export class MobileHudRenderer {
     const isEndless = state.selectedMenuMode === 'ENDLESS';
     const isRankedSelection = isRanked || isEndless;
 
-    // Title: Turns RED whenever a Ranked high-score mode is armed!
+    // Title: Weyland-Yutani Amber Gold when Ranked is armed (calm P39 Green in Practice)
     ctx.textAlign = 'center';
-    ctx.font = w < 380 ? 'bold 23px "Share Tech Mono", monospace' : 'bold 27px "Share Tech Mono", monospace';
-    ctx.fillStyle = isRankedSelection ? COLORS.RED_KLAXON : COLORS.GREEN_PRIMARY;
-    ctx.fillText('ORBITAL DESCENT TELEMETRY', cx, curY + 20);
+    ctx.font = font('display', w < 380 ? 22 : 26);
+    ctx.fillStyle = isRankedSelection ? THEME.ACCENT_AMBER : THEME.TEXT_PRIMARY;
+    drawEllipsizedText(ctx, 'LV-426 LUNAR LANDER', cx, curY + 20, contentW);
     curY += 26;
 
     drawRankedTitleRibbon(
@@ -253,47 +334,46 @@ export class MobileHudRenderer {
       leftX,
       curY,
       contentW,
-      20,
+      22,
       isRanked
-        ? '★ RANKED CAMPAIGN — HIGH SCORE RECORDED ★'
+        ? `${SEMIOTIC_ICONS.STAR} RANKED CAMPAIGN — HIGH SCORE RECORDED ${SEMIOTIC_ICONS.STAR}`
         : isEndless
-          ? '★ RANKED ENDLESS — HIGH SCORE RECORDED ★'
+          ? `${SEMIOTIC_ICONS.STAR} RANKED ENDLESS — HIGH SCORE RECORDED ${SEMIOTIC_ICONS.STAR}`
           : `PRACTICE SEC-0${state.selectedStartSector} (UNRANKED · NOT RECORDED)`,
       state.timeSec,
       isRankedSelection
     );
-    curY += 25;
+    curY += 27;
 
     // Compact Live Global #01 Leader Strip
-    const champH = 42;
-    ctx.fillStyle = 'rgba(22, 14, 3, 0.80)';
+    const champH = 44;
+    ctx.fillStyle = 'rgba(22, 14, 3, 0.84)';
     ctx.fillRect(leftX, curY, contentW, champH);
-    ctx.strokeStyle = '#FFB000';
+    ctx.strokeStyle = THEME.ACCENT_AMBER;
     ctx.lineWidth = 1.6;
     ctx.strokeRect(leftX, curY, contentW, champH);
 
-    ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
+    ctx.font = font('micro', 12);
     ctx.textAlign = 'left';
-    ctx.fillStyle = '#FFB000';
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
     const campChamp = state.campaignLeader
       ? `${state.campaignLeader.callsign} (${state.campaignLeader.score.toLocaleString()})`
       : 'UNCLAIMED';
     const endChamp = state.endlessLeader
       ? `${state.endlessLeader.callsign} (${state.endlessLeader.score.toLocaleString()})`
       : 'UNCLAIMED';
-    ctx.fillText(`#1 CAMPAIGN: ${campChamp}`, leftX + 8, curY + 17);
-    ctx.fillText(`#1 ENDLESS:  ${endChamp}`, leftX + 8, curY + 35);
+    drawEllipsizedText(ctx, `#1 CAMPAIGN: ${campChamp}`, leftX + 8, curY + 17, contentW - 16);
+    drawEllipsizedText(ctx, `#1 ENDLESS:  ${endChamp}`, leftX + 8, curY + 36, contentW - 16);
     curY += champH + 8;
 
     // 6-Sector Campaign Descent Mini-Map Grid (2 rows x 3 cols)
-    // Glows ALL ORANGE when Ranked Campaign is chosen; sub-clickable in Practice Mode!
-    const availBeforeButtons = Math.max(92, h - botPad - curY - 236);
+    const availBeforeButtons = Math.max(94, h - botPad - curY - 238);
     const mapGridH = Math.min(162, availBeforeButtons);
     const cols = 3;
     const rows = 2;
     const tileGap = 6;
     const tileW = Math.floor((contentW - tileGap * (cols - 1)) / cols);
-    const tileH = Math.max(44, Math.floor((mapGridH - tileGap) / rows));
+    const tileH = Math.max(46, Math.floor((mapGridH - tileGap) / rows));
 
     sectorSummaries.slice(0, 6).forEach((s, i) => {
       const col = i % cols;
@@ -309,45 +389,55 @@ export class MobileHudRenderer {
 
       const pracSel = isPractice && state.selectedStartSector === s.num;
       ctx.fillStyle = isRanked
-        ? 'rgba(54, 24, 4, 0.90)'
+        ? 'rgba(54, 26, 4, 0.90)'
         : pracSel
           ? 'rgba(20, 56, 30, 0.92)'
-          : 'rgba(5, 14, 9, 0.85)';
+          : 'rgba(5, 14, 9, 0.88)';
       ctx.fillRect(tx, ty, tileW, tileH);
 
       ctx.strokeStyle = isRanked
-        ? COLORS.AMBER_CAUTION
+        ? THEME.ACCENT_AMBER
         : pracSel
-          ? COLORS.GREEN_BRIGHT
-          : COLORS.GREEN_DIM;
-      ctx.lineWidth = isRanked || pracSel ? 2.2 : 1.3;
+          ? THEME.TEXT_PRIMARY
+          : THEME.BORDER_SUBTLE;
+      ctx.lineWidth = isRanked || pracSel ? 2.0 : 1.3;
       ctx.strokeRect(tx, ty, tileW, tileH);
 
       ctx.textAlign = 'left';
-      ctx.font = 'bold 12.5px "Share Tech Mono", monospace';
+      ctx.font = font('micro', 12);
       ctx.fillStyle = isRanked
-        ? COLORS.AMBER_BRIGHT
+        ? THEME.ACCENT_AMBER_HI
         : pracSel
-          ? COLORS.GREEN_BRIGHT
-          : COLORS.GREEN_PRIMARY;
+          ? THEME.TEXT_BRIGHT
+          : THEME.TEXT_PRIMARY;
       ctx.fillText(`0${s.num}/06`, tx + 5, ty + 14);
 
       ctx.textAlign = 'right';
-      ctx.font = 'bold 11px "JetBrains Mono", monospace';
-      ctx.fillStyle = isRanked ? '#FFB000' : pracSel ? '#FFFFFF' : COLORS.GREEN_MID;
-      ctx.fillText(isRanked ? 'RANKED' : pracSel ? '►DROP' : s.code, tx + tileW - 5, ty + 14);
+      ctx.font = font('micro', 12);
+      ctx.fillStyle = isRanked
+        ? THEME.ACCENT_AMBER
+        : pracSel
+          ? '#FFFFFF'
+          : THEME.TEXT_SECONDARY;
+      drawEllipsizedText(
+        ctx,
+        isRanked ? 'RNK' : pracSel ? `${SEMIOTIC_ICONS.PLAY}GO` : `S0${s.num}`,
+        tx + tileW - 5,
+        ty + 14,
+        tileW * 0.48
+      );
 
       // Mini terrain & ceiling vector trace inside tile
       const mx = tx + 4;
-      const my = ty + 17;
+      const my = ty + 18;
       const mw = tileW - 8;
-      const mh = Math.max(18, tileH - 21);
+      const mh = Math.max(18, tileH - 22);
       const sec = s.sector;
       const toX = (wx: number) => mx + (wx / sec.worldWidth) * mw;
       const toY = (wy: number) => my + mh - (wy / (sec.worldHeight * 0.95)) * mh;
 
       if (sec.ceiling && sec.ceiling.length > 1) {
-        ctx.strokeStyle = isRanked ? 'rgba(255, 140, 0, 0.65)' : COLORS.GREEN_DIM;
+        ctx.strokeStyle = isRanked ? 'rgba(255, 176, 0, 0.55)' : THEME.BORDER_SUBTLE;
         ctx.lineWidth = 1.2;
         ctx.beginPath();
         for (let k = 0; k < sec.ceiling.length; k += 4) {
@@ -360,10 +450,10 @@ export class MobileHudRenderer {
       }
 
       ctx.strokeStyle = isRanked
-        ? COLORS.AMBER_BRIGHT
+        ? THEME.ACCENT_AMBER_HI
         : pracSel
-          ? COLORS.GREEN_BRIGHT
-          : COLORS.GREEN_PRIMARY;
+          ? THEME.TEXT_BRIGHT
+          : THEME.TEXT_PRIMARY;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       for (let k = 0; k < sec.terrain.length; k += 4) {
@@ -377,7 +467,7 @@ export class MobileHudRenderer {
 
     curY += tileH * 2 + tileGap + 8;
 
-    // Dedicated Mode Selector Buttons + Bottom Orange [COMMIT] Button (all >=44px tall)
+    // Dedicated Mode Selector Buttons + Bottom Amber [LAUNCH] Button (all >=44px tall)
     const btnH = 44;
     const btnGap = 6;
 
@@ -389,12 +479,14 @@ export class MobileHudRenderer {
       curY,
       contentW,
       btnH,
-      isRanked ? '★ RANKED CAMPAIGN (ALL 6 SECTORS) ★' : 'RANKED CAMPAIGN (ALL 6 SECTORS)',
+      isRanked
+        ? `${SEMIOTIC_ICONS.STAR} RANKED CAMPAIGN (6 SECTORS) ${SEMIOTIC_ICONS.STAR}`
+        : 'RANKED CAMPAIGN (6 SECTORS)',
       isRanked,
       state.hoveredButtonId,
-      isRanked ? COLORS.AMBER_BRIGHT : COLORS.AMBER_CAUTION,
+      isRanked ? THEME.ACCENT_AMBER_HI : THEME.ACCENT_AMBER,
       false,
-      15.5
+      14
     );
     curY += btnH + btnGap;
 
@@ -407,13 +499,13 @@ export class MobileHudRenderer {
       contentW,
       btnH,
       isPractice
-        ? `► PRACTICE: SEC-0${state.selectedStartSector} (SINGLE MAP) ◄`
-        : `PRACTICE MODE (TAP ANY MAP 01–06 ABOVE)`,
+        ? `${SEMIOTIC_ICONS.PLAY} PRACTICE: SEC-0${state.selectedStartSector} (SINGLE MAP)`
+        : 'PRACTICE MODE (TAP ANY SECTOR 01–06)',
       isPractice,
       state.hoveredButtonId,
-      COLORS.GREEN_BRIGHT,
+      THEME.TEXT_BRIGHT,
       false,
-      15
+      14
     );
     curY += btnH + btnGap;
 
@@ -425,21 +517,21 @@ export class MobileHudRenderer {
       curY,
       contentW,
       btnH,
-      isEndless ? '★ ENDLESS DEEP-SURVEY (RANKED) ★' : '★ ENDLESS DEEP-SURVEY (RANKED)',
+      `${SEMIOTIC_ICONS.STAR} ENDLESS DEEP-SURVEY (RANKED)`,
       isEndless,
       state.hoveredButtonId,
-      '#FFB000',
+      THEME.ACCENT_AMBER,
       false,
-      15
+      14
     );
     curY += btnH + btnGap + 2;
 
-    // Prominent Solid-Orange [COMMIT] Button at Bottom!
+    // Prominent Solid-Amber Launch Button at Bottom!
     const commitLabel = isRanked
-      ? '[ COMMIT ] — LAUNCH RANKED CAMPAIGN'
+      ? `${SEMIOTIC_ICONS.PLAY} LAUNCH RANKED CAMPAIGN`
       : isPractice
-        ? `[ COMMIT ] — PRACTICE SEC-0${state.selectedStartSector}`
-        : '[ COMMIT ] — LAUNCH ENDLESS SURVEY';
+        ? `${SEMIOTIC_ICONS.PLAY} LAUNCH PRACTICE SEC-0${state.selectedStartSector}`
+        : `${SEMIOTIC_ICONS.PLAY} LAUNCH ENDLESS SURVEY`;
     this.addTouchButton(
       ctx,
       buttonsOut,
@@ -447,29 +539,24 @@ export class MobileHudRenderer {
       leftX,
       curY,
       contentW,
-      48,
+      46,
       commitLabel,
       true,
       state.hoveredButtonId,
-      COLORS.AMBER_BRIGHT,
+      THEME.ACCENT_AMBER_HI,
       true,
-      16.5
+      15
     );
-    curY += 54;
+    curY += 52;
 
-    // Smart SAS Explanation Note below [COMMIT] on Mobile Menu (auto-fitted to contentW!)
+    // Fixed Distinct SAS ON vs OFF Explanation Note (>=12px, zero identical copy bug!)
     const sasMobileNote = state.bezel.sasEnabled
-      ? 'SAS [ON]: 50% GENTLE ROLL (NO AUTO-LEVEL)'
-      : 'SAS [OFF]: 50% GENTLE ROLL (NO AUTO-LEVEL)';
-    let sasFontPx = 13.5;
-    ctx.font = `bold ${sasFontPx}px "Share Tech Mono", monospace`;
-    while (sasFontPx > 10.5 && ctx.measureText(sasMobileNote).width > contentW - 8) {
-      sasFontPx -= 0.5;
-      ctx.font = `bold ${sasFontPx}px "Share Tech Mono", monospace`;
-    }
+      ? 'SAS [ON]: 50% GENTLE ROLL ASSIST'
+      : 'SAS [OFF]: 100% RAW RCS TORQUE';
+    ctx.font = font('micro', 12);
     ctx.textAlign = 'center';
-    ctx.fillStyle = state.bezel.sasEnabled ? COLORS.GREEN_BRIGHT : '#FFB000';
-    ctx.fillText(sasMobileNote, cx, curY + 11);
+    ctx.fillStyle = state.bezel.sasEnabled ? THEME.TEXT_BRIGHT : THEME.ACCENT_AMBER_HI;
+    drawEllipsizedText(ctx, sasMobileNote, cx, curY + 11, contentW - 8);
 
     ctx.restore();
   }
@@ -491,62 +578,85 @@ export class MobileHudRenderer {
     const padR = Math.max(8, insets.right + 8);
     const barH = 46;
 
-    ctx.fillStyle = 'rgba(3, 9, 5, 0.88)';
+    ctx.fillStyle = 'rgba(3, 9, 5, 0.92)';
     ctx.fillRect(0, 0, w, topY + barH + 4);
-    ctx.strokeStyle = COLORS.GREEN_DIM;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
     ctx.lineWidth = 1.4;
     ctx.beginPath();
     ctx.moveTo(padL, topY + barH + 2);
     ctx.lineTo(w - padR, topY + barH + 2);
     ctx.stroke();
 
-    // Left: 3 Shuttle Life Pips + Score + Fuel Bar
+    // Left: 3 Shuttle Life Pips + Score + High-Contrast Fuel Bar
     const lowLives = state.lives === 1;
     for (let i = 0; i < state.maxLives; i++) {
       const alive = i < state.lives;
       const sx = padL + i * 18;
-      const sy = topY + 6;
-      ctx.fillStyle = alive ? (lowLives ? '#FFB000' : '#44FF77') : 'rgba(90, 20, 14, 0.5)';
-      ctx.strokeStyle = alive ? (lowLives ? '#FFB000' : COLORS.GREEN_PRIMARY) : COLORS.RED_DIM;
+      const sy = topY + 5;
+      ctx.fillStyle = alive
+        ? lowLives
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_PRIMARY
+        : 'rgba(90, 20, 14, 0.5)';
+      ctx.strokeStyle = alive
+        ? lowLives
+          ? THEME.ACCENT_AMBER_HI
+          : THEME.TEXT_PRIMARY
+        : THEME.ALERT_RED_STROKE;
       ctx.lineWidth = 1.4;
       ctx.fillRect(sx, sy, 13, 14);
       ctx.strokeRect(sx, sy, 13, 14);
     }
 
     ctx.textAlign = 'left';
-    ctx.font = 'bold 17.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
+    ctx.font = font('data', 16);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
     const scoreStr = String(Math.round(state.displayedScore)).padStart(6, '0');
-    ctx.fillText(scoreStr, padL + 58, topY + 19);
+    ctx.fillText(scoreStr, padL + 58, topY + 18);
     const scoreRightX = padL + 58 + ctx.measureText(scoreStr).width + 8;
-    if (scoreRightX + 74 < w - padR - 196) {
-      drawRankedHudPill(ctx, scoreRightX, topY + 4, 18, state.timeSec, !state.isPracticeRun, true);
+    if (scoreRightX + 78 < w - padR - 202) {
+      drawRankedHudPill(ctx, scoreRightX, topY + 3, 18, state.timeSec, !state.isPracticeRun, true);
     }
 
-    // Compact Fuel Progress Bar underneath score & lives
-    const fuelRatio = Math.max(0, Math.min(1, state.lander.fuelKg / Math.max(1, state.lander.maxFuelKg)));
-    const fBarW = Math.min(138, Math.max(92, w * 0.31));
-    const fBarY = topY + 25;
-    ctx.strokeStyle = COLORS.AMBER_DIM;
+    // High-Contrast Fuel Progress Bar (dark ink plate behind label for WCAG-AAA legibility at 0..100%)
+    const fuelRatio = Math.max(
+      0,
+      Math.min(1, state.lander.fuelKg / Math.max(1, state.lander.maxFuelKg))
+    );
+    const fBarW = Math.min(146, Math.max(98, w * 0.33));
+    const fBarY = topY + 24;
+    const fBarH = 18;
+    ctx.fillStyle = THEME.BG_VOID;
+    ctx.fillRect(padL, fBarY, fBarW, fBarH);
+    ctx.strokeStyle = fuelRatio <= 0.18 ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER;
     ctx.lineWidth = 1.4;
-    ctx.strokeRect(padL, fBarY, fBarW, 16);
-    ctx.fillStyle = fuelRatio <= 0.18 ? COLORS.RED_KLAXON : COLORS.AMBER_CAUTION;
-    ctx.fillRect(padL + 2, fBarY + 2, Math.max(0, (fBarW - 4) * fuelRatio), 12);
+    ctx.strokeRect(padL + 0.5, fBarY + 0.5, fBarW - 1, fBarH - 1);
 
-    ctx.font = 'bold 12px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillText(`FUEL ${state.lander.fuelKg.toFixed(0)}K`, padL + 5, fBarY + 12.5);
+    ctx.fillStyle = fuelRatio <= 0.18 ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER;
+    ctx.fillRect(padL + 2, fBarY + 2, Math.max(0, (fBarW - 4) * fuelRatio), fBarH - 4);
 
-    // Right: >=44x44 Touch Buttons [SAS] [FULL] [MENU]
-    const btnW = 56;
+    // High-contrast centered dark pill plate behind fuel text so it is always crisp over fill & void
+    const fuelText = `FUEL ${state.lander.fuelKg.toFixed(0)}K`;
+    ctx.font = font('micro', 12);
+    const fTxtW = Math.min(fBarW - 6, Math.ceil(ctx.measureText(fuelText).width + 8));
+    const plateX = Math.round(padL + (fBarW - fTxtW) * 0.5);
+    ctx.fillStyle = 'rgba(3, 8, 5, 0.86)';
+    ctx.fillRect(plateX, fBarY + 2, fTxtW, fBarH - 4);
+
+    ctx.fillStyle = fuelRatio <= 0.18 ? THEME.ALERT_RED_TEXT : THEME.ACCENT_AMBER_HI;
+    ctx.textAlign = 'center';
+    ctx.fillText(fuelText, padL + fBarW * 0.5, fBarY + 13);
+
+    // Right: >=44x44 Touch Buttons [SAS] [EXIT FS / FULL] [MENU]
+    const btnW = 60;
     const btnH = 44;
-    const gap = 6;
+    const gap = 5;
     let rx = w - padR - btnW;
 
     this.addTouchButton(
       ctx,
       buttonsOut,
-      'hud-osd-toggle',
+      TOP_CHROME_IDS.MENU,
       rx,
       topY + 1,
       btnW,
@@ -554,9 +664,9 @@ export class MobileHudRenderer {
       'MENU',
       state.bezel.osdMenuOpen,
       state.hoveredButtonId,
-      '#FFB000',
+      THEME.ACCENT_AMBER,
       false,
-      14
+      13
     );
     rx -= btnW + gap;
 
@@ -568,31 +678,78 @@ export class MobileHudRenderer {
       topY + 1,
       btnW,
       btnH,
-      state.isFullscreen ? 'EXIT' : 'FULL',
+      state.isFullscreen ? 'EXIT FS' : 'FULL',
       state.isFullscreen,
       state.hoveredButtonId,
-      COLORS.AMBER_BRIGHT,
+      THEME.ACCENT_AMBER_HI,
       false,
-      14
+      13
     );
     rx -= btnW + gap;
 
     this.addTouchButton(
       ctx,
       buttonsOut,
-      'hud-sas-toggle',
+      'lander-sas-toggle',
       rx,
       topY + 1,
       btnW,
       btnH,
-      state.bezel.sasEnabled ? 'SAS:50%' : 'SAS:OFF',
+      state.bezel.sasEnabled ? 'SAS:50' : 'SAS:OFF',
       state.bezel.sasEnabled,
       state.hoveredButtonId,
-      state.bezel.sasEnabled ? COLORS.GREEN_BRIGHT : COLORS.AMBER_CAUTION,
+      state.bezel.sasEnabled ? THEME.TEXT_BRIGHT : THEME.ACCENT_AMBER,
       false,
-      13.5
+      12
     );
 
+    ctx.restore();
+  }
+
+  private drawMobileTeletypeHoldStrip(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    state: HudRenderContext,
+    insets: SafeAreaInsets,
+    buttonsOut: CrtInteractiveButton[]
+  ): void {
+    const corridor = MobileHudRenderer.getSafeCorridor(w, h, insets, state.isFullscreen);
+    const stripW = Math.min(460, w - 16);
+    const stripH = 38;
+    const sx = Math.round((w - stripW) * 0.5);
+    const sy = corridor.topPx + 6;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(4, 13, 8, 0.94)';
+    ctx.fillRect(sx, sy, stripW, stripH);
+    ctx.strokeStyle = THEME.ACCENT_AMBER;
+    ctx.lineWidth = 1.8;
+    ctx.strokeRect(sx + 0.5, sy + 0.5, stripW - 1, stripH - 1);
+
+    const dropW = 72;
+    this.addTouchButton(
+      ctx,
+      buttonsOut,
+      'briefing-launch',
+      sx + stripW - dropW - 4,
+      sy + 4,
+      dropW,
+      stripH - 8,
+      'DROP',
+      true,
+      state.hoveredButtonId,
+      THEME.ACCENT_AMBER_HI,
+      true,
+      12
+    );
+
+    const rawLine = `${state.sector.code} · ${state.sector.name} · TAP THRUST TO DROP`;
+    const visible = rawLine.slice(0, Math.max(12, Math.floor(state.briefingProgressChars)));
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = THEME.ACCENT_AMBER_HI;
+    ctx.textAlign = 'left';
+    drawEllipsizedText(ctx, visible, sx + 10, sy + 23, stripW - dropW - 18);
     ctx.restore();
   }
 
@@ -609,7 +766,6 @@ export class MobileHudRenderer {
         ? state.touchdownSnapshot
         : null;
 
-    // Find closest pad
     let closestPad = snap?.pad ?? null;
     let closestDist = snap?.dist ?? Infinity;
     if (!snap) {
@@ -625,7 +781,24 @@ export class MobileHudRenderer {
 
     const corridor = MobileHudRenderer.getSafeCorridor(w, h, insets, state.isFullscreen);
 
-    if (closestPad && (snap !== null || (lander.alive && closestDist <= PHYSICS.APPROACH_PROXIMITY_M))) {
+    // 1st-Flight Mobile Radar Hint (fades cleanly & clears immediately on first ping!)
+    if (state.phase === 'FLIGHT' && lander.alive && state.mobileRadarHintTimer > 0) {
+      const alpha = Math.min(1, state.mobileRadarHintTimer / 0.8);
+      const hintY = corridor.topPx + (closestDist <= PHYSICS.APPROACH_PROXIMITY_M ? 70 : 10);
+      drawStatusToast(
+        ctx,
+        w,
+        hintY,
+        `${SEMIOTIC_ICONS.DIAMOND} TAP SKY TO PING RADAR`,
+        'cyan',
+        alpha
+      );
+    }
+
+    if (
+      closestPad &&
+      (snap !== null || (lander.alive && closestDist <= PHYSICS.APPROACH_PROXIMITY_M))
+    ) {
       const vs = snap ? snap.vs : Math.abs(Math.min(0, lander.vel.y));
       const hs = snap ? snap.hs : Math.abs(lander.vel.x);
       const deg = snap ? snap.deg : Math.abs((lander.angle * 180) / Math.PI);
@@ -665,9 +838,9 @@ export class MobileHudRenderer {
       const panelH = 62;
 
       ctx.save();
-      ctx.fillStyle = 'rgba(3, 9, 5, 0.92)';
+      ctx.fillStyle = 'rgba(3, 9, 5, 0.94)';
       ctx.fillRect(panelX, panelY, panelW, panelH);
-      ctx.strokeStyle = COLORS.GREEN_DIM;
+      ctx.strokeStyle = THEME.BORDER_SUBTLE;
       ctx.lineWidth = 1.4;
       ctx.strokeRect(panelX, panelY, panelW, panelH);
 
@@ -675,22 +848,31 @@ export class MobileHudRenderer {
       const cW = (panelW - 12 - cGap * 2) / 3;
       cards.forEach((c, idx) => {
         const cx = panelX + 6 + idx * (cW + cGap);
-        const col = c.go ? COLORS.GREEN_PRIMARY : c.fatal ? COLORS.RED_KLAXON : COLORS.AMBER_CAUTION;
-        const tag = c.kiss ? 'KISS' : c.go ? 'GO' : c.fatal ? 'NO-GO' : 'CAUTION';
+        const col = c.go
+          ? THEME.TEXT_PRIMARY
+          : c.fatal
+            ? THEME.ALERT_RED_TEXT
+            : THEME.ACCENT_AMBER;
+        const strokeCol = c.go
+          ? THEME.TEXT_PRIMARY
+          : c.fatal
+            ? THEME.ALERT_RED_STROKE
+            : THEME.ACCENT_AMBER;
+        const tag = c.kiss ? 'KISS' : c.go ? 'GO' : c.fatal ? 'NO-GO' : 'CAUT';
 
-        ctx.strokeStyle = col;
-        ctx.lineWidth = 1.7;
+        ctx.strokeStyle = strokeCol;
+        ctx.lineWidth = 1.6;
         ctx.strokeRect(cx, panelY + 4, cW, 31);
 
         ctx.textAlign = 'left';
-        ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
+        ctx.font = font('micro', 12);
         ctx.fillStyle = '#FFFFFF';
-        ctx.fillText(`${c.lbl} ${c.val}`, cx + 4, panelY + 24);
+        drawEllipsizedText(ctx, `${c.lbl} ${c.val}`, cx + 4, panelY + 23, cW * 0.62);
 
         ctx.textAlign = 'right';
-        ctx.font = 'bold 12px "Share Tech Mono", monospace';
+        ctx.font = font('micro', 12);
         ctx.fillStyle = col;
-        ctx.fillText(tag, cx + cW - 4, panelY + 24);
+        ctx.fillText(tag, cx + cW - 4, panelY + 23);
       });
 
       // Mini Soft-Kiss ILS Centerline Strip
@@ -704,22 +886,22 @@ export class MobileHudRenderer {
 
       ctx.fillStyle = 'rgba(2, 6, 4, 0.96)';
       ctx.fillRect(ilsX, ilsY, ilsW, ilsH);
-      ctx.strokeStyle = COLORS.GREEN_DIM;
+      ctx.strokeStyle = THEME.BORDER_SUBTLE;
       ctx.strokeRect(ilsX, ilsY, ilsW, ilsH);
 
       const kl = toX(-kissBoundM);
       const kr = toX(kissBoundM);
-      ctx.fillStyle = 'rgba(59, 224, 104, 0.24)';
+      ctx.fillStyle = 'rgba(68, 255, 119, 0.24)';
       ctx.fillRect(kl, ilsY + 1, kr - kl, ilsH - 2);
 
       const bugX = toX(offsetM);
       const inKiss = Math.abs(offsetM) <= kissBoundM;
       const inSafe = Math.abs(offsetM) <= safeBoundM;
       ctx.fillStyle = inKiss
-        ? COLORS.GREEN_BRIGHT
+        ? THEME.TEXT_BRIGHT
         : inSafe
-          ? COLORS.AMBER_BRIGHT
-          : COLORS.RED_KLAXON;
+          ? THEME.ACCENT_AMBER_HI
+          : THEME.ALERT_RED_STROKE;
       ctx.beginPath();
       ctx.moveTo(bugX, ilsY + 2);
       ctx.lineTo(bugX + 5, ilsY + ilsH * 0.5);
@@ -731,35 +913,34 @@ export class MobileHudRenderer {
       ctx.restore();
     }
 
-    // Compact Airbus Warning Pill right above the Touch Flight Deck
+    // Compact Warning Pill right above the Touch Flight Deck
     if (state.phase === 'FLIGHT' && lander.alive) {
       const warnings = HudRenderer.computeAvionicsWarnings(lander, state.emBlackoutActive);
       if (warnings.length > 0) {
         const primary = warnings[0];
         const wy = corridor.bottomPx - 36;
-        const label = primary.critical ? `▲ ${primary.text} ▲` : `◆ ${primary.text} ◆`;
+        const label = primary.critical
+          ? `${SEMIOTIC_ICONS.TRIANGLE} ${primary.text} ${SEMIOTIC_ICONS.TRIANGLE}`
+          : `${SEMIOTIC_ICONS.DIAMOND} ${primary.text} ${SEMIOTIC_ICONS.DIAMOND}`;
         ctx.save();
-        ctx.font = 'bold 16.5px "Share Tech Mono", monospace';
-        const bw = Math.min(w - 20, ctx.measureText(label).width + 30);
+        ctx.font = font('button', 15);
+        const bw = Math.min(w - 20, Math.ceil(ctx.measureText(label).width + 28));
         const bx = (w - bw) * 0.5;
-        ctx.fillStyle = primary.critical ? 'rgba(32, 5, 4, 0.94)' : 'rgba(22, 14, 3, 0.94)';
+        ctx.fillStyle = primary.critical ? THEME.ALERT_RED_BG : THEME.ACCENT_AMBER_BG;
         ctx.fillRect(bx, wy, bw, 30);
-        ctx.strokeStyle = primary.critical ? COLORS.RED_KLAXON : COLORS.AMBER_CAUTION;
-        ctx.lineWidth = 2.2;
+        ctx.strokeStyle = primary.critical ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER;
+        ctx.lineWidth = 2.0;
         ctx.strokeRect(bx, wy, bw, 30);
-        ctx.fillStyle = primary.critical ? '#FF7862' : COLORS.AMBER_BRIGHT;
+        ctx.fillStyle = primary.critical ? THEME.ALERT_RED_TEXT : THEME.ACCENT_AMBER_HI;
         ctx.textAlign = 'center';
-        ctx.fillText(label, w * 0.5, wy + 21);
+        drawEllipsizedText(ctx, label, w * 0.5, wy + 20, bw - 12);
         ctx.restore();
       }
     }
   }
 
   /**
-   * Ergonomic Dual-Thumb Multi-Touch 1979 Nostromo Flight Deck along bottom safe-area:
-   * - Left Thumb: [ ◄ ROLL L ]  [ ▼ BRAKE ]  [ ROLL R ► ]
-   * - Center: Radar Charge Cells (Tap anywhere on terrain/cavern to ping radar!)
-   * - Right Thumb: [ ⚡ 1X PULSE ] + Dual-Stage [ ▲ THRUST / ▲▲ OVERDRIVE ] Throttle Pad!
+   * Ergonomic Dual-Thumb Multi-Touch 1979 Nostromo Flight Deck along bottom safe-area.
    */
   private drawMobileTouchFlightDeck(
     ctx: CanvasRenderingContext2D,
@@ -778,43 +959,36 @@ export class MobileHudRenderer {
     const padR = Math.max(10, insets.right + 8);
     const padB = corridor.bottomPadPx;
 
-    ctx.fillStyle = 'rgba(3, 10, 6, 0.92)';
+    ctx.fillStyle = 'rgba(3, 10, 6, 0.94)';
     ctx.fillRect(0, deckTop - 4, w, h - deckTop + 4);
-    ctx.strokeStyle = COLORS.GREEN_DIM;
+    ctx.strokeStyle = THEME.BORDER_SUBTLE;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.moveTo(padL, deckTop - 3);
     ctx.lineTo(w - padR, deckTop - 3);
     ctx.stroke();
 
-    // Top Micro-Telemetry Readout Line inside Deck (AGL, V/S, Radar Pings — guaranteed zero overlap!)
+    // Top Telemetry Readout Line inside Deck (enforces >=12px floor!)
     const lander = state.lander;
     const leftTel = `AGL ${lander.agl.toFixed(0)}M | V/S ${lander.vel.y.toFixed(1)} | H/S ${lander.vel.x.toFixed(1)}`;
     const rightTel = `RADAR [${lander.radarCharges}/${lander.maxRadarCharges}]`;
     const availTelW = w - padL - padR - 4;
-    let telFontPx = 13.5;
-    ctx.font = `bold ${telFontPx}px "JetBrains Mono", monospace`;
-    while (
-      telFontPx > 10.5 &&
-      ctx.measureText(leftTel).width + ctx.measureText(rightTel).width + 14 > availTelW
-    ) {
-      telFontPx -= 0.5;
-      ctx.font = `bold ${telFontPx}px "JetBrains Mono", monospace`;
-    }
+    ctx.font = font('micro', 12);
+    const rightW = Math.ceil(ctx.measureText(rightTel).width + 10);
 
     ctx.textAlign = 'left';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.fillText(leftTel, padL + 2, deckTop + 14);
+    ctx.fillStyle = THEME.TEXT_PRIMARY;
+    drawEllipsizedText(ctx, leftTel, padL + 2, deckTop + 14, Math.max(90, availTelW - rightW));
 
     ctx.textAlign = 'right';
-    ctx.fillStyle = lander.radarCharges > 0 ? COLORS.GREEN_BRIGHT : COLORS.AMBER_CAUTION;
+    ctx.fillStyle = lander.radarCharges > 0 ? THEME.TEXT_BRIGHT : THEME.ACCENT_AMBER;
     ctx.fillText(rightTel, w - padR - 2, deckTop + 14);
 
     const ctrlY = deckTop + 21;
     const ctrlH = Math.max(52, h - padB - ctrlY);
     const totalW = w - padL - padR;
 
-    // Left Group (54% width): [ ◄ ROLL L ] [ ▼ BRAKE ] [ ROLL R ► ]
+    // Left Group (54% width): [ ◄ ROLL ] [ STAB ] [ ROLL ► ]
     const leftGroupW = Math.floor(totalW * 0.54);
     const gap = 6;
     const rollW = Math.floor((leftGroupW - gap * 2) * 0.38);
@@ -830,7 +1004,7 @@ export class MobileHudRenderer {
       ctrlH,
       '◄ ROLL',
       touchHoldState.rollLeft,
-      COLORS.GREEN_BRIGHT
+      THEME.TEXT_BRIGHT
     );
 
     this.drawHoldPad(
@@ -843,7 +1017,7 @@ export class MobileHudRenderer {
       ctrlH,
       'STAB',
       touchHoldState.retro,
-      COLORS.AMBER_BRIGHT
+      THEME.ACCENT_AMBER_HI
     );
 
     this.drawHoldPad(
@@ -856,18 +1030,19 @@ export class MobileHudRenderer {
       ctrlH,
       'ROLL ►',
       touchHoldState.rollRight,
-      COLORS.GREEN_BRIGHT
+      THEME.TEXT_BRIGHT
     );
 
     // Right Group (43% width): [ ⚡ PULSE ] + Tall [ ▲▲ OVR / ▲ THRUST ] Pad
     const rightGroupW = totalW - leftGroupW - 10;
     const rightStartX = w - padR - rightGroupW;
-    const pulseW = Math.max(54, Math.floor(rightGroupW * 0.34));
+    const pulseW = Math.max(56, Math.floor(rightGroupW * 0.34));
     const thrustW = rightGroupW - pulseW - gap;
     const thrustX = rightStartX + pulseW + gap;
 
-    // 1x Emergency Pulse Button (One-Shot)
+    // 1x Emergency Pulse Button (with 0.6s flip-cover guard interlock!)
     const pulseArmed = lander.emergencyPulseAvailable;
+    const guardActive = pulseArmed && state.pulseSafetyLockSec > 0;
     this.addTouchButton(
       ctx,
       buttonsOut,
@@ -876,12 +1051,17 @@ export class MobileHudRenderer {
       ctrlY,
       pulseW,
       ctrlH,
-      pulseArmed ? '⚡PULSE' : 'USED',
+      guardActive ? 'GUARD' : pulseArmed ? '⚡PULSE' : 'USED',
       lander.emergencyPulseTimer > 0,
       state.hoveredButtonId,
-      pulseArmed ? COLORS.AMBER_CAUTION : COLORS.RED_DIM,
+      guardActive
+        ? THEME.ALERT_RED_TEXT
+        : pulseArmed
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_MUTED,
       false,
-      14
+      13,
+      !pulseArmed || guardActive
     );
 
     // Dual-Stage Vertical Throttle Pad: Upper 34% = OVERDRIVE (135%), Lower 66% = MAIN THRUST (100%)
@@ -898,7 +1078,7 @@ export class MobileHudRenderer {
       ovrH,
       '▲▲ OVR',
       touchHoldState.overdrive,
-      COLORS.RED_KLAXON
+      THEME.ALERT_RED_TEXT
     );
 
     this.drawHoldPad(
@@ -911,7 +1091,7 @@ export class MobileHudRenderer {
       mainH,
       '▲ THRUST',
       touchHoldState.thrust || touchHoldState.overdrive,
-      COLORS.AMBER_BRIGHT
+      THEME.ACCENT_AMBER_HI
     );
 
     ctx.restore();
@@ -930,25 +1110,20 @@ export class MobileHudRenderer {
     accent: string
   ): void {
     controlsOut.push({ id, rect: { x, y, width: w, height: h }, label });
-    ctx.fillStyle = active ? 'rgba(255, 168, 36, 0.34)' : 'rgba(8, 22, 13, 0.92)';
+    ctx.fillStyle = active ? 'rgba(255, 176, 0, 0.34)' : 'rgba(8, 22, 13, 0.92)';
     ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = active ? '#FFFFFF' : accent;
-    ctx.lineWidth = active ? 2.8 : 2.0;
+    ctx.lineWidth = active ? 2.6 : 1.8;
     ctx.strokeRect(x, y, w, h);
 
-    let fitPx = 15.5;
-    ctx.font = `bold ${fitPx}px "Share Tech Mono", monospace`;
-    while (fitPx > 11.5 && ctx.measureText(label).width > w - 8) {
-      fitPx -= 0.5;
-      ctx.font = `bold ${fitPx}px "Share Tech Mono", monospace`;
-    }
+    ctx.font = font('button', 14);
     ctx.fillStyle = active ? '#FFFFFF' : accent;
     ctx.textAlign = 'center';
-    ctx.fillText(label, x + w * 0.5, y + h * 0.5 + Math.round(fitPx * 0.34));
+    drawEllipsizedText(ctx, label, x + w * 0.5, y + h * 0.5 + 5, w - 8);
   }
 
   // =========================================================================
-  // 3. CLEAN MOBILE MODALS (BRIEFING, TALLY, BREACH, CALLSIGN, MENU, MANIFEST)
+  // 3. CLEAN MOBILE MODALS (ISOLATED VIA drawModalFrame + ZERO BUGS)
   // =========================================================================
 
   private drawMobileBriefingModal(
@@ -958,69 +1133,51 @@ export class MobileHudRenderer {
     state: HudRenderContext,
     buttonsOut: CrtInteractiveButton[]
   ): void {
-    const boxW = Math.min(460, w - 24);
-    const boxH = Math.min(310, h - 90);
-    const bx = (w - boxW) * 0.5;
-    const by = (h - boxH) * 0.5;
+    const m = drawModalFrame(
+      ctx,
+      w,
+      h,
+      {
+        title: `${state.sector.code} // ${state.sector.name}`,
+        subtitle: `GRAV ${state.sector.gravity.toFixed(2)} M/S² · FUEL ${state.sector.initialFuelKg} KG`,
+        maxWidth: 460,
+        maxHeight: 320,
+        accentColor: THEME.ACCENT_AMBER,
+      },
+      buttonsOut as ChromeButtonHitbox[]
+    );
 
     ctx.save();
-    ctx.fillStyle = 'rgba(5, 14, 9, 0.96)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    ctx.strokeStyle = COLORS.AMBER_CAUTION;
-    ctx.lineWidth = 2.2;
-    ctx.strokeRect(bx, by, boxW, boxH);
-
-    const fullHeader = `${state.sector.code} // ${state.sector.name}`;
+    ctx.font = font('prose', 13);
+    ctx.fillStyle = THEME.TEXT_BRIGHT;
     ctx.textAlign = 'left';
-    ctx.font =
-      fullHeader.length > 30
-        ? 'bold 15px "Share Tech Mono", monospace'
-        : 'bold 18px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
-    ctx.fillText(fullHeader, bx + 14, by + 30);
-
-    ctx.font = 'bold 13px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_MID;
-    ctx.fillText(`GRAVITY: ${state.sector.gravity.toFixed(2)} M/S²  |  FUEL: ${state.sector.initialFuelKg} KG`, bx + 14, by + 52);
-
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    const maxChars = Math.max(24, Math.floor((boxW - 28) / 8.3));
-    let cy = by + 80;
+    let cy = m.contentY + 6;
     for (const line of state.sector.briefingLines.slice(0, 3)) {
-      const words = line.split(' ');
-      let cur = '';
-      for (const word of words) {
-        if ((cur + ' ' + word).trim().length > maxChars) {
-          ctx.fillText(cur, bx + 14, cy);
-          cy += 20;
-          cur = word;
-        } else {
-          cur = (cur + ' ' + word).trim();
-        }
+      const wrapped = wrapTextLines(ctx, line, m.contentW - 4, 2);
+      for (const wl of wrapped) {
+        if (cy > m.footerY - 14) break;
+        ctx.fillText(wl, m.contentX, cy);
+        cy += 20;
       }
-      if (cur && cy < by + boxH - 68) {
-        ctx.fillText(cur, bx + 14, cy);
-        cy += 24;
-      }
+      cy += 4;
     }
+    ctx.restore();
 
     this.addTouchButton(
       ctx,
       buttonsOut,
       'briefing-launch',
-      bx + 14,
-      by + boxH - 58,
-      boxW - 28,
-      46,
-      'ENGAGE LATCH & DROP',
+      m.contentX,
+      m.footerY - 4,
+      m.contentW,
+      44,
+      `${SEMIOTIC_ICONS.PLAY} ENGAGE LATCH & DROP`,
       true,
       state.hoveredButtonId,
-      COLORS.AMBER_BRIGHT,
+      THEME.ACCENT_AMBER_HI,
       true,
-      16.5
+      15
     );
-    ctx.restore();
   }
 
   private drawMobileTallyModal(
@@ -1031,76 +1188,105 @@ export class MobileHudRenderer {
     buttonsOut: CrtInteractiveButton[]
   ): void {
     const bd = state.lastBreakdown!;
-    const boxW = Math.min(448, w - 20);
-    const boxH = Math.min(320, h - 126);
-    const bx = (w - boxW) * 0.5;
-    const by = Math.max(124, (h - boxH) * 0.5 + 24);
-
-    ctx.save();
-    ctx.fillStyle = 'rgba(5, 15, 9, 0.96)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    ctx.strokeStyle = COLORS.GREEN_PRIMARY;
-    ctx.lineWidth = 2.2;
-    ctx.strokeRect(bx, by, boxW, boxH);
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 18px "Share Tech Mono", monospace';
-    ctx.fillStyle =
+    const gradeColor =
       bd.grade === 'SOFT_KISS'
-        ? COLORS.GREEN_BRIGHT
+        ? THEME.TEXT_PRIMARY
         : bd.grade === 'HARD_SURVIVAL'
-          ? COLORS.AMBER_CAUTION
-          : COLORS.GREEN_PRIMARY;
-    ctx.fillText(
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_PRIMARY;
+    const title =
       bd.grade === 'SOFT_KISS'
-        ? '★ PRECISION SOFT KISS ★'
+        ? `${SEMIOTIC_ICONS.STAR} PRECISION SOFT KISS ${SEMIOTIC_ICONS.STAR}`
         : bd.grade === 'HARD_SURVIVAL'
-          ? '▲ SURVIVAL TOUCHDOWN (CAUTION) ▲'
-          : '● EXTRACTION CONFIRMED ●',
-      w * 0.5,
-      by + 30
+          ? `${SEMIOTIC_ICONS.TRIANGLE} SURVIVAL TOUCHDOWN`
+          : `${SEMIOTIC_ICONS.DOT_LIVE} EXTRACTION CONFIRMED`;
+
+    const m = drawModalFrame(
+      ctx,
+      w,
+      h,
+      {
+        title,
+        subtitle: `V/S ${bd.touchdownVs.toFixed(1)} · H/S ${bd.touchdownHs.toFixed(1)} · ATT ${bd.touchdownDeg.toFixed(0)}°`,
+        maxWidth: 450,
+        maxHeight: state.isPracticeRun ? 356 : 318,
+        accentColor: gradeColor,
+      },
+      buttonsOut as ChromeButtonHitbox[]
     );
 
     const rows: Array<[string, string]> = [
       [`PAD [${bd.padLabel} ${bd.padMultiplier}X]`, `+${bd.padScore.toLocaleString()}`],
-      [`FUEL BONUS`, `+${bd.fuelBonus.toLocaleString()}`],
-      [`KISS + INTEGRITY`, `+${(bd.precisionKissBonus + bd.noDamageBonus).toLocaleString()}`],
-      [`STREAK MULTIPLIER`, `×${bd.streakMultiplier}`],
-      [`SECTOR TOTAL`, `+${bd.sectorTotal.toLocaleString()} PTS`],
+      ['FUEL BONUS', `+${bd.fuelBonus.toLocaleString()}`],
+      ['KISS + INTEGRITY', `+${(bd.precisionKissBonus + bd.noDamageBonus).toLocaleString()}`],
+      ['STREAK MULTIPLIER', `×${bd.streakMultiplier}`],
+      ['SECTOR TOTAL', `+${bd.sectorTotal.toLocaleString()} PTS`],
     ];
 
-    ctx.font = 'bold 14px "JetBrains Mono", monospace';
+    ctx.save();
+    ctx.font = font('data', 13);
     rows.forEach(([k, v], i) => {
-      const ry = by + 62 + i * 28;
+      const ry = m.contentY + 14 + i * 26;
       ctx.textAlign = 'left';
-      ctx.fillStyle = i === 4 ? COLORS.GREEN_BRIGHT : COLORS.GREEN_PRIMARY;
-      ctx.fillText(k, bx + 16, ry);
+      ctx.fillStyle = i === 4 ? THEME.TEXT_BRIGHT : THEME.TEXT_PRIMARY;
+      ctx.fillText(k, m.contentX, ry);
       ctx.textAlign = 'right';
-      ctx.fillStyle = i === 4 ? '#FFB000' : COLORS.AMBER_BRIGHT;
-      ctx.fillText(v, bx + boxW - 16, ry);
+      ctx.fillStyle = i === 4 ? THEME.ACCENT_AMBER : THEME.ACCENT_AMBER_HI;
+      ctx.fillText(v, m.contentX + m.contentW, ry);
     });
-
-    const isFinal = !state.sector.endlessMode && state.sector.index >= 6;
-    this.addTouchButton(
-      ctx,
-      buttonsOut,
-      'tally-next',
-      bx + 16,
-      by + boxH - 58,
-      boxW - 32,
-      46,
-      state.isPracticeRun
-        ? 'PRACTICE COMPLETE — MENU'
-        : isFinal
-          ? 'COMPLETE CAMPAIGN'
-          : 'NEXT SECTOR',
-      true,
-      state.hoveredButtonId,
-      COLORS.AMBER_BRIGHT,
-      true,
-      16.5
-    );
     ctx.restore();
+
+    if (state.isPracticeRun) {
+      const gap = 8;
+      const halfW = Math.floor((m.contentW - gap) * 0.5);
+      this.addTouchButton(
+        ctx,
+        buttonsOut,
+        'tally-retry',
+        m.contentX,
+        m.footerY - 4,
+        halfW,
+        44,
+        `${SEMIOTIC_ICONS.REPLAY} RETRY SECTOR`,
+        true,
+        state.hoveredButtonId,
+        THEME.ACCENT_AMBER_HI,
+        true,
+        14
+      );
+      this.addTouchButton(
+        ctx,
+        buttonsOut,
+        'tally-next',
+        m.contentX + halfW + gap,
+        m.footerY - 4,
+        m.contentW - halfW - gap,
+        44,
+        'MAIN MENU',
+        false,
+        state.hoveredButtonId,
+        THEME.TEXT_BRIGHT,
+        false,
+        14
+      );
+    } else {
+      const isFinal = !state.sector.endlessMode && state.sector.index >= 6;
+      this.addTouchButton(
+        ctx,
+        buttonsOut,
+        'tally-next',
+        m.contentX,
+        m.footerY - 4,
+        m.contentW,
+        44,
+        isFinal ? 'COMPLETE CAMPAIGN' : `${SEMIOTIC_ICONS.PLAY} NEXT SECTOR`,
+        true,
+        state.hoveredButtonId,
+        THEME.ACCENT_AMBER_HI,
+        true,
+        15
+      );
+    }
   }
 
   private drawMobileBreachModal(
@@ -1110,93 +1296,64 @@ export class MobileHudRenderer {
     state: HudRenderContext,
     buttonsOut: CrtInteractiveButton[]
   ): void {
-    const boxW = Math.min(448, w - 20);
-    const boxH = 244;
-    const bx = (w - boxW) * 0.5;
-    const by = Math.max(126, (h - boxH) * 0.5 + 20);
-    const gameOver = state.lives <= 0;
+    const m = drawModalFrame(
+      ctx,
+      w,
+      h,
+      {
+        title: `HULL BREACH // ${state.lives} SHUTTLE LEFT`,
+        subtitle: state.lastFailure?.reason ?? 'CATASTROPHIC STRUCTURAL IMPACT',
+        maxWidth: 448,
+        maxHeight: 266,
+        accentColor: THEME.ALERT_RED_STROKE,
+        rightBadge: { text: `${state.lives} LEFT`, tone: 'red' },
+      },
+      buttonsOut as ChromeButtonHitbox[]
+    );
 
     ctx.save();
-    ctx.fillStyle = 'rgba(20, 5, 4, 0.96)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    ctx.strokeStyle = COLORS.RED_KLAXON;
-    ctx.lineWidth = 2.4;
-    ctx.strokeRect(bx, by, boxW, boxH);
-
     ctx.textAlign = 'center';
-    ctx.font = 'bold 20px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.RED_KLAXON;
-    ctx.fillText(
-      gameOver ? 'GAME OVER // ALL SHUTTLES LOST' : `HULL BREACH // ${state.lives} SHUTTLE LEFT`,
-      w * 0.5,
-      by + 34
+    ctx.font = font('data', 13);
+    ctx.fillStyle = THEME.TEXT_PRIMARY;
+    drawEllipsizedText(
+      ctx,
+      `RUN SCORE: ${Math.round(state.missionScore).toLocaleString()} PTS (${state.highestSectorCode})`,
+      m.contentX + m.contentW * 0.5,
+      m.contentY + 20,
+      m.contentW
     );
-
-    ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
-    ctx.fillText(
-      (state.lastFailure?.reason ?? 'CATASTROPHIC IMPACT').slice(0, 36),
-      w * 0.5,
-      by + 65
-    );
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.fillText(
-      state.isPracticeRun && gameOver
-        ? `PRACTICE ENDED (${state.sector.code})`
-        : `RUN SCORE: ${Math.round(state.missionScore).toLocaleString()} PTS (${state.highestSectorCode})`,
-      w * 0.5,
-      by + 92
-    );
-
-    if (gameOver) {
-      this.addTouchButton(
-        ctx,
-        buttonsOut,
-        'breach-end',
-        bx + 16,
-        by + boxH - 60,
-        boxW - 32,
-        46,
-        state.missionScore > 0 && !state.isPracticeRun ? 'TRANSMIT GLOBAL SCORE' : 'RETURN TO MENU',
-        true,
-        state.hoveredButtonId,
-        COLORS.AMBER_BRIGHT,
-        true,
-        16
-      );
-    } else {
-      this.addTouchButton(
-        ctx,
-        buttonsOut,
-        'breach-retry',
-        bx + 16,
-        by + boxH - 112,
-        boxW - 32,
-        44,
-        `REDEPLOY SHUTTLE (${state.lives} LEFT)`,
-        true,
-        state.hoveredButtonId,
-        COLORS.AMBER_BRIGHT,
-        true,
-        15.5
-      );
-      this.addTouchButton(
-        ctx,
-        buttonsOut,
-        'breach-end',
-        bx + 16,
-        by + boxH - 58,
-        boxW - 32,
-        44,
-        state.isPracticeRun ? 'RETURN TO MENU' : 'END RUN / MENU',
-        false,
-        state.hoveredButtonId,
-        COLORS.GREEN_MID,
-        false,
-        14.5
-      );
-    }
     ctx.restore();
+
+    this.addTouchButton(
+      ctx,
+      buttonsOut,
+      'breach-retry',
+      m.contentX,
+      m.footerY - 52,
+      m.contentW,
+      44,
+      `${SEMIOTIC_ICONS.PLAY} REDEPLOY SHUTTLE (${state.lives} LEFT)`,
+      true,
+      state.hoveredButtonId,
+      THEME.ACCENT_AMBER_HI,
+      true,
+      14
+    );
+    this.addTouchButton(
+      ctx,
+      buttonsOut,
+      'breach-end',
+      m.contentX,
+      m.footerY - 2,
+      m.contentW,
+      44,
+      state.isPracticeRun ? 'END PRACTICE' : 'END RUN & DEBRIEF',
+      false,
+      state.hoveredButtonId,
+      THEME.TEXT_SECONDARY,
+      false,
+      13
+    );
   }
 
   private drawMobileCallsignModal(
@@ -1206,193 +1363,190 @@ export class MobileHudRenderer {
     state: HudRenderContext,
     buttonsOut: CrtInteractiveButton[]
   ): void {
-    const boxW = Math.min(440, w - 24);
-    const boxH = 282;
-    const bx = (w - boxW) * 0.5;
-    const by = Math.max(54, (h - boxH) * 0.36);
+    const locked = state.debriefKeylockSec > 0.01;
+    const isVictory = state.debriefOutcome === 'VICTORY';
+    const canSubmit = !state.isPracticeRun && state.missionScore > 0;
     const isDone =
       state.uplinkSubmitState === 'CONFIRMED' || state.uplinkSubmitState === 'OFFLINE_SAVED';
     const isSending = state.uplinkSubmitState === 'TRANSMITTING';
 
-    ctx.save();
-    ctx.fillStyle = 'rgba(6, 15, 9, 0.97)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    ctx.strokeStyle = '#FFB000';
-    ctx.lineWidth = 2.4;
-    ctx.strokeRect(bx, by, boxW, boxH);
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 16.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText('GLOBAL LEADERBOARD UPLINK', w * 0.5, by + 30);
-
-    ctx.font = 'bold 12px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_PRIMARY;
-    ctx.fillText(
-      `${Math.round(state.missionScore).toLocaleString()} PTS  |  ${state.highestSectorCode}  |  ACC ${state.avgAccuracyPercent}%`,
-      w * 0.5,
-      by + 54
+    const m = drawModalFrame(
+      ctx,
+      w,
+      h,
+      {
+        title: isVictory ? 'CAMPAIGN COMPLETE!' : 'MISSION DEBRIEF // GAME OVER',
+        subtitle: `${Math.round(state.missionScore).toLocaleString()} PTS · ${state.highestSectorCode} · ACC ${state.avgAccuracyPercent}%`,
+        maxWidth: 448,
+        maxHeight: canSubmit ? 360 : 280,
+        accentColor: isVictory ? THEME.TEXT_PRIMARY : THEME.ACCENT_AMBER,
+        rightBadge: locked
+          ? { text: `LOCK ${state.debriefKeylockSec.toFixed(1)}S`, tone: 'amber' }
+          : canSubmit
+            ? { text: `${SEMIOTIC_ICONS.STAR} RANKED`, tone: 'amber' }
+            : { text: 'PRACTICE', tone: 'local' },
+      },
+      buttonsOut as ChromeButtonHitbox[]
     );
 
-    // Tappable Callsign Input Field (Focuses native phone virtual keyboard!)
-    const inX = bx + 16;
-    const inY = by + 72;
-    const inW = boxW - 32 - (isDone ? 0 : 62);
-    buttonsOut.push({
-      id: 'callsign-focus-input',
-      rect: { x: inX, y: inY, width: inW, height: 48 },
-      label: 'TAP TO EDIT CALLSIGN',
-    });
+    let cy = m.contentY + 2;
 
-    ctx.fillStyle = 'rgba(2, 7, 4, 0.96)';
-    ctx.fillRect(inX, inY, inW, 48);
-    ctx.strokeStyle = isDone ? '#44FF77' : '#FFB000';
-    ctx.lineWidth = 2.2;
-    ctx.strokeRect(inX, inY, inW, 48);
+    if (canSubmit) {
+      // Tappable Callsign Input Field (Focuses native phone virtual keyboard!)
+      const inW = m.contentW - (isDone ? 0 : 62);
+      buttonsOut.push({
+        id: POST_RUN_IDS.CALLSIGN_BOX,
+        rect: { x: m.contentX, y: cy, width: inW, height: 48 },
+        label: 'TAP TO EDIT CALLSIGN',
+      });
 
-    const blink = !isDone && !isSending && Math.sin(state.timeSec * 10) > 0 ? '_' : '';
-    ctx.font = 'bold 19px "JetBrains Mono", monospace';
-    ctx.fillStyle = isDone ? '#44FF77' : COLORS.AMBER_BRIGHT;
-    ctx.fillText(`${state.callsignDraft}${blink}`, inX + inW * 0.5, inY + 31);
+      ctx.save();
+      ctx.fillStyle = state.callsignEditing
+        ? 'rgba(42, 24, 4, 0.94)'
+        : 'rgba(2, 7, 4, 0.96)';
+      ctx.fillRect(m.contentX, cy, inW, 48);
+      ctx.strokeStyle = isDone
+        ? THEME.TEXT_PRIMARY
+        : state.callsignEditing
+          ? THEME.ACCENT_AMBER_HI
+          : THEME.ACCENT_AMBER;
+      ctx.lineWidth = 2.0;
+      ctx.strokeRect(m.contentX, cy, inW, 48);
 
-    if (!isDone) {
-      this.addTouchButton(
+      const blink = !isDone && !isSending && Math.sin(state.timeSec * 10) > 0 ? '_' : '';
+      ctx.font = font('display', 19);
+      ctx.fillStyle = isDone ? THEME.TEXT_PRIMARY : THEME.ACCENT_AMBER_HI;
+      ctx.textAlign = 'center';
+      drawEllipsizedText(
         ctx,
-        buttonsOut,
-        'callsign-backspace',
-        inX + inW + 6,
-        inY,
-        56,
-        48,
-        '⌫',
-        false,
-        state.hoveredButtonId,
-        COLORS.AMBER_CAUTION,
-        false,
-        16
+        `${state.callsignDraft || 'PILOT-01'}${blink}`,
+        m.contentX + inW * 0.5,
+        cy + 31,
+        inW - 14
       );
-    }
+      ctx.restore();
 
-    ctx.font = 'bold 11px "JetBrains Mono", monospace';
-    ctx.fillStyle = isDone ? '#44FF77' : COLORS.GREEN_MID;
-    ctx.fillText(
-      isDone && state.uplinkConfirmText
-        ? state.uplinkConfirmText.slice(0, 42)
-        : 'TAP CALLSIGN BOX TO OPEN KEYBOARD',
-      w * 0.5,
-      by + 144
-    );
+      if (!isDone) {
+        this.addTouchButton(
+          ctx,
+          buttonsOut,
+          'callsign-backspace',
+          m.contentX + inW + 6,
+          cy,
+          56,
+          48,
+          '⌫',
+          false,
+          state.hoveredButtonId,
+          THEME.ACCENT_AMBER,
+          false,
+          16
+        );
+      }
 
-    if (isDone) {
+      cy += 64;
+
+      // BUG #3 FIX: Render `uplinkConfirmText` validation/cooldown errors EVEN WHEN `!isDone`!
+      ctx.save();
+      ctx.font = font('micro', 12);
+      ctx.textAlign = 'center';
+      let msgText = 'TAP CALLSIGN BOX TO EDIT · TAP TRANSMIT TO POST';
+      let msgCol: string = THEME.TEXT_SECONDARY;
+      if (isDone && state.uplinkConfirmText) {
+        msgText = state.uplinkConfirmText;
+        msgCol = THEME.TEXT_PRIMARY;
+      } else if (isSending) {
+        msgText = 'TRANSMITTING TELEMETRY PACKET...';
+        msgCol = THEME.ACCENT_AMBER_HI;
+      } else if (state.uplinkConfirmText) {
+        // Explicit inline rejection / validation / 15s cooldown error!
+        msgText = state.uplinkConfirmText;
+        msgCol = THEME.ALERT_RED_TEXT;
+      }
+      ctx.fillStyle = msgCol;
+      const errLines = wrapTextLines(ctx, msgText, m.contentW - 8, 2);
+      errLines.forEach((ln, idx) => {
+        ctx.fillText(ln, m.contentX + m.contentW * 0.5, cy + idx * 17);
+      });
+      ctx.restore();
+
+      // Primary Submit / Manifest CTA
+      const primaryId = isDone ? POST_RUN_IDS.OPEN_MANIFEST : POST_RUN_IDS.SUBMIT_SCORE;
+      const primaryLabel = isSending
+        ? 'TRANSMITTING...'
+        : isDone
+          ? `${SEMIOTIC_ICONS.STAR} VIEW LEADERBOARD`
+          : locked
+            ? `LOCKED (${state.debriefKeylockSec.toFixed(1)}S)`
+            : `${SEMIOTIC_ICONS.PLAY} TRANSMIT SCORE`;
+
       this.addTouchButton(
         ctx,
         buttonsOut,
-        'callsign-finish',
-        bx + 16,
-        by + boxH - 60,
-        boxW - 32,
-        46,
-        'VIEW GLOBAL LEADERBOARD',
-        true,
+        primaryId,
+        m.contentX,
+        m.footerY - 52,
+        m.contentW,
+        44,
+        primaryLabel,
+        !locked,
         state.hoveredButtonId,
-        '#44FF77',
-        true,
-        14.5
+        isDone ? THEME.TEXT_PRIMARY : THEME.ACCENT_AMBER_HI,
+        !locked && !isSending,
+        14,
+        locked || isSending
       );
     } else {
-      this.addTouchButton(
-        ctx,
-        buttonsOut,
-        'callsign-submit',
-        bx + 16,
-        by + boxH - 112,
-        boxW - 32,
-        46,
-        isSending ? 'TRANSMITTING...' : 'TRANSMIT TO LEADERBOARD',
-        true,
-        state.hoveredButtonId,
-        COLORS.AMBER_BRIGHT,
-        true,
-        14.5
-      );
-      this.addTouchButton(
-        ctx,
-        buttonsOut,
-        'callsign-skip',
-        bx + 16,
-        by + boxH - 58,
-        boxW - 32,
-        44,
-        'SKIP UPLINK',
-        false,
-        state.hoveredButtonId,
-        COLORS.GREEN_MID,
-        false,
-        13
-      );
+      ctx.save();
+      ctx.font = font('prose', 13);
+      ctx.fillStyle = THEME.TEXT_BRIGHT;
+      ctx.textAlign = 'center';
+      const note = state.isPracticeRun
+        ? 'Practice sortie complete. Launch Ranked mode to post global scores.'
+        : 'Score 0 PTS — extract at least 1 sector to submit a Ranked score.';
+      const lines = wrapTextLines(ctx, note, m.contentW - 12, 3);
+      lines.forEach((ln, idx) => {
+        ctx.fillText(ln, m.contentX + m.contentW * 0.5, cy + 20 + idx * 20);
+      });
+      ctx.restore();
     }
-    ctx.restore();
-  }
 
-  private drawMobileCampaignCompleteModal(
-    ctx: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    state: HudRenderContext,
-    buttonsOut: CrtInteractiveButton[]
-  ): void {
-    const boxW = Math.min(440, w - 24);
-    const boxH = 246;
-    const bx = (w - boxW) * 0.5;
-    const by = (h - boxH) * 0.5;
-
-    ctx.save();
-    ctx.fillStyle = 'rgba(6, 16, 10, 0.97)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    ctx.strokeStyle = COLORS.GREEN_BRIGHT;
-    ctx.lineWidth = 2.4;
-    ctx.strokeRect(bx, by, boxW, boxH);
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 18px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_BRIGHT;
-    ctx.fillText('ALL 6 SECTORS COMPLETE!', w * 0.5, by + 34);
-
-    ctx.font = 'bold 14px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#FFB000';
-    ctx.fillText(`${Math.round(state.missionScore).toLocaleString()} PTS`, w * 0.5, by + 68);
-
+    // Unified Footer: PLAY AGAIN + MU-TH-UR OS HUB
+    const gap = 8;
+    const hubW = Math.min(130, Math.floor(m.contentW * 0.36));
+    const replayW = m.contentW - hubW - gap;
     this.addTouchButton(
       ctx,
       buttonsOut,
-      'complete-manifest',
-      bx + 16,
-      by + boxH - 114,
-      boxW - 32,
-      46,
-      state.isPracticeRun ? 'RETURN TO MENU' : 'TRANSMIT GLOBAL SCORE',
-      true,
-      state.hoveredButtonId,
-      COLORS.AMBER_BRIGHT,
-      true,
-      14.5
-    );
-    this.addTouchButton(
-      ctx,
-      buttonsOut,
-      'complete-endless',
-      bx + 16,
-      by + boxH - 58,
-      boxW - 32,
+      POST_RUN_IDS.PLAY_AGAIN,
+      m.contentX,
+      m.footerY - 2,
+      replayW,
       44,
-      'PLAY ENDLESS SURVEY',
+      locked ? `WAIT (${state.debriefKeylockSec.toFixed(1)}S)` : `${SEMIOTIC_ICONS.REPLAY} PLAY AGAIN`,
+      !canSubmit && !locked,
+      state.hoveredButtonId,
+      THEME.TEXT_BRIGHT,
+      !canSubmit && !locked,
+      14,
+      locked
+    );
+    this.addTouchButton(
+      ctx,
+      buttonsOut,
+      POST_RUN_IDS.EXIT_HUB,
+      m.contentX + replayW + gap,
+      m.footerY - 2,
+      hubW,
+      44,
+      'MU-TH-UR OS',
       false,
       state.hoveredButtonId,
-      COLORS.GREEN_PRIMARY,
+      THEME.ACCENT_CYAN,
       false,
-      13.5
+      13,
+      locked
     );
-    ctx.restore();
   }
 
   private drawMobileSystemMenuModal(
@@ -1404,165 +1558,234 @@ export class MobileHudRenderer {
   ): void {
     const inRun =
       state.phase === 'FLIGHT' || state.phase === 'PAUSED' || state.phase === 'SECTOR_BRIEFING';
-    const boxW = Math.min(440, w - 24);
-    const boxH = Math.min(h - 32, inRun ? 426 : 324);
-    const bx = (w - boxW) * 0.5;
-    const by = (h - boxH) * 0.5;
 
-    ctx.save();
-    ctx.fillStyle = 'rgba(4, 12, 7, 0.98)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    ctx.strokeStyle = COLORS.AMBER_CAUTION;
-    ctx.lineWidth = 2.4;
-    ctx.strokeRect(bx, by, boxW, boxH);
+    const m = drawModalFrame(
+      ctx,
+      w,
+      h,
+      {
+        title: 'SYSTEM & FLIGHT MENU',
+        subtitle: 'SIMULATION PAUSED — GLOBAL MU-TH-UR SETTINGS',
+        maxWidth: 448,
+        maxHeight: Math.min(h - 24, inRun ? 510 : 420),
+        accentColor: THEME.ACCENT_AMBER,
+        rightBadge: { text: 'PAUSED', tone: 'amber' },
+      },
+      buttonsOut as ChromeButtonHitbox[]
+    );
 
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 19px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
-    ctx.fillText('SYSTEM & FLIGHT MENU', w * 0.5, by + 30);
-
-    let cy = by + 46;
-    const bw = boxW - 32;
-    const bh = 44;
-    const gap = 8;
+    let cy = m.contentY - 2;
+    const bw = m.contentW;
+    const rowCount = inRun ? 6 : 4;
+    const availRowsH = Math.max(120, m.footerY - cy - 10);
+    const gap = availRowsH < 250 ? 4 : 6;
+    const bh = Math.min(44, Math.max(28, Math.floor((availRowsH - gap * (rowCount - 1)) / rowCount)));
+    const halfW = Math.floor((bw - gap) * 0.5);
 
     if (inRun) {
       this.addTouchButton(
         ctx,
         buttonsOut,
-        'osd-resume',
-        bx + 16,
+        SYSTEM_MENU_IDS.RESUME,
+        m.contentX,
         cy,
         bw,
         bh,
-        'RESUME DESCENT',
+        `${SEMIOTIC_ICONS.PLAY} RESUME DESCENT`,
         true,
         state.hoveredButtonId,
-        COLORS.AMBER_BRIGHT,
+        THEME.ACCENT_AMBER_HI,
         true,
-        16
+        14
       );
       cy += bh + gap;
 
-      const halfW = Math.floor((bw - gap) * 0.5);
       this.addTouchButton(
         ctx,
         buttonsOut,
-        'osd-retry',
-        bx + 16,
+        'lander-jettison',
+        m.contentX,
         cy,
         halfW,
         bh,
-        state.lives > 1 ? `REDEPLOY (-1)` : 'LAST SHUTTLE',
+        state.lives > 1 ? `JETTISON (-1)` : 'FINAL SHUTTLE',
         false,
         state.hoveredButtonId,
-        state.lives > 1 ? COLORS.AMBER_CAUTION : COLORS.RED_DIM,
+        state.lives > 1 ? THEME.ACCENT_AMBER : THEME.TEXT_MUTED,
         false,
-        14
+        13,
+        state.lives <= 1
       );
       this.addTouchButton(
         ctx,
         buttonsOut,
-        'osd-abort',
-        bx + 16 + halfW + gap,
+        SYSTEM_MENU_IDS.RESTART,
+        m.contentX + halfW + gap,
         cy,
-        halfW,
+        bw - halfW - gap,
         bh,
-        state.isPracticeRun ? 'RETURN TO MENU' : 'END RUN / MENU',
+        `${SEMIOTIC_ICONS.REPLAY} RESTART RUN`,
         false,
         state.hoveredButtonId,
-        COLORS.RED_KLAXON,
+        THEME.TEXT_BRIGHT,
         false,
-        14
+        13
       );
-      cy += bh + gap + 4;
+      cy += bh + gap;
     }
 
+    // Distinct SAS ON/OFF copy
     this.addTouchButton(
       ctx,
       buttonsOut,
-      'osd-sas-toggle',
-      bx + 16,
+      'lander-sas-toggle',
+      m.contentX,
       cy,
       bw,
       bh,
-      `SAS 50% GENTLE ROLL: ${state.bezel.sasEnabled ? 'ON' : 'OFF'}`,
+      state.bezel.sasEnabled
+        ? 'SAS: ON (50% GENTLE ROLL ASSIST)'
+        : 'SAS: OFF (100% RAW RCS TORQUE)',
       state.bezel.sasEnabled,
       state.hoveredButtonId,
-      state.bezel.sasEnabled ? COLORS.GREEN_BRIGHT : COLORS.AMBER_CAUTION,
+      state.bezel.sasEnabled ? THEME.TEXT_BRIGHT : THEME.ACCENT_AMBER,
       false,
-      15
+      13
     );
     cy += bh + gap;
 
+    // Global 1979 CRT Mode + Phosphor Cycle Row
+    const crt1979On = state.crtPreset === 'CLASSIC_1979';
     this.addTouchButton(
       ctx,
       buttonsOut,
-      'osd-mute-toggle',
-      bx + 16,
+      SYSTEM_MENU_IDS.CRT_CYCLE,
+      m.contentX,
       cy,
-      bw,
+      halfW,
       bh,
-      `AUDIO BUS: ${state.bezel.audioMuted ? 'MUTED' : 'ACTIVE'}`,
+      `1979 CRT: ${crt1979On ? 'ON' : 'OFF'}`,
+      crt1979On,
+      state.hoveredButtonId,
+      crt1979On ? THEME.ACCENT_AMBER_HI : THEME.TEXT_SECONDARY,
+      false,
+      12
+    );
+    this.addTouchButton(
+      ctx,
+      buttonsOut,
+      SYSTEM_MENU_IDS.PHOSPHOR_CYCLE,
+      m.contentX + halfW + gap,
+      cy,
+      bw - halfW - gap,
+      bh,
+      `PHOSPHOR: ${state.phosphorTheme}`,
+      false,
+      state.hoveredButtonId,
+      THEME.ACCENT_CYAN,
+      false,
+      12
+    );
+    cy += bh + gap;
+
+    // Audio Mute + Fullscreen Row
+    this.addTouchButton(
+      ctx,
+      buttonsOut,
+      SYSTEM_MENU_IDS.VOL_MUTE,
+      m.contentX,
+      cy,
+      halfW,
+      bh,
+      state.bezel.audioMuted
+        ? 'AUDIO: MUTED'
+        : `AUDIO: ${Math.round(state.masterVolume * 100)}%`,
       !state.bezel.audioMuted,
       state.hoveredButtonId,
-      state.bezel.audioMuted ? COLORS.RED_KLAXON : COLORS.GREEN_BRIGHT,
+      state.bezel.audioMuted ? THEME.ALERT_RED_TEXT : THEME.TEXT_BRIGHT,
       false,
-      15
+      12
     );
-    cy += bh + gap;
-
     this.addTouchButton(
       ctx,
       buttonsOut,
-      'hud-fullscreen-toggle',
-      bx + 16,
+      SYSTEM_MENU_IDS.DISPLAY_TOGGLE,
+      m.contentX + halfW + gap,
       cy,
-      bw,
+      bw - halfW - gap,
       bh,
-      state.isFullscreen ? 'EXIT FULLSCREEN' : 'ENTER FULLSCREEN',
+      state.isFullscreen ? 'EXIT FS' : 'FULLSCREEN',
       state.isFullscreen,
       state.hoveredButtonId,
-      COLORS.GREEN_BRIGHT,
+      THEME.ACCENT_AMBER_HI,
       false,
-      15
+      12
     );
     cy += bh + gap;
 
-    const footGap = 8;
-    const footHalfW = Math.floor((bw - footGap) * 0.5);
+    // Controls Quick-Card + Desktop Layout Toggle
     this.addTouchButton(
       ctx,
       buttonsOut,
-      'osd-close',
-      bx + 16,
-      by + boxH - 54,
-      footHalfW,
+      TOP_CHROME_IDS.CONTROLS,
+      m.contentX,
+      cy,
+      halfW,
+      bh,
+      'CONTROLS CARD',
+      false,
+      state.hoveredButtonId,
+      THEME.ACCENT_CYAN,
+      false,
+      12
+    );
+    this.addTouchButton(
+      ctx,
+      buttonsOut,
+      'menu-toggle-mobile',
+      m.contentX + halfW + gap,
+      cy,
+      bw - halfW - gap,
+      bh,
+      'DESKTOP MODE',
+      true,
+      state.hoveredButtonId,
+      THEME.ACCENT_CYAN,
+      false,
+      12
+    );
+
+    // Footer: CLOSE + MU-TH-UR OS HUB (Bug #4: explicit HUB button inside mobile menu!)
+    this.addTouchButton(
+      ctx,
+      buttonsOut,
+      SYSTEM_MENU_IDS.RESUME,
+      m.contentX,
+      m.footerY - 2,
+      halfW,
       44,
       'CLOSE MENU',
       false,
       state.hoveredButtonId,
-      COLORS.GREEN_BRIGHT,
+      THEME.TEXT_BRIGHT,
       false,
-      13.5
+      13
     );
     this.addTouchButton(
       ctx,
       buttonsOut,
-      'exit-muthur-os',
-      bx + 16 + footHalfW + footGap,
-      by + boxH - 54,
-      footHalfW,
+      SYSTEM_MENU_IDS.EXIT_HUB,
+      m.contentX + halfW + gap,
+      m.footerY - 2,
+      bw - halfW - gap,
       44,
-      'EXIT TO MU-TH-UR OS',
-      false,
+      state.confirmExitPending ? '[CONFIRM HUB?]' : 'MU-TH-UR OS HUB',
+      state.confirmExitPending,
       state.hoveredButtonId,
-      '#FFB000',
+      state.confirmExitPending ? THEME.ALERT_RED_TEXT : THEME.ACCENT_AMBER,
       false,
-      12.5
+      13
     );
-
-    ctx.restore();
   }
 
   private drawMobileManifestModal(
@@ -1570,75 +1793,77 @@ export class MobileHudRenderer {
     w: number,
     h: number,
     state: HudRenderContext,
-    insets: SafeAreaInsets,
+    _insets: SafeAreaInsets,
     buttonsOut: CrtInteractiveButton[]
   ): void {
-    const padX = Math.max(10, insets.left + 8);
-    const padY = Math.max(12, insets.top + 8);
-    const fsBotExtra = state.isFullscreen ? 24 : 0;
-    const boxW = Math.min(520, w - padX * 2);
-    const boxH = Math.min(560, h - padY - Math.max(12 + fsBotExtra, insets.bottom + 8 + fsBotExtra));
-    const bx = (w - boxW) * 0.5;
-    const by = (h - boxH) * 0.5;
+    const uplinkStatus =
+      state.uplinkConnectionStatus === 'LOADING'
+        ? 'SYNCING'
+        : state.manifestShowingArchive
+          ? 'LOCAL'
+          : 'LIVE';
 
-    ctx.save();
-    ctx.fillStyle = 'rgba(4, 12, 7, 0.98)';
-    ctx.fillRect(bx, by, boxW, boxH);
-    ctx.strokeStyle = COLORS.GREEN_PRIMARY;
-    ctx.lineWidth = 2.2;
-    ctx.strokeRect(bx, by, boxW, boxH);
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 18.5px "Share Tech Mono", monospace';
-    ctx.fillStyle = COLORS.AMBER_BRIGHT;
-    ctx.fillText('GLOBAL CREW MANIFEST', w * 0.5, by + 28);
+    const m = drawModalFrame(
+      ctx,
+      w,
+      h,
+      {
+        title: 'LUNAR LANDER // LEADERBOARD',
+        maxWidth: 520,
+        maxHeight: Math.min(560, h - 24),
+        accentColor: THEME.TEXT_PRIMARY,
+        rightBadge: formatUplinkBadge(uplinkStatus),
+      },
+      buttonsOut as ChromeButtonHitbox[]
+    );
 
     const tabGap = 8;
-    const tabW = Math.floor((boxW - 24 - tabGap) * 0.5);
+    const tabW = Math.floor((m.contentW - tabGap) * 0.5);
     this.addTouchButton(
       ctx,
       buttonsOut,
-      'logs-tab-campaign',
-      bx + 12,
-      by + 38,
+      `${POST_RUN_IDS.MANIFEST_TAB_PREFIX}CAMPAIGN`,
+      m.contentX,
+      m.contentY - 2,
       tabW,
-      44,
+      40,
       'CAMPAIGN',
       state.manifestTab === 'CAMPAIGN',
       state.hoveredButtonId,
-      '#FFB000',
+      THEME.ACCENT_AMBER,
       false,
-      15
+      14
     );
     this.addTouchButton(
       ctx,
       buttonsOut,
-      'logs-tab-endless',
-      bx + 12 + tabW + tabGap,
-      by + 38,
-      tabW,
-      44,
+      `${POST_RUN_IDS.MANIFEST_TAB_PREFIX}ENDLESS`,
+      m.contentX + tabW + tabGap,
+      m.contentY - 2,
+      m.contentW - tabW - tabGap,
+      40,
       'ENDLESS',
       state.manifestTab === 'ENDLESS',
       state.hoveredButtonId,
-      '#FFB000',
+      THEME.ACCENT_AMBER,
       false,
-      15
+      14
     );
 
-    const headY = by + 102;
-    ctx.font = 'bold 12.5px "JetBrains Mono", monospace';
-    ctx.fillStyle = COLORS.GREEN_MID;
+    const headY = m.contentY + 54;
+    ctx.save();
+    ctx.font = font('micro', 12);
+    ctx.fillStyle = THEME.ACCENT_AMBER;
     ctx.textAlign = 'left';
-    ctx.fillText('#', bx + 14, headY);
-    ctx.fillText('CALLSIGN', bx + 46, headY);
-    ctx.fillText('SEC', bx + boxW - 156, headY);
+    ctx.fillText('RNK', m.contentX + 4, headY);
+    ctx.fillText('CALLSIGN', m.contentX + 44, headY);
     ctx.textAlign = 'right';
-    ctx.fillText('SCORE', bx + boxW - 14, headY);
+    ctx.fillText('SCORE', m.contentX + m.contentW - 72, headY);
+    ctx.fillText('SEC', m.contentX + m.contentW - 4, headY);
 
-    const availH = boxH - 184;
-    const maxRows = Math.min(12, Math.max(6, Math.floor(availH / 24)));
-    const rowStep = Math.min(25, Math.floor(availH / maxRows));
+    const availH = Math.max(120, m.footerY - headY - 24);
+    const maxRows = Math.min(10, Math.max(5, Math.floor(availH / 26)));
+    const rowStep = Math.min(28, Math.floor(availH / maxRows));
     const playerTag = state.playerSavedCallsign.trim().toUpperCase();
     const recentRun =
       state.lastSubmittedRun && state.lastSubmittedRun.mode === state.manifestTab
@@ -1662,48 +1887,94 @@ export class MobileHudRenderer {
     }
 
     visible.forEach((entry, idx) => {
-      const ry = headY + 23 + idx * rowStep;
+      const ry = headY + 24 + idx * rowStep;
       const isNew = idx === matchedNewIdx;
       const isPlayer = playerTag.length > 0 && entry.callsign.toUpperCase() === playerTag;
 
       if (isNew) {
         ctx.fillStyle = 'rgba(68, 255, 119, 0.24)';
-        ctx.fillRect(bx + 10, ry - 15, boxW - 20, rowStep - 1);
-        ctx.strokeStyle = '#44FF77';
-        ctx.lineWidth = 1.8;
-        ctx.strokeRect(bx + 10, ry - 15, boxW - 20, rowStep - 1);
-      } else if (isPlayer) {
-        ctx.fillStyle = 'rgba(255, 176, 0, 0.06)';
-        ctx.fillRect(bx + 12, ry - 14, boxW - 24, rowStep - 2);
+        ctx.fillRect(m.contentX, ry - 15, m.contentW, rowStep - 2);
+        ctx.strokeStyle = THEME.TEXT_PRIMARY;
+        ctx.lineWidth = 1.6;
+        ctx.strokeRect(m.contentX, ry - 15, m.contentW, rowStep - 2);
+      } else if (idx % 2 === 1) {
+        ctx.fillStyle = THEME.BG_ROW_ALT;
+        ctx.fillRect(m.contentX, ry - 15, m.contentW, rowStep - 2);
       }
 
-      ctx.font = 'bold 13.5px "JetBrains Mono", monospace';
+      ctx.font = font('data', 12);
       ctx.textAlign = 'left';
-      ctx.fillStyle = isNew ? '#FFFFFF' : isPlayer || idx === 0 ? '#FFB000' : COLORS.GREEN_PRIMARY;
-      ctx.fillText(String(idx + 1).padStart(2, '0'), bx + 14, ry);
-      const nameStr = isNew ? `${entry.callsign.slice(0, 9)} ★NEW` : entry.callsign.slice(0, 12);
-      ctx.fillText(nameStr, bx + 46, ry);
-      ctx.fillText(entry.highestSector, bx + boxW - 156, ry);
+      ctx.fillStyle = isNew
+        ? '#FFFFFF'
+        : isPlayer || idx === 0
+          ? THEME.ACCENT_AMBER_HI
+          : THEME.TEXT_PRIMARY;
+      ctx.fillText(`#${String(idx + 1).padStart(2, '0')}`, m.contentX + 4, ry);
+
+      const nameStr = isNew
+        ? `${entry.callsign.slice(0, 8)} ${SEMIOTIC_ICONS.STAR}NEW`
+        : entry.callsign;
+      drawEllipsizedText(ctx, nameStr, m.contentX + 44, ry, Math.max(70, m.contentW - 196));
+
       ctx.textAlign = 'right';
-      ctx.fillText(entry.score.toLocaleString(), bx + boxW - 14, ry);
+      ctx.fillStyle = isNew ? THEME.ACCENT_AMBER_HI : THEME.TEXT_BRIGHT;
+      ctx.fillText(entry.score.toLocaleString(), m.contentX + m.contentW - 72, ry);
+      ctx.fillStyle = isNew ? THEME.TEXT_BRIGHT : THEME.TEXT_SECONDARY;
+      ctx.fillText(entry.highestSector, m.contentX + m.contentW - 4, ry);
     });
-
-    this.addTouchButton(
-      ctx,
-      buttonsOut,
-      'logs-close',
-      bx + 16,
-      by + boxH - 54,
-      boxW - 32,
-      44,
-      'CLOSE MANIFEST',
-      true,
-      state.hoveredButtonId,
-      COLORS.AMBER_CAUTION,
-      false,
-      14
-    );
-
     ctx.restore();
+
+    const showReplay = state.manifestOpenedPostRun || state.phase === 'TITLE_MENU';
+    if (showReplay) {
+      const gap = 8;
+      const closeW = Math.min(126, Math.floor(m.contentW * 0.36));
+      const playW = m.contentW - closeW - gap;
+      this.addTouchButton(
+        ctx,
+        buttonsOut,
+        POST_RUN_IDS.MANIFEST_PLAY_AGAIN,
+        m.contentX,
+        m.footerY - 2,
+        playW,
+        44,
+        `${SEMIOTIC_ICONS.PLAY} PLAY AGAIN`,
+        true,
+        state.hoveredButtonId,
+        THEME.ACCENT_AMBER_HI,
+        true,
+        14
+      );
+      this.addTouchButton(
+        ctx,
+        buttonsOut,
+        POST_RUN_IDS.MANIFEST_CLOSE,
+        m.contentX + playW + gap,
+        m.footerY - 2,
+        closeW,
+        44,
+        'CLOSE',
+        false,
+        state.hoveredButtonId,
+        THEME.TEXT_SECONDARY,
+        false,
+        14
+      );
+    } else {
+      this.addTouchButton(
+        ctx,
+        buttonsOut,
+        POST_RUN_IDS.MANIFEST_CLOSE,
+        m.contentX,
+        m.footerY - 2,
+        m.contentW,
+        44,
+        'CLOSE',
+        true,
+        state.hoveredButtonId,
+        THEME.ACCENT_AMBER,
+        false,
+        14
+      );
+    }
   }
 }

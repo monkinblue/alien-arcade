@@ -1,4 +1,13 @@
 import {
+  CONTROLS_CARD_IDS,
+  handleSystemMenuAction,
+  handleSystemMenuKey,
+  PAUSE_BANNER_IDS,
+  POST_RUN_IDS,
+  TOP_CHROME_IDS,
+  type SystemMenuActionCallbacks,
+} from '../../render/chrome';
+import {
   CALLSIGN_CHAR_REGEX,
   CALLSIGN_MAX_LEN,
   sanitizeCallsignDraft,
@@ -12,11 +21,23 @@ import type {
 import type { ViewportRect } from '../../types';
 import { TrenchAudioEngine } from './TrenchAudioEngine';
 import { TrenchDevAutoPilot } from './TrenchDevAutoPilot';
-import { TrenchHudRenderer } from './TrenchHudRenderer';
+import { TRENCH_UI_IDS, TrenchHudRenderer } from './TrenchHudRenderer';
 import { TrenchLeaderboardService } from './TrenchLeaderboard';
 import { TrenchRenderer } from './TrenchRenderer';
 import { TrenchSimulation, type F16FlightInput } from './TrenchSimulation';
 import { TRENCH_CONSTANTS, type TrenchLastSubmittedRun } from './types';
+
+type StickSensitivityPreset = 'LOW' | 'MED' | 'HIGH';
+
+const PITCH_STORAGE_KEY = 'muthur_trench_pitch_v2';
+const SENS_STORAGE_KEY = 'muthur_trench_stick_sens_v1';
+
+const STICK_SENS_ORDER: readonly StickSensitivityPreset[] = ['LOW', 'MED', 'HIGH'];
+const STICK_SENS_SCALE: Record<StickSensitivityPreset, number> = {
+  LOW: 0.0020,
+  MED: 0.0028,
+  HIGH: 0.0038,
+};
 
 interface TrenchDebugControl {
   stickX?: number;
@@ -77,20 +98,34 @@ export class DerelictTrenchCartridge implements Cartridge {
 
   // Pointer Lock + Unlocked Cursor Fallback Virtual Flight Stick (clamped to unit circle [-1, 1])
   private pointerLocked = false;
+  private programmaticPointerUnlock = false;
   private stickX = 0;
   private stickY = 0;
   private lastPointerUnlockMs = 0;
   private unlockedMouseSteerActive = false;
+  private stickSensitivity: StickSensitivityPreset = 'MED';
+  private lastSortieWasDrill = false;
 
   private mouseScreenX = 640;
   private mouseScreenY = 300;
   private mouseInsideCanopy = false;
   private hoveredButtonId: string | null = null;
 
+  // Unified Modals & Safety Latches
   private osdMenuOpen = false;
   private manifestOpen = false;
+  private controlsCardOpen = false;
+  private wasPausedBeforeModal = false;
+  private confirmExitPending = false;
+  private confirmExitTimer = 0;
   private glitchIntensity = 0;
 
+  // Transient HUD Toasts ([I] Pitch Axis / [M] Mute)
+  private statusToastText: string | null = null;
+  private statusToastTone: 'green' | 'amber' | 'red' | 'cyan' = 'amber';
+  private statusToastTimer = 0;
+
+  // Post-Run Callsign & Orbital Relay Submission
   private callsignDraft = 'VECTOR-04';
   private runPlaytimeSec = 0;
   private callsignEditing = false;
@@ -98,6 +133,7 @@ export class DerelictTrenchCartridge implements Cartridge {
   private scoreSubmitted = false;
   private submittingScore = false;
   private submitResultBanner: string | null = null;
+  private submitResultTone: 'green' | 'amber' | 'red' = 'amber';
   private lastSubmittedRun: TrenchLastSubmittedRun | null = null;
 
   constructor(host: HostEnvironment) {
@@ -105,6 +141,7 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.trenchAudio = new TrenchAudioEngine(host.audio);
     this.leaderboard = new TrenchLeaderboardService();
     this.callsignDraft = this.leaderboard.getSavedCallsign();
+    this.stickSensitivity = this.loadStickSensitivity();
 
     this.sim = new TrenchSimulation({
       onVulcanFiring: (firing) => this.trenchAudio.setVulcanFiring(firing),
@@ -122,6 +159,60 @@ export class DerelictTrenchCartridge implements Cartridge {
         this.glitchIntensity = Math.max(this.glitchIntensity, intensity);
       },
     });
+    this.sim.invertPitch = this.loadPitchInvert();
+  }
+
+  private loadPitchInvert(): boolean {
+    try {
+      const saved = window.localStorage.getItem(PITCH_STORAGE_KEY);
+      if (saved === 'push_up') return true;
+      if (saved === 'pull_up') return false;
+    } catch {
+      // Ignore storage access failures
+    }
+    return false; // Default to PULL BACK = UP (standard flight stick)
+  }
+
+  private savePitchInvert(pushUpToClimb: boolean): void {
+    try {
+      window.localStorage.setItem(PITCH_STORAGE_KEY, pushUpToClimb ? 'push_up' : 'pull_up');
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private loadStickSensitivity(): StickSensitivityPreset {
+    try {
+      const saved = window.localStorage.getItem(SENS_STORAGE_KEY);
+      if (saved === 'LOW' || saved === 'MED' || saved === 'HIGH') {
+        return saved;
+      }
+    } catch {
+      // Ignore storage errors
+    }
+    return 'MED';
+  }
+
+  private saveStickSensitivity(sens: StickSensitivityPreset): void {
+    try {
+      window.localStorage.setItem(SENS_STORAGE_KEY, sens);
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private showStatusToast(
+    text: string,
+    tone: 'green' | 'amber' | 'red' | 'cyan',
+    durationSec: number
+  ): void {
+    this.statusToastText = text;
+    this.statusToastTone = tone;
+    this.statusToastTimer = durationSec;
+  }
+
+  private isAnyOverlayModalOpen(): boolean {
+    return this.osdMenuOpen || this.manifestOpen || this.controlsCardOpen;
   }
 
   private getLockCanvas(): HTMLCanvasElement | null {
@@ -143,15 +234,133 @@ export class DerelictTrenchCartridge implements Cartridge {
     }
   }
 
-  private releasePointerLock(): void {
+  private releasePointerLock(programmatic = true): void {
     if (document.pointerLockElement) {
+      if (programmatic) {
+        this.programmaticPointerUnlock = true;
+      }
       try {
         document.exitPointerLock();
       } catch {
-        // Ignore
+        this.programmaticPointerUnlock = false;
       }
     }
     this.pointerLocked = false;
+  }
+
+  private haltActiveFlightInputs(): void {
+    this.mouseLeftDown = false;
+    this.pendingMissileLaunch = false;
+    this.pendingCmdsDeploy = false;
+    this.stickX = 0;
+    this.stickY = 0;
+    this.unlockedMouseSteerActive = false;
+    this.trenchAudio.setVulcanFiring(false);
+    document.body.style.cursor = 'default';
+  }
+
+  private openOverlayModal(kind: 'osd' | 'manifest' | 'controls'): void {
+    if (!this.isAnyOverlayModalOpen()) {
+      this.wasPausedBeforeModal = this.sim.paused;
+    }
+    this.osdMenuOpen = kind === 'osd';
+    this.manifestOpen = kind === 'manifest';
+    this.controlsCardOpen = kind === 'controls';
+    this.confirmExitPending = false;
+    this.confirmExitTimer = 0;
+
+    if (this.sim.phase === 'FLYING') {
+      this.sim.paused = true;
+    }
+    this.releasePointerLock(true);
+    this.haltActiveFlightInputs();
+  }
+
+  private closeAllOverlayModals(restoreFlight: boolean): void {
+    this.osdMenuOpen = false;
+    this.manifestOpen = false;
+    this.controlsCardOpen = false;
+    this.confirmExitPending = false;
+    this.confirmExitTimer = 0;
+
+    if (this.sim.phase === 'FLYING') {
+      if (restoreFlight) {
+        this.sim.paused = false;
+        this.stickX = 0;
+        this.stickY = 0;
+      } else {
+        this.sim.paused = this.wasPausedBeforeModal;
+      }
+    }
+  }
+
+  private getSystemMenuCallbacks(): SystemMenuActionCallbacks {
+    return {
+      onResume: () => {
+        this.resumeWithPointerLock();
+      },
+      onRestart: () => {
+        this.startSortie(true, this.lastSortieWasDrill);
+      },
+      onOpenLeaderboard: () => {
+        this.openOverlayModal('manifest');
+      },
+      onExitToHub: () => {
+        this.requestExitToHub();
+      },
+      onExtraAction: (id: string) => {
+        this.handleHudButton(id);
+      },
+    };
+  }
+
+  private requestExitToHub(): void {
+    const activeRankedFlight = this.sim.phase === 'FLYING' && !this.sim.freeFlightDrill;
+    if (activeRankedFlight && !this.confirmExitPending) {
+      this.confirmExitPending = true;
+      this.confirmExitTimer = 4.0;
+      this.host.audio.playButtonLatchLock(0.84, 0.85);
+      return;
+    }
+    this.confirmExitPending = false;
+    this.confirmExitTimer = 0;
+    this.releasePointerLock(true);
+    this.host.setModalOpen(false);
+    this.host.exitToMuthurOs('DERELICT TRENCH // VECTOR JET SIMULATOR DISENGAGED.');
+  }
+
+  private setPitchMode(pushUpToClimb: boolean, announceToast: boolean): void {
+    this.sim.invertPitch = pushUpToClimb;
+    this.savePitchInvert(pushUpToClimb);
+    this.host.audio.playSfx('ui_keyclick', { pitch: pushUpToClimb ? 1.12 : 0.96 });
+    if (announceToast) {
+      this.showStatusToast(
+        pushUpToClimb ? 'MOUSE PITCH: PUSH UP = UP' : 'MOUSE PITCH: PULL BACK = UP',
+        pushUpToClimb ? 'green' : 'amber',
+        2.0
+      );
+    }
+  }
+
+  private toggleAudioMuteWithToast(): void {
+    const nextMuted = !this.host.isMuted();
+    this.host.setMuted(nextMuted);
+    if (!nextMuted) {
+      this.host.audio.playButtonLatchLock(1.0, 0.8);
+    }
+    this.showStatusToast(
+      nextMuted ? 'AUDIO: MUTED [M]' : 'AUDIO: ACTIVE [M]',
+      nextMuted ? 'red' : 'green',
+      1.2
+    );
+  }
+
+  private cycleStickSensitivity(): void {
+    const idx = STICK_SENS_ORDER.indexOf(this.stickSensitivity);
+    this.stickSensitivity = STICK_SENS_ORDER[(idx + 1) % STICK_SENS_ORDER.length];
+    this.saveStickSensitivity(this.stickSensitivity);
+    this.host.audio.playSfx('ui_keyclick', { pitch: 1.08 });
+    this.showStatusToast(`STICK SENSITIVITY: ${this.stickSensitivity}`, 'cyan', 1.6);
   }
 
   public mount(): void {
@@ -168,6 +377,7 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.pendingMissileLaunch = false;
     this.pendingCmdsDeploy = false;
     this.pointerLocked = document.pointerLockElement !== null;
+    this.programmaticPointerUnlock = false;
     this.stickX = 0;
     this.stickY = 0;
     this.lastPointerUnlockMs = 0;
@@ -179,17 +389,28 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.mouseInsideCanopy = false;
     this.osdMenuOpen = false;
     this.manifestOpen = false;
+    this.controlsCardOpen = false;
+    this.wasPausedBeforeModal = false;
+    this.confirmExitPending = false;
+    this.confirmExitTimer = 0;
     this.hoveredButtonId = null;
     this.glitchIntensity = 0;
+    this.statusToastText = null;
+    this.statusToastTimer = 0;
     this.callsignEditing = false;
     this.callsignOverwriteOnNextKey = false;
     this.scoreSubmitted = false;
     this.submittingScore = false;
     this.submitResultBanner = null;
+    this.submitResultTone = 'amber';
     this.lastSubmittedRun = null;
+    this.lastSortieWasDrill = false;
     this.callsignDraft = this.leaderboard.getSavedCallsign();
+    this.stickSensitivity = this.loadStickSensitivity();
+    this.sim.invertPitch = this.loadPitchInvert();
 
     this.sim.resetToTitle();
+    this.host.setModalOpen(false);
     this.bindListeners(signal);
 
     if (import.meta.env.DEV) {
@@ -215,6 +436,9 @@ export class DerelictTrenchCartridge implements Cartridge {
           cmdsActiveSec: Number(this.sim.cmdsActiveTimer.toFixed(2)),
           purgeDist: Math.round(this.sim.purgeDistanceM),
           lockedTargetId: this.sim.lockedTargetId,
+          freeFlightDrill: this.sim.freeFlightDrill,
+          invertPitch: this.sim.invertPitch,
+          stickSensitivity: this.stickSensitivity,
           incomingSams: this.sim.enemySams.map((s) => ({
             id: s.id,
             sourceSiteId: s.sourceSiteId ?? null,
@@ -285,6 +509,7 @@ export class DerelictTrenchCartridge implements Cartridge {
           this.debugTainted = true;
           this.osdMenuOpen = false;
           this.manifestOpen = false;
+          this.controlsCardOpen = false;
           this.callsignEditing = false;
           this.scoreSubmitted = false;
           this.sim.jumpToSector(n);
@@ -305,8 +530,9 @@ export class DerelictTrenchCartridge implements Cartridge {
           if (on) {
             this.osdMenuOpen = false;
             this.manifestOpen = false;
+            this.controlsCardOpen = false;
             if (this.sim.phase !== 'FLYING') {
-              this.startSortie(false);
+              this.startSortie(false, false);
             }
             this.sim.paused = false;
           }
@@ -325,7 +551,8 @@ export class DerelictTrenchCartridge implements Cartridge {
       this.debugGunActive = false;
       this.debugTainted = false;
     }
-    this.releasePointerLock();
+    this.releasePointerLock(true);
+    this.host.setModalOpen(false);
     if (this.listenerAbort) {
       this.listenerAbort.abort();
       this.listenerAbort = null;
@@ -340,6 +567,9 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.host.audio.stopCartridgeLoops();
     this.osdMenuOpen = false;
     this.manifestOpen = false;
+    this.controlsCardOpen = false;
+    this.confirmExitPending = false;
+    this.confirmExitTimer = 0;
     this.hoveredButtonId = null;
     document.body.style.cursor = 'default';
 
@@ -359,17 +589,15 @@ export class DerelictTrenchCartridge implements Cartridge {
 
   public setBackgroundPaused(paused: boolean): void {
     if (paused) {
-      this.releasePointerLock();
+      this.releasePointerLock(true);
       this.keysDown.clear();
-      this.mouseLeftDown = false;
-      this.pendingMissileLaunch = false;
-      this.pendingCmdsDeploy = false;
+      this.haltActiveFlightInputs();
       this.trenchAudio.silenceAll();
     }
   }
 
   private bindListeners(signal: AbortSignal): void {
-    // Track Browser Pointer Lock transitions cleanly (ESC releases Pointer Lock -> pauses flight!)
+    // Track Browser Pointer Lock transitions: browser-initiated ESC unlock opens unified SystemMenuModal!
     document.addEventListener(
       'pointerlockchange',
       () => {
@@ -377,18 +605,19 @@ export class DerelictTrenchCartridge implements Cartridge {
         this.pointerLocked = document.pointerLockElement !== null;
 
         if (wasLocked && !this.pointerLocked) {
-          this.lastPointerUnlockMs = performance.now();
-          this.mouseLeftDown = false;
-          this.stickX = 0;
-          this.stickY = 0;
-          this.trenchAudio.setVulcanFiring(false);
-          document.body.style.cursor = 'default';
+          const wasProgrammatic = this.programmaticPointerUnlock;
+          this.programmaticPointerUnlock = false;
+          this.haltActiveFlightInputs();
 
-          // Pressing ESC exits Pointer Lock & cleanly pauses active flight!
-          if (this.sim.phase === 'FLYING' && !this.osdMenuOpen && !this.manifestOpen) {
-            this.sim.paused = true;
+          if (!wasProgrammatic) {
+            this.lastPointerUnlockMs = performance.now();
+            // User pressed [ESC] while Pointer Locked -> unlock directly into unified System Menu!
+            if (this.sim.phase === 'FLYING' && !this.isAnyOverlayModalOpen()) {
+              this.openOverlayModal('osd');
+            }
           }
         } else if (this.pointerLocked) {
+          this.programmaticPointerUnlock = false;
           this.hoveredButtonId = null;
           this.stickX = 0;
           this.stickY = 0;
@@ -406,18 +635,75 @@ export class DerelictTrenchCartridge implements Cartridge {
         }
         void this.host.audio.unlock();
 
-        // STRICT 1.2-SECOND GAME OVER INPUT LOCKOUT: ignores ALL held W/S/A/D flight keys!
+        // 1. Unified System Menu Modal open: delegate [1-4] quick-switch, [ESC] resume, [M] mute
+        if (this.osdMenuOpen) {
+          if (e.code === 'Escape' && performance.now() - this.lastPointerUnlockMs < 240) {
+            return;
+          }
+          if (e.code === 'KeyM') {
+            e.preventDefault();
+            this.toggleAudioMuteWithToast();
+            return;
+          }
+          if (e.code === 'KeyI') {
+            e.preventDefault();
+            this.setPitchMode(!this.sim.invertPitch, true);
+            return;
+          }
+          if (handleSystemMenuKey(e, this.host, this.getSystemMenuCallbacks())) {
+            return;
+          }
+          return;
+        }
+
+        // 2. Controls Quick-Card Modal open: [H] / [?] / [ESC] closes cleanly
+        if (this.controlsCardOpen) {
+          if (e.code === 'Escape' || e.code === 'KeyH' || e.key === '?') {
+            e.preventDefault();
+            this.closeAllOverlayModals(false);
+            this.host.audio.playButtonLatchLock(0.92, 0.82);
+            return;
+          }
+          if (e.code === 'KeyM') {
+            e.preventDefault();
+            this.toggleAudioMuteWithToast();
+            return;
+          }
+          return;
+        }
+
+        // 3. Global Manifest Modal open: [ESC] closes; [R] / [ENTER] replays post-run or launches!
+        if (this.manifestOpen) {
+          if (e.code === 'Escape') {
+            e.preventDefault();
+            this.closeAllOverlayModals(false);
+            this.host.audio.playButtonLatchLock(0.92, 0.82);
+            return;
+          }
+          if (
+            this.sim.phase !== 'FLYING' &&
+            (e.code === 'KeyR' || e.code === 'Enter' || e.code === 'NumpadEnter')
+          ) {
+            e.preventDefault();
+            this.startSortie(true, this.lastSortieWasDrill);
+            return;
+          }
+          if (e.code === 'KeyM') {
+            e.preventDefault();
+            this.toggleAudioMuteWithToast();
+            return;
+          }
+          return;
+        }
+
+        // 4. STRICT 1.2-SECOND GAME OVER KEYLOCK: ignores ALL held flight keys!
         if (this.sim.phase === 'GAME_OVER' && this.sim.gameOverLockoutTimer > 0) {
           return;
         }
 
-        // Game Over Post-Lockout Controls: cleanly separate Callsign Editing vs. Submit [ENTER] vs. Quick Relaunch [SPACE / R]!
-        if (
-          this.sim.phase === 'GAME_OVER' &&
-          !this.osdMenuOpen &&
-          !this.manifestOpen
-        ) {
-          if (this.callsignEditing && !this.scoreSubmitted) {
+        // 5. Game Over Post-Lockout Controls: opt-in [C] callsign edit vs [ENTER] submit vs [R] replay
+        if (this.sim.phase === 'GAME_OVER') {
+          if (this.callsignEditing && !this.scoreSubmitted && !this.sim.freeFlightDrill) {
             if (e.code === 'Escape') {
               this.callsignEditing = false;
               this.callsignOverwriteOnNextKey = false;
@@ -460,19 +746,21 @@ export class DerelictTrenchCartridge implements Cartridge {
 
           if (e.code === 'Enter' || e.code === 'NumpadEnter') {
             e.preventDefault();
-            if (!this.scoreSubmitted) {
+            if (!this.sim.freeFlightDrill && !this.scoreSubmitted) {
               void this.submitScoreNow();
+            } else if (!this.sim.freeFlightDrill && this.scoreSubmitted) {
+              this.openOverlayModal('manifest');
             } else {
-              this.startSortie(true);
+              this.startSortie(true, this.lastSortieWasDrill);
             }
             return;
           }
-          if (e.code === 'Space' || e.code === 'KeyR') {
+          if (e.code === 'KeyR') {
             e.preventDefault();
-            this.startSortie(true);
+            this.startSortie(true, this.lastSortieWasDrill);
             return;
           }
-          if (e.code === 'KeyC' && !this.scoreSubmitted) {
+          if (e.code === 'KeyC' && !this.scoreSubmitted && !this.sim.freeFlightDrill) {
             this.callsignEditing = true;
             this.callsignOverwriteOnNextKey = true;
             this.host.audio.playSfx('ui_keyclick', { pitch: 1.12 });
@@ -480,135 +768,88 @@ export class DerelictTrenchCartridge implements Cartridge {
           }
         }
 
-        // TAB during active flight cycles missile/LCOS targets cleanly!
-        if (e.code === 'Tab') {
-          if (
-            this.sim.phase === 'FLYING' &&
-            !this.sim.paused &&
-            !this.osdMenuOpen &&
-            !this.manifestOpen
-          ) {
-            if (this.sim.cycleTarget()) {
-              this.host.audio.playSfx('ui_keyclick', { pitch: 1.22 });
-            }
-          } else if (this.osdMenuOpen) {
-            this.osdMenuOpen = false;
-            if (this.sim.phase === 'FLYING') this.sim.paused = false;
-            this.host.audio.playButtonLatchLock(0.92, 0.85);
-          }
-          return;
-        }
-
-        // [M] toggles System & Command Menu cleanly
-        if (e.code === 'KeyM') {
-          this.manifestOpen = false;
-          this.osdMenuOpen = !this.osdMenuOpen;
-          if (this.sim.phase === 'FLYING') {
-            this.sim.paused = this.osdMenuOpen;
-          }
-          if (this.osdMenuOpen) {
-            this.releasePointerLock();
-            this.mouseLeftDown = false;
-            this.trenchAudio.setVulcanFiring(false);
-            document.body.style.cursor = 'default';
-          }
-          this.host.audio.playButtonLatchLock(0.96, 0.85);
-          return;
-        }
-
+        // 6. [ESC] NEVER auto-exits to Hub! Always opens unified SystemMenuModal safely.
         if (e.code === 'Escape') {
-          // If browser JUST unlocked pointer lock on this ESC keystroke, stay paused rather than exiting OS!
-          if (performance.now() - this.lastPointerUnlockMs < 220) {
+          if (performance.now() - this.lastPointerUnlockMs < 240) {
             return;
           }
-          if (this.osdMenuOpen) {
-            this.osdMenuOpen = false;
-            if (this.sim.phase === 'FLYING') this.sim.paused = false;
-            this.host.audio.playButtonLatchLock(0.9, 0.8);
-            return;
-          }
-          if (this.manifestOpen) {
-            this.manifestOpen = false;
-            this.host.audio.playButtonLatchLock(0.9, 0.8);
-            return;
-          }
-          if (this.sim.phase === 'FLYING' && !this.sim.paused) {
-            this.releasePointerLock();
-            this.sim.paused = true;
-            this.mouseLeftDown = false;
-            this.stickX = 0;
-            this.stickY = 0;
-            this.trenchAudio.setVulcanFiring(false);
-            this.host.audio.playButtonLatchLock(0.92, 0.85);
-            return;
-          }
-          this.host.exitToMuthurOs('DERELICT TRENCH // VECTOR JET SIMULATOR DISENGAGED.');
-          return;
-        }
-
-        if (
-          e.code === 'KeyP' &&
-          this.sim.phase === 'FLYING' &&
-          !this.osdMenuOpen &&
-          !this.manifestOpen
-        ) {
-          this.sim.paused = !this.sim.paused;
-          if (this.sim.paused) {
-            this.releasePointerLock();
-            this.mouseLeftDown = false;
-            this.stickX = 0;
-            this.stickY = 0;
-            this.trenchAudio.setVulcanFiring(false);
-          }
+          this.openOverlayModal('osd');
           this.host.audio.playButtonLatchLock(0.95, 0.85);
           return;
         }
 
-        if (e.code === 'KeyI' && !this.osdMenuOpen && !this.manifestOpen) {
-          this.sim.invertPitch = !this.sim.invertPitch;
-          this.host.audio.playSfx('ui_keyclick', { pitch: 1.08 });
+        // 7. [H] / [?] Universal 1-Glance Controls Quick-Card (pauses sim cleanly)
+        if (e.code === 'KeyH' || e.key === '?') {
+          e.preventDefault();
+          this.openOverlayModal('controls');
+          this.host.audio.playButtonLatchLock(1.0, 0.85);
           return;
         }
 
-        // [C] or [F] deploys Chaff / Flare Countermeasure Salvo (CMDS)!
+        // 8. [M] Universal Audio Mute Toggle (moved System Menu to [ESC]!)
+        if (e.code === 'KeyM' && !e.repeat) {
+          e.preventDefault();
+          this.toggleAudioMuteWithToast();
+          return;
+        }
+
+        // 9. [I] Immediate Pitch-Invert Toggle with 2.0s Centered HUD Toast!
+        if (e.code === 'KeyI' && !e.repeat) {
+          e.preventDefault();
+          this.setPitchMode(!this.sim.invertPitch, true);
+          return;
+        }
+
+        // 10. [P] Universal Quick-Pause (Amber CRT PauseBanner)
+        if (e.code === 'KeyP' && !e.repeat && this.sim.phase === 'FLYING') {
+          e.preventDefault();
+          if (this.sim.paused) {
+            this.resumeWithPointerLock();
+          } else {
+            this.sim.paused = true;
+            this.releasePointerLock(true);
+            this.haltActiveFlightInputs();
+            this.host.audio.playButtonLatchLock(0.95, 0.85);
+          }
+          return;
+        }
+
+        // 11. [TAB] Cleanly kept as Target Cycle during active flight!
+        if (e.code === 'Tab') {
+          if (this.sim.phase === 'FLYING' && !this.sim.paused) {
+            if (this.sim.cycleTarget()) {
+              this.host.audio.playSfx('ui_keyclick', { pitch: 1.22 });
+            }
+          }
+          return;
+        }
+
+        // 12. [C] / [F] CMDS Chaff & Flare Salvo
         if (
           (e.code === 'KeyC' || e.code === 'KeyF') &&
           !e.repeat &&
           this.sim.phase === 'FLYING' &&
-          !this.sim.paused &&
-          !this.osdMenuOpen &&
-          !this.manifestOpen
+          !this.sim.paused
         ) {
           this.pendingCmdsDeploy = true;
           return;
         }
 
-        if (this.sim.phase === 'TITLE' && (e.code === 'Enter' || e.code === 'Space')) {
-          this.startSortie(true);
+        // 13. Launch from Title via [ENTER]
+        if (this.sim.phase === 'TITLE' && (e.code === 'Enter' || e.code === 'NumpadEnter')) {
+          e.preventDefault();
+          this.startSortie(true, false);
           return;
         }
 
-        // SPACE launches locked AIM-9 / AGM missile during active flight!
+        // 14. [SPACE] Launches locked AIM-9 Missile during active flight
         if (
           e.code === 'Space' &&
           !e.repeat &&
           this.sim.phase === 'FLYING' &&
-          !this.sim.paused &&
-          !this.osdMenuOpen &&
-          !this.manifestOpen
+          !this.sim.paused
         ) {
           this.pendingMissileLaunch = true;
-          return;
-        }
-
-        if (
-          this.sim.phase === 'GAME_OVER' &&
-          this.scoreSubmitted &&
-          (e.code === 'KeyR' || e.code === 'Enter') &&
-          !this.osdMenuOpen &&
-          !this.manifestOpen
-        ) {
-          this.startSortie(false);
           return;
         }
 
@@ -641,7 +882,7 @@ export class DerelictTrenchCartridge implements Cartridge {
       { signal }
     );
 
-    // Raw Pointer Lock mouse-joy accumulator (War Thunder / Project Wingman style!)
+    // Raw Pointer Lock mouse-joy accumulator with persisted LOW / MED / HIGH sensitivity
     window.addEventListener(
       'mousemove',
       (e) => {
@@ -649,16 +890,14 @@ export class DerelictTrenchCartridge implements Cartridge {
           this.pointerLocked &&
           this.sim.phase === 'FLYING' &&
           !this.sim.paused &&
-          !this.osdMenuOpen &&
-          !this.manifestOpen
+          !this.isAnyOverlayModalOpen()
         ) {
-          const sens = 0.0028;
+          const sens = STICK_SENS_SCALE[this.stickSensitivity];
           const mx = Math.max(-140, Math.min(140, e.movementX));
           const my = Math.max(-140, Math.min(140, e.movementY));
           this.stickX += mx * sens;
           this.stickY += my * sens;
 
-          // Smooth circular clamp inside [-1, 1] unit stick disk!
           const len = Math.hypot(this.stickX, this.stickY);
           if (len > 1) {
             this.stickX /= len;
@@ -667,7 +906,6 @@ export class DerelictTrenchCartridge implements Cartridge {
           return;
         }
 
-        // Unlocked cursor hover tracking for menus, launch screen, and top bar pills
         const mapped = this.host.webglCrt.mapClientToCrtUv(
           e.clientX - this.offsetX,
           e.clientY - this.offsetY,
@@ -693,16 +931,13 @@ export class DerelictTrenchCartridge implements Cartridge {
         const hit = this.hudRenderer.hitTestButton(cx, cy);
         this.hoveredButtonId = hit;
 
-        // Dual-Mode Seamless Fallback: when unlocked during active flight, moving cursor inside canopy
-        // drives a responsive cursor-offset virtual flight stick (zero dead-stick moments!).
         if (
           !this.pointerLocked &&
           this.mouseInsideCanopy &&
           !hit &&
           this.sim.phase === 'FLYING' &&
           !this.sim.paused &&
-          !this.osdMenuOpen &&
-          !this.manifestOpen
+          !this.isAnyOverlayModalOpen()
         ) {
           this.unlockedMouseSteerActive = true;
           const halfSpan = Math.max(120, Math.min(vp.width, vp.height) * 0.36);
@@ -728,8 +963,7 @@ export class DerelictTrenchCartridge implements Cartridge {
           this.mouseInsideCanopy &&
           this.sim.phase === 'FLYING' &&
           !this.sim.paused &&
-          !this.osdMenuOpen &&
-          !this.manifestOpen
+          !this.isAnyOverlayModalOpen()
         ) {
           document.body.style.cursor = 'crosshair';
         } else {
@@ -747,13 +981,11 @@ export class DerelictTrenchCartridge implements Cartridge {
           e.preventDefault();
         }
 
-        // While Pointer Locked during active flight: direct HOTAS mouse triggers!
         if (
           this.pointerLocked &&
           this.sim.phase === 'FLYING' &&
           !this.sim.paused &&
-          !this.osdMenuOpen &&
-          !this.manifestOpen
+          !this.isAnyOverlayModalOpen()
         ) {
           if (e.button === 0) {
             this.mouseLeftDown = true;
@@ -786,7 +1018,6 @@ export class DerelictTrenchCartridge implements Cartridge {
           }
         }
 
-        // Clicking inside canopy while unlocked during active flight engages Pointer Lock immediately!
         const layout = this.hudRenderer.getLayout(this.viewportWidth, this.viewportHeight);
         const vp = layout.canopyVp;
         const inCanopy =
@@ -796,11 +1027,10 @@ export class DerelictTrenchCartridge implements Cartridge {
           inCanopy &&
           this.sim.phase === 'FLYING' &&
           !this.sim.paused &&
-          !this.osdMenuOpen &&
-          !this.manifestOpen
+          !this.isAnyOverlayModalOpen()
         ) {
+          this.confirmExitPending = false;
           if (e.button === 0) {
-            // Fire 20mm Vulcan immediately even if Pointer Lock is unavailable, AND request Pointer Lock!
             this.mouseLeftDown = true;
             this.requestCanopyPointerLock();
           } else if (e.button === 2) {
@@ -827,12 +1057,7 @@ export class DerelictTrenchCartridge implements Cartridge {
       'blur',
       () => {
         this.keysDown.clear();
-        this.mouseLeftDown = false;
-        this.pendingMissileLaunch = false;
-        this.pendingCmdsDeploy = false;
-        this.stickX = 0;
-        this.stickY = 0;
-        this.trenchAudio.setVulcanFiring(false);
+        this.haltActiveFlightInputs();
       },
       { signal }
     );
@@ -842,7 +1067,9 @@ export class DerelictTrenchCartridge implements Cartridge {
       mobileInput.addEventListener(
         'input',
         () => {
-          if (this.sim.phase !== 'GAME_OVER' || this.scoreSubmitted) return;
+          if (this.sim.phase !== 'GAME_OVER' || this.scoreSubmitted || this.sim.freeFlightDrill) {
+            return;
+          }
           this.callsignDraft = sanitizeCallsignDraft(mobileInput.value);
           mobileInput.value = this.callsignDraft;
         },
@@ -856,7 +1083,8 @@ export class DerelictTrenchCartridge implements Cartridge {
             ev.key === 'Enter' &&
             this.sim.phase === 'GAME_OVER' &&
             this.sim.gameOverLockoutTimer <= 0 &&
-            !this.scoreSubmitted
+            !this.scoreSubmitted &&
+            !this.sim.freeFlightDrill
           ) {
             ev.preventDefault();
             this.callsignEditing = false;
@@ -870,50 +1098,57 @@ export class DerelictTrenchCartridge implements Cartridge {
     }
   }
 
-  private startSortie(lockPointer: boolean): void {
+  private startSortie(lockPointer: boolean, freeFlightDrill = false): void {
     this.runPlaytimeSec = 0;
+    this.lastSortieWasDrill = freeFlightDrill;
     this.osdMenuOpen = false;
     this.manifestOpen = false;
+    this.controlsCardOpen = false;
+    this.wasPausedBeforeModal = false;
+    this.confirmExitPending = false;
+    this.confirmExitTimer = 0;
     this.callsignEditing = false;
     this.callsignOverwriteOnNextKey = false;
     this.scoreSubmitted = false;
     this.submittingScore = false;
     this.submitResultBanner = null;
+    this.submitResultTone = 'amber';
     this.lastSubmittedRun = null;
     this.keysDown.clear();
-    this.mouseLeftDown = false;
-    this.pendingMissileLaunch = false;
-    this.pendingCmdsDeploy = false;
-    this.stickX = 0;
-    this.stickY = 0;
-    this.unlockedMouseSteerActive = false;
+    this.haltActiveFlightInputs();
 
     this.host.audio.playButtonLatchLock(1.0, 0.9);
-    this.sim.startNewFlight();
-    if (lockPointer) {
+    this.sim.startNewFlight({ freeFlightDrill });
+    if (freeFlightDrill) {
+      this.showStatusToast(
+        'FREE-FLIGHT DRILL ACTIVE — FORGIVING TERRAIN BOUNCE & REDUCED SAM THREAT',
+        'cyan',
+        2.6
+      );
+    }
+    if (lockPointer && !this.host.isTouchDevice()) {
       this.requestCanopyPointerLock();
     }
   }
 
   private resumeWithPointerLock(): void {
-    this.osdMenuOpen = false;
-    this.manifestOpen = false;
-    this.stickX = 0;
-    this.stickY = 0;
-    if (this.sim.phase === 'FLYING') {
-      this.sim.paused = false;
+    this.closeAllOverlayModals(true);
+    if (this.sim.phase === 'FLYING' && !this.host.isTouchDevice()) {
       this.requestCanopyPointerLock();
     }
   }
 
   private async submitScoreNow(): Promise<void> {
+    if (this.sim.freeFlightDrill) return;
     if (import.meta.env.DEV && this.debugTainted) {
-      this.submitResultBanner = 'DEV DEBUG SESSION — TRENCH_SCORES WRITE BLOCKED';
+      this.submitResultBanner = 'DEV DEBUG SESSION — RELAY WRITE BLOCKED';
+      this.submitResultTone = 'red';
       return;
     }
     if (this.scoreSubmitted || this.submittingScore || this.sim.gameOverLockoutTimer > 0) return;
     this.submittingScore = true;
-    this.submitResultBanner = 'TRANSMITTING TO TRENCH_SCORES...';
+    this.submitResultBanner = 'TRANSMITTING TO ORBITAL RELAY...';
+    this.submitResultTone = 'amber';
 
     const cleanCallsign = sanitizeCallsignDraft(this.callsignDraft);
     const finalScore = Math.max(1, Math.round(this.sim.score));
@@ -933,6 +1168,7 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.submittingScore = false;
     if (res.rejectedReason) {
       this.submitResultBanner = res.rejectedReason;
+      this.submitResultTone = 'red';
       this.host.audio.playMutedAvionicsIndicatorBeep(false);
       return;
     }
@@ -941,101 +1177,140 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.lastSubmittedRun = {
       docId: res.docId,
       callsign: this.callsignDraft,
-      score: finalScore,
+      score: res.submittedScore ?? finalScore,
       distance: finalDist,
       maxMach: finalMach,
       grazes: finalKills,
       rank: res.rank,
     };
     this.submitResultBanner = res.online
-      ? `LOGGED GLOBALLY // RANK #${res.rank}`
-      : `SAVED TO LOCAL ARCHIVE // RANK #${res.rank}`;
-    this.manifestOpen = true;
+      ? `LOGGED TO ORBITAL RELAY // RANK #${res.rank}`
+      : `SAVED TO LOCAL TAPE ARCHIVE // RANK #${res.rank}`;
+    this.submitResultTone = 'green';
+    this.openOverlayModal('manifest');
     this.host.audio.playButtonLatchLock(1.04, 0.9);
   }
 
   private handleHudButton(id: string): void {
-    if (id === 'trench-locked' || id === 'trench-locked-retry') return;
-    this.host.audio.playButtonLatchLock(0.98, 0.85);
+    // Delegate shared System Menu actions first when System Menu is open
+    if (this.osdMenuOpen) {
+      if (handleSystemMenuAction(id, this.host, this.getSystemMenuCallbacks())) {
+        return;
+      }
+    }
+
     switch (id) {
-      case 'trench-start':
-      case 'trench-retry':
-        this.startSortie(true);
-        break;
-      case 'trench-resume-lock':
-      case 'trench-osd-close':
-        this.resumeWithPointerLock();
-        break;
-      case 'trench-pause':
-        if (this.sim.phase === 'FLYING') {
-          if (this.sim.paused) {
-            this.resumeWithPointerLock();
-          } else {
-            this.releasePointerLock();
-            this.sim.paused = true;
-            this.mouseLeftDown = false;
-            this.stickX = 0;
-            this.stickY = 0;
-            this.trenchAudio.setVulcanFiring(false);
-          }
+      // Top Chrome Bar (unified pills)
+      case TOP_CHROME_IDS.CRT: {
+        const next = this.host.toggle1979Crt();
+        this.showStatusToast(
+          next === 'CLASSIC_1979' ? '1979 CRT MODE: ON' : '1979 CRT MODE: OFF (CLEAN)',
+          next === 'CLASSIC_1979' ? 'amber' : 'green',
+          1.4
+        );
+        return;
+      }
+      case TOP_CHROME_IDS.CONTROLS:
+      case PAUSE_BANNER_IDS.CONTROLS:
+      case TRENCH_UI_IDS.TITLE_CONTROLS:
+        this.host.audio.playButtonLatchLock(1.0, 0.85);
+        if (this.controlsCardOpen) {
+          this.closeAllOverlayModals(false);
+        } else {
+          this.openOverlayModal('controls');
         }
-        break;
-      case 'trench-mute':
-        this.host.setMuted(!this.host.isMuted());
-        break;
-      case 'trench-fullscreen':
-        this.host.toggleFullscreen();
-        break;
-      case 'trench-osd':
-        this.manifestOpen = false;
-        this.osdMenuOpen = !this.osdMenuOpen;
-        if (this.sim.phase === 'FLYING') this.sim.paused = this.osdMenuOpen;
+        return;
+      case TOP_CHROME_IDS.AUDIO:
+        this.toggleAudioMuteWithToast();
+        return;
+      case TOP_CHROME_IDS.MENU:
+      case PAUSE_BANNER_IDS.MENU:
+      case TRENCH_UI_IDS.TITLE_MENU:
+        this.host.audio.playButtonLatchLock(0.96, 0.85);
         if (this.osdMenuOpen) {
-          this.releasePointerLock();
-          this.mouseLeftDown = false;
-          this.trenchAudio.setVulcanFiring(false);
+          this.resumeWithPointerLock();
+        } else {
+          this.openOverlayModal('osd');
         }
-        break;
-      case 'trench-manifest':
-        this.osdMenuOpen = false;
-        this.manifestOpen = !this.manifestOpen;
-        if (this.manifestOpen) {
-          this.releasePointerLock();
-        }
-        break;
-      case 'trench-manifest-close':
-        this.manifestOpen = false;
-        break;
-      case 'trench-toggle-invert':
-        this.sim.invertPitch = !this.sim.invertPitch;
-        break;
-      case 'trench-submit-score':
-        void this.submitScoreNow();
-        break;
-      case 'trench-callsign-field': {
-        if (!this.scoreSubmitted) {
+        return;
+      case TOP_CHROME_IDS.HUB:
+        this.requestExitToHub();
+        return;
+
+      // Pause Banner & Controls Quick-Card Close
+      case PAUSE_BANNER_IDS.RESUME:
+        this.host.audio.playButtonLatchLock(1.02, 0.85);
+        this.resumeWithPointerLock();
+        return;
+      case CONTROLS_CARD_IDS.CLOSE:
+        this.host.audio.playButtonLatchLock(0.92, 0.82);
+        this.closeAllOverlayModals(false);
+        return;
+
+      // Title Screen & Game-Specific Menu Actions
+      case TRENCH_UI_IDS.START_RANKED:
+        this.startSortie(true, false);
+        return;
+      case TRENCH_UI_IDS.START_DRILL:
+        this.startSortie(true, true);
+        return;
+      case TRENCH_UI_IDS.PITCH_ARCADE:
+        this.setPitchMode(true, true);
+        return;
+      case TRENCH_UI_IDS.PITCH_SIM:
+        this.setPitchMode(false, true);
+        return;
+      case TRENCH_UI_IDS.TOGGLE_INVERT:
+        this.setPitchMode(!this.sim.invertPitch, true);
+        return;
+      case TRENCH_UI_IDS.CYCLE_SENS:
+        this.cycleStickSensitivity();
+        return;
+      case TRENCH_UI_IDS.TITLE_MANIFEST:
+        this.host.audio.playButtonLatchLock(1.0, 0.85);
+        this.openOverlayModal('manifest');
+        return;
+
+      // Post-Run Debrief & Global Manifest Shared IDs
+      case POST_RUN_IDS.CALLSIGN_BOX: {
+        if (!this.scoreSubmitted && !this.sim.freeFlightDrill) {
           this.callsignEditing = true;
           this.callsignOverwriteOnNextKey = true;
+          this.host.audio.playSfx('ui_keyclick', { pitch: 1.12 });
+          const mobileInput = document.getElementById(
+            'mobile-callsign-input'
+          ) as HTMLInputElement | null;
+          if (mobileInput) {
+            mobileInput.maxLength = CALLSIGN_MAX_LEN;
+            mobileInput.value = this.callsignDraft;
+            mobileInput.focus();
+          }
         }
-        const mobileInput = document.getElementById('mobile-callsign-input') as HTMLInputElement | null;
-        if (mobileInput) {
-          mobileInput.value = this.callsignDraft;
-          mobileInput.focus();
-        }
-        break;
+        return;
       }
-      case 'trench-exit-os':
-        this.releasePointerLock();
-        this.host.exitToMuthurOs('DERELICT TRENCH // VECTOR JET SIMULATOR DISENGAGED.');
-        break;
+      case POST_RUN_IDS.SUBMIT_SCORE:
+        this.host.audio.playButtonLatchLock(1.0, 0.85);
+        void this.submitScoreNow();
+        return;
+      case POST_RUN_IDS.PLAY_AGAIN:
+      case POST_RUN_IDS.MANIFEST_PLAY_AGAIN:
+        this.startSortie(true, this.lastSortieWasDrill);
+        return;
+      case POST_RUN_IDS.OPEN_MANIFEST:
+        this.host.audio.playButtonLatchLock(1.0, 0.85);
+        this.openOverlayModal('manifest');
+        return;
+      case POST_RUN_IDS.MANIFEST_CLOSE:
+        this.host.audio.playButtonLatchLock(0.92, 0.82);
+        this.closeAllOverlayModals(false);
+        return;
+      case POST_RUN_IDS.EXIT_HUB:
+        this.host.audio.playButtonLatchLock(0.9, 0.85);
+        this.requestExitToHub();
+        return;
     }
   }
 
-  /**
-   * Computes Pointer-Lock Virtual Flight Stick deflection (4% radial deadzone + smooth non-linear curve)
-   * alongside persistent W/S throttle, A/D rudder yaw, LMB rotary cannon, RMB/SPACE missile launch,
-   * and [C/F] CMDS countermeasures!
-   */
   private buildFlightInput(canopyVp: ViewportRect): {
     input: F16FlightInput;
     stickNormX: number;
@@ -1043,7 +1318,7 @@ export class DerelictTrenchCartridge implements Cartridge {
     deadzonePx: number;
   } {
     const minDim = Math.min(canopyVp.width, canopyVp.height);
-    const deadzoneFrac = 0.04; // Clean, crisp 4% center deadzone!
+    const deadzoneFrac = 0.04;
     const deadzonePx = Math.max(12, Math.round(minDim * 0.024));
 
     let stickRoll = 0;
@@ -1051,13 +1326,10 @@ export class DerelictTrenchCartridge implements Cartridge {
     let effectiveStickX = this.pointerLocked || this.unlockedMouseSteerActive ? this.stickX : 0;
     let effectiveStickY = this.pointerLocked || this.unlockedMouseSteerActive ? this.stickY : 0;
 
-    if (
-      this.sim.phase === 'FLYING' &&
-      !this.sim.paused &&
-      !this.osdMenuOpen &&
-      !this.manifestOpen
-    ) {
-      // Arrow-key Pitch/Roll keyboard fallback (always works alongside Pointer Lock / Cursor Stick!)
+    const flightLive =
+      this.sim.phase === 'FLYING' && !this.sim.paused && !this.isAnyOverlayModalOpen();
+
+    if (flightLive) {
       const kbRoll =
         (this.keysDown.has('ArrowRight') ? 0.78 : 0) - (this.keysDown.has('ArrowLeft') ? 0.78 : 0);
       const kbPitch =
@@ -1070,56 +1342,45 @@ export class DerelictTrenchCartridge implements Cartridge {
       const mag = Math.hypot(effectiveStickX, effectiveStickY);
       if (mag > deadzoneFrac) {
         const effMag = Math.min(1, (mag - deadzoneFrac) / (1 - deadzoneFrac));
-        // Smooth non-linear response curve: surgical gunnery near center, fast rolls at full throw!
         const curved = Math.pow(effMag, 1.65);
         stickRoll = (effectiveStickX / mag) * curved;
         stickPitch = (effectiveStickY / mag) * curved;
       }
     }
 
-    // W / S: Persistent Throttle (0% IDLE -> 100% MIL detent -> 120% AB)
     let throttleDelta = 0;
     if (this.keysDown.has('KeyW')) throttleDelta += 1;
     if (this.keysDown.has('KeyS')) throttleDelta -= 1;
 
-    // A / D: Rudder Yaw left/right
     let rudderInput = 0;
     if (this.keysDown.has('KeyA')) rudderInput -= 1;
     if (this.keysDown.has('KeyD')) rudderInput += 1;
 
-    const launchMissilePressed = this.pendingMissileLaunch;
+    const launchMissilePressed = flightLive ? this.pendingMissileLaunch : false;
     this.pendingMissileLaunch = false;
 
-    const deployCmdsPressed = this.pendingCmdsDeploy;
+    const deployCmdsPressed = flightLive ? this.pendingCmdsDeploy : false;
     this.pendingCmdsDeploy = false;
 
-    if (
-      import.meta.env.DEV &&
-      this.sim.phase === 'FLYING' &&
-      !this.sim.paused &&
-      !this.osdMenuOpen &&
-      !this.manifestOpen
-    ) {
-      if (this.debugControl) {
-        if (typeof this.debugControl.stickX === 'number') {
-          stickRoll = Math.max(-1, Math.min(1, this.debugControl.stickX));
-          effectiveStickX = stickRoll;
-        }
-        if (typeof this.debugControl.stickY === 'number') {
-          stickPitch = Math.max(-1, Math.min(1, this.debugControl.stickY));
-          effectiveStickY = stickPitch;
-        }
-        if (typeof this.debugControl.rudder === 'number') {
-          rudderInput = Math.max(-1, Math.min(1, this.debugControl.rudder));
-        }
-        if (typeof this.debugControl.throttle === 'number') {
-          const targetTh = Math.max(
-            0,
-            Math.min(TRENCH_CONSTANTS.MAX_THROTTLE, this.debugControl.throttle)
-          );
-          this.sim.throttle = targetTh;
-          throttleDelta = 0;
-        }
+    if (import.meta.env.DEV && flightLive && this.debugControl) {
+      if (typeof this.debugControl.stickX === 'number') {
+        stickRoll = Math.max(-1, Math.min(1, this.debugControl.stickX));
+        effectiveStickX = stickRoll;
+      }
+      if (typeof this.debugControl.stickY === 'number') {
+        stickPitch = Math.max(-1, Math.min(1, this.debugControl.stickY));
+        effectiveStickY = stickPitch;
+      }
+      if (typeof this.debugControl.rudder === 'number') {
+        rudderInput = Math.max(-1, Math.min(1, this.debugControl.rudder));
+      }
+      if (typeof this.debugControl.throttle === 'number') {
+        const targetTh = Math.max(
+          0,
+          Math.min(TRENCH_CONSTANTS.MAX_THROTTLE, this.debugControl.throttle)
+        );
+        this.sim.throttle = targetTh;
+        throttleDelta = 0;
       }
     }
 
@@ -1129,7 +1390,7 @@ export class DerelictTrenchCartridge implements Cartridge {
         stickPitch,
         throttleDelta,
         rudderInput,
-        firingGun: this.mouseLeftDown || (import.meta.env.DEV && this.debugGunActive),
+        firingGun: flightLive && (this.mouseLeftDown || (import.meta.env.DEV && this.debugGunActive)),
         launchMissilePressed,
         deployCmdsPressed,
       },
@@ -1148,7 +1409,20 @@ export class DerelictTrenchCartridge implements Cartridge {
     if (this.glitchIntensity > 0) {
       this.glitchIntensity = Math.max(0, this.glitchIntensity - clampedDt * 2.1);
     }
+    if (this.statusToastTimer > 0) {
+      this.statusToastTimer = Math.max(0, this.statusToastTimer - clampedDt);
+      if (this.statusToastTimer <= 0) {
+        this.statusToastText = null;
+      }
+    }
+    if (this.confirmExitPending) {
+      this.confirmExitTimer = Math.max(0, this.confirmExitTimer - clampedDt);
+      if (this.confirmExitTimer <= 0) {
+        this.confirmExitPending = false;
+      }
+    }
 
+    const anyOverlayOpen = this.isAnyOverlayModalOpen();
     const layout = this.hudRenderer.getLayout(this.viewportWidth, this.viewportHeight);
     let { input, stickNormX, stickNormY, deadzonePx } = this.buildFlightInput(layout.canopyVp);
 
@@ -1157,8 +1431,7 @@ export class DerelictTrenchCartridge implements Cartridge {
       this.devAutoPilot?.isEnabled() &&
       this.sim.phase === 'FLYING' &&
       !this.sim.paused &&
-      !this.osdMenuOpen &&
-      !this.manifestOpen
+      !anyOverlayOpen
     ) {
       const ap = this.devAutoPilot.computeInput(this.sim, clampedDt);
       input = {
@@ -1171,9 +1444,15 @@ export class DerelictTrenchCartridge implements Cartridge {
       stickNormY = ap.stickPitch;
     }
 
-    this.sim.step(clampedDt, input);
+    // CRITICAL SAFETY: Auto-pause simulation whenever ANY modal (MANIFEST, OSD, CONTROLS) is open!
+    if (!anyOverlayOpen) {
+      this.sim.step(clampedDt, input);
+    } else if (this.sim.gunFiringNow) {
+      this.sim.gunFiringNow = false;
+      this.trenchAudio.setVulcanFiring(false);
+    }
 
-    // Immediately release Pointer Lock & clear held keys on crash so 1.2s lockout + callsign UI are clean!
+    // Immediately release Pointer Lock & clear held keys on airframe loss
     if (
       this.sim.phase === 'GAME_OVER' &&
       (this.pointerLocked ||
@@ -1181,22 +1460,15 @@ export class DerelictTrenchCartridge implements Cartridge {
         this.mouseLeftDown ||
         this.unlockedMouseSteerActive)
     ) {
-      this.releasePointerLock();
+      this.releasePointerLock(true);
       this.keysDown.clear();
-      this.mouseLeftDown = false;
-      this.pendingMissileLaunch = false;
-      this.pendingCmdsDeploy = false;
-      this.stickX = 0;
-      this.stickY = 0;
-      this.unlockedMouseSteerActive = false;
+      this.haltActiveFlightInputs();
       this.callsignEditing = false;
       this.callsignOverwriteOnNextKey = false;
-      this.trenchAudio.setVulcanFiring(false);
-      document.body.style.cursor = 'default';
     }
 
-    const flyingActive = this.sim.phase === 'FLYING' && !this.sim.paused;
-    if (flyingActive && !this.osdMenuOpen && !this.manifestOpen) {
+    const flyingActive = this.sim.phase === 'FLYING' && !this.sim.paused && !anyOverlayOpen;
+    if (flyingActive) {
       this.runPlaytimeSec += clampedDt;
     }
     this.trenchAudio.updateCockpitEngine(
@@ -1214,10 +1486,17 @@ export class DerelictTrenchCartridge implements Cartridge {
     );
     this.trenchAudio.updateRwrMissileWarble(flyingActive && this.sim.samIncomingActive);
 
-    // 1. Render 1st-Person 3D Wireframe Heightmap Canyon, Threats, Caches, Tracers, Missiles & Flares
+    // Notify host for crisp modal chromatic aberration reduction (0.06 modals / 0.22 play)
+    const modalActive =
+      anyOverlayOpen ||
+      this.sim.phase === 'GAME_OVER' ||
+      (this.sim.phase === 'FLYING' && this.sim.paused);
+    this.host.setModalOpen(modalActive);
+
+    // 1. Render 1st-Person 3D Wireframe Heightmap Canyon, Threats, Semiotic Pods, Tracers & Flares
     this.renderer.render(ctx, this.sim, layout.canopyVp, totalTimeSec);
 
-    // 2. Render Next-Level F-16 Canopy HUD + 4-Panel Avionics MFD Cluster
+    // 2. Render Canopy HUD + Nostromo Annunciator Strip + Consolidated 3-MFD Cluster + Shared Chrome
     this.hudRenderer.render(ctx, {
       width: this.viewportWidth,
       height: this.viewportHeight,
@@ -1235,13 +1514,24 @@ export class DerelictTrenchCartridge implements Cartridge {
       projectWorld: (wx, wy, wz) => this.renderer.projectWorld(this.sim, wx, wy, wz),
       audioMuted: this.host.isMuted(),
       isFullscreen: this.host.getViewport().isFullscreen,
+      crtPreset: this.host.getCrtPreset(),
+      phosphorTheme: this.host.getPhosphorTheme(),
+      masterVolume: this.host.getMasterVolume(),
+      isTouchDevice: this.host.isTouchDevice(),
+      stickSensitivityLabel: this.stickSensitivity,
+      confirmExitPending: this.confirmExitPending,
       osdMenuOpen: this.osdMenuOpen,
       manifestOpen: this.manifestOpen,
+      controlsCardOpen: this.controlsCardOpen,
+      statusToastText: this.statusToastText,
+      statusToastTone: this.statusToastTone,
+      statusToastAlpha: this.statusToastTimer > 0 ? Math.min(1, this.statusToastTimer / 0.35) : 0,
       callsignDraft: this.callsignDraft,
       callsignEditing: this.callsignEditing,
       scoreSubmitted: this.scoreSubmitted,
       submittingScore: this.submittingScore,
       submitResultBanner: this.submitResultBanner,
+      submitResultTone: this.submitResultTone,
       lastSubmittedRun: this.lastSubmittedRun,
     });
 
@@ -1266,7 +1556,8 @@ export class DerelictTrenchCartridge implements Cartridge {
       overdrive: (this.sim.afterburning || this.sim.purgeThermalAlert) && flyingActive ? 0.28 : 0,
       tubeTurnOn: 0,
       shockwaves,
-      chromaScale: 0.34,
+      chromaScale: modalActive ? 0.06 : 0.22,
+      modalActive,
     };
   }
 }

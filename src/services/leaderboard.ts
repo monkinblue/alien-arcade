@@ -118,11 +118,11 @@ export class GlobalLeaderboardService {
             const mode: LeaderboardMode = raw.mode === 'ENDLESS' ? 'ENDLESS' : 'CAMPAIGN';
             const sector =
               typeof raw.sector === 'number' && Number.isFinite(raw.sector)
-                ? Math.max(1, Math.min(99, Math.round(raw.sector)))
+                ? Math.max(1, Math.min(SCORE_CAPS.lander.sector, Math.round(raw.sector)))
                 : 1;
             const accuracy =
               typeof raw.accuracy === 'number' && Number.isFinite(raw.accuracy)
-                ? Math.max(0, Math.min(100, Math.round(raw.accuracy)))
+                ? Math.max(0, Math.min(SCORE_CAPS.lander.accuracy, Math.round(raw.accuracy)))
                 : 75;
 
             let dateStr = 'LIVE';
@@ -247,6 +247,7 @@ export class GlobalLeaderboardService {
     mode: LeaderboardMode;
     offlineFallback: boolean;
     docId?: string;
+    submittedScore?: number;
     rejectedReason?: string;
   }> {
     const mode: LeaderboardMode = params.mode === 'ENDLESS' ? 'ENDLESS' : 'CAMPAIGN';
@@ -273,11 +274,12 @@ export class GlobalLeaderboardService {
     }
 
     const callsign = this.saveCallsign(validation.callsign);
-    const score = Math.max(1, Math.min(SCORE_CAPS.lander.score, Math.round(params.score)));
-    const sector = Math.max(1, Math.min(SCORE_CAPS.lander.sector, Math.round(params.sector)));
-    const accuracy = Math.max(0, Math.min(SCORE_CAPS.lander.accuracy, Math.round(params.accuracy)));
-
-    recordSubmissionTimestamp('lander');
+    const rawScore = Number.isFinite(params.score) ? Math.round(params.score) : 1;
+    const rawSector = Number.isFinite(params.sector) ? Math.round(params.sector) : 1;
+    const rawAccuracy = Number.isFinite(params.accuracy) ? Math.round(params.accuracy) : 0;
+    const score = Math.max(1, Math.min(SCORE_CAPS.lander.score, rawScore));
+    const sector = Math.max(1, Math.min(SCORE_CAPS.lander.sector, rawSector));
+    const accuracy = Math.max(0, Math.min(SCORE_CAPS.lander.accuracy, rawAccuracy));
 
     // Always mirror to local storage backup
     this.localFallback.recordFlight({
@@ -291,13 +293,15 @@ export class GlobalLeaderboardService {
     });
 
     if (!this.db) {
+      recordSubmissionTimestamp('lander');
       const localList = this.localFallback.getEntriesByMode(mode);
       const localRank = Math.max(1, localList.findIndex((e) => e.score <= score) + 1);
-      return { ok: false, rank: localRank, mode, offlineFallback: true };
+      return { ok: false, rank: localRank, mode, offlineFallback: true, submittedScore: score };
     }
 
     try {
-      // EXACT 6-key document matching published Firestore Security Rules (ZERO extra keys!)
+      // EXACT 6-key document matching published Firestore Security Rules (ZERO extra keys!):
+      // callsign (^[A-Z0-9_-]{1,12}$), score (1..10000000), sector (1..99), mode ('CAMPAIGN' | 'ENDLESS'), accuracy (0..100), createdAt
       const docRef = await addDoc(collection(this.db, 'scores'), {
         callsign,
         score,
@@ -306,6 +310,7 @@ export class GlobalLeaderboardService {
         accuracy,
         createdAt: serverTimestamp(),
       });
+      recordSubmissionTimestamp('lander');
 
       const onlineList = mode === 'ENDLESS' ? this.endlessOnline : this.campaignOnline;
       let higherCount = 0;
@@ -313,12 +318,19 @@ export class GlobalLeaderboardService {
         if (item.score > score) higherCount++;
       }
       const rank = higherCount + 1;
-      return { ok: true, rank, mode, offlineFallback: false, docId: docRef.id };
+      return {
+        ok: true,
+        rank,
+        mode,
+        offlineFallback: false,
+        docId: docRef.id,
+        submittedScore: score,
+      };
     } catch (err) {
       console.error('[MU-TH-UR UPLINK] Score transmission rejected or failed:', err);
       const localList = this.localFallback.getEntriesByMode(mode);
       const localRank = Math.max(1, localList.findIndex((e) => e.score <= score) + 1);
-      return { ok: false, rank: localRank, mode, offlineFallback: true };
+      return { ok: false, rank: localRank, mode, offlineFallback: true, submittedScore: score };
     }
   }
 }
