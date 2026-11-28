@@ -1,4 +1,5 @@
 import { COLORS, PHYSICS } from '../constants';
+import { evaluateLandingEnvelope } from './avionics';
 import type {
   DebrisSegment,
   LanderState,
@@ -782,21 +783,21 @@ export class PhysicsEngine {
         lander.throttle = 0;
         const padCenter = (matchedPad.x1 + matchedPad.x2) * 0.5;
         const padHalfW = Math.max(1, (matchedPad.x2 - matchedPad.x1) * 0.5);
-        const centerOffsetRatio = Math.min(1, Math.abs(lander.pos.x - padCenter) / padHalfW);
+        const offsetM = lander.pos.x - padCenter;
+        const centerOffsetRatio = Math.min(1, Math.abs(offsetM) / padHalfW);
 
-        let grade: LandingGrade = 'NOMINAL_SAFE';
-        if (
-          this.firstContactPeakVs > PHYSICS.SAFE_VS_MAX ||
-          this.firstContactPeakHs > PHYSICS.SAFE_HS_MAX ||
-          this.firstContactPeakDeg > PHYSICS.SAFE_ANGLE_DEG
-        ) {
+        // Authoritative shared envelope check (100% identical to Desktop & Mobile HUD!)
+        const env = evaluateLandingEnvelope(
+          this.firstContactPeakVs,
+          this.firstContactPeakHs,
+          this.firstContactPeakDeg,
+          offsetM,
+          padHalfW
+        );
+        let grade: LandingGrade = env.grade;
+        // Pad footpad contact already passed `findPadUnderX`, so clamp any marginal edge to non-catastrophic
+        if (grade === 'CATASTROPHIC') {
           grade = 'HARD_SURVIVAL';
-        } else if (
-          this.firstContactPeakVs < PHYSICS.KISS_VS_MAX &&
-          this.firstContactPeakHs < PHYSICS.KISS_HS_MAX &&
-          centerOffsetRatio <= 0.48
-        ) {
-          grade = 'SOFT_KISS';
         }
 
         events.onTouchdownConfirmed?.({

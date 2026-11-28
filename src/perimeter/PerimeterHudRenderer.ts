@@ -289,6 +289,8 @@ export class PerimeterHudRenderer {
 
     if (params.sim.phase === 'BRIEFING') {
       this.drawBriefingOverlay(ctx, params);
+      // Keep the 46px Top Chrome Bar bright & interactive on the Briefing title screen!
+      this.drawTopBar(ctx, params);
       return;
     }
 
@@ -2779,6 +2781,7 @@ export class PerimeterHudRenderer {
         subtitle: 'USCM COLONY PERIMETER DEFENSE — SEC-01 MED-LAB',
         maxWidth: 740,
         maxHeight: 508,
+        scrimTopY: TOP_CHROME_BAR_HEIGHT,
         accentColor: THEME.ACCENT_AMBER,
         rightBadge: { text: `${SEMIOTIC_ICONS.STAR} RANKED`, tone: 'amber' },
       },

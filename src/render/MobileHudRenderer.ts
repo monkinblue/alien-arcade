@@ -1,4 +1,5 @@
 import { PHYSICS } from '../constants';
+import { evaluateLanderAvionics, evaluateLandingEnvelope } from '../physics/avionics';
 import type { SafeAreaInsets } from '../types';
 import type { SectorMapSummary } from './CampaignMapRenderer';
 import {
@@ -13,7 +14,6 @@ import {
   type ChromeButtonHitbox,
 } from './chrome';
 import {
-  HudRenderer,
   LANDER_CONTROLS_SPEC,
   type CrtInteractiveButton,
   type HudRenderContext,
@@ -827,30 +827,30 @@ export class MobileHudRenderer {
       const padCx = (closestPad.x1 + closestPad.x2) * 0.5;
       const offsetM = snap ? snap.offsetM : lander.pos.x - padCx;
       const padHalfW = Math.max(1, (closestPad.x2 - closestPad.x1) * 0.5);
-      const safeBoundM = Math.max(1.0, padHalfW - PHYSICS.STRUT_SPAN_HALF_X + 0.85);
-      const kissBoundM = Math.min(padHalfW * 0.48, safeBoundM);
+      const env = evaluateLandingEnvelope(vs, hs, deg, offsetM, padHalfW);
+      const { safeBoundM, kissBoundM } = env;
 
       const cards = [
         {
           lbl: 'V/S',
           val: `${vs.toFixed(1)}`,
-          kiss: vs < PHYSICS.KISS_VS_MAX,
-          go: vs <= PHYSICS.SAFE_VS_MAX,
-          fatal: vs > PHYSICS.SURVIVAL_VS_MAX,
+          kiss: env.vsKiss,
+          go: env.vsGo,
+          fatal: env.vsFatal,
         },
         {
           lbl: 'H/S',
           val: `${hs.toFixed(1)}`,
-          kiss: hs < PHYSICS.KISS_HS_MAX,
-          go: hs <= PHYSICS.SAFE_HS_MAX,
-          fatal: hs > PHYSICS.SURVIVAL_HS_MAX,
+          kiss: env.hsKiss,
+          go: env.hsGo,
+          fatal: env.hsFatal,
         },
         {
           lbl: 'ATT',
           val: `${deg.toFixed(0)}°`,
-          kiss: deg <= 3.0,
-          go: deg <= PHYSICS.SAFE_ANGLE_DEG,
-          fatal: deg > PHYSICS.SURVIVAL_ANGLE_DEG,
+          kiss: env.attKiss,
+          go: env.attGo,
+          fatal: env.attFatal,
         },
       ];
 
@@ -937,7 +937,7 @@ export class MobileHudRenderer {
 
     // Compact Warning Pill right above the Touch Flight Deck
     if (state.phase === 'FLIGHT' && lander.alive) {
-      const warnings = HudRenderer.computeAvionicsWarnings(lander, state.emBlackoutActive);
+      const warnings = evaluateLanderAvionics(lander, state.sector, state.emBlackoutActive).alerts;
       if (warnings.length > 0) {
         const primary = warnings[0];
         const wy = corridor.bottomPx - 36;

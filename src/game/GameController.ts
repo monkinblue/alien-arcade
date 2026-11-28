@@ -1,6 +1,7 @@
 import { AudioEngine } from '../audio/AudioEngine';
 import { PHYSICS, VOICE_TRANSCRIPTS } from '../constants';
 import { SectorGenerator } from '../levels/SectorGenerator';
+import { evaluateLanderAvionics } from '../physics/avionics';
 import { PhysicsEngine } from '../physics/PhysicsEngine';
 import { BOOT_TIMING } from '../render/BootLogoRenderer';
 import {
@@ -2089,21 +2090,21 @@ export class GameController implements Cartridge {
           this.motionPingTimer = 0.25;
         }
 
-        const activeAvionicsWarnings = HudRenderer.computeAvionicsWarnings(
-          this.lander,
-          emStorm.blackoutActive
+        // Unified physics-grounded avionics alerts (100% synced with Desktop & Mobile HUD lamps!)
+        const avionics = evaluateLanderAvionics(this.lander, this.sector, emStorm.blackoutActive);
+        const beepableWarnings = avionics.alerts.filter(
+          (w) =>
+            w.id !== 'em' &&
+            (w.id !== 'wind' || avionics.windIsShear)
         );
         if (this.avionicsBeepTimer > 0) {
           this.avionicsBeepTimer = Math.max(0, this.avionicsBeepTimer - dt);
         }
-        if (activeAvionicsWarnings.length > 0 && !modalPaused) {
-          const hasCritical = activeAvionicsWarnings.some((w) => w.critical);
-          if (!this.hadActiveAvionicsWarning && this.avionicsBeepTimer <= 0) {
+        if (beepableWarnings.length > 0 && !modalPaused) {
+          const hasCritical = beepableWarnings.some((w) => w.critical);
+          if (!this.hadActiveAvionicsWarning || this.avionicsBeepTimer <= 0) {
             this.audio.playMutedAvionicsIndicatorBeep(hasCritical);
-            this.avionicsBeepTimer = hasCritical ? 0.85 : 1.4;
-          } else if (this.avionicsBeepTimer <= 0) {
-            this.audio.playMutedAvionicsIndicatorBeep(hasCritical);
-            this.avionicsBeepTimer = hasCritical ? 0.85 : 1.4;
+            this.avionicsBeepTimer = hasCritical ? 0.85 : 1.45;
           }
           this.hadActiveAvionicsWarning = true;
         } else {
@@ -2111,35 +2112,27 @@ export class GameController implements Cartridge {
           this.avionicsBeepTimer = Math.min(this.avionicsBeepTimer, 0.35);
         }
 
-        const criticalPullUp = this.lander.agl < 14 && this.lander.vel.y < -4.6;
-        const ceilingObstacle = this.lander.ceilingClearance < 8 && this.lander.vel.y > 1.5;
-        const sinkRateWarn =
-          this.lander.agl < 17 && this.lander.vel.y < -3.75 && this.lander.throttle < 0.75;
-        const lateralDriftWarn = this.lander.agl < 15 && Math.abs(this.lander.vel.x) > 3.15;
-        const absPitchDeg = Math.abs((this.lander.angle * 180) / Math.PI);
-        const bankAngleWarn = (this.lander.agl < 34 && absPitchDeg > 33.0) || absPitchDeg > 58.0;
-
-        if (criticalPullUp) {
+        if (avionics.pullUpCrit) {
           this.audio.playSfx('proximity_klaxon', { pitch: 0.95, volume: 0.65 });
           if (this.proximityVoiceCooldown <= 0) {
             this.proximityVoiceCooldown = 6.5;
             this.triggerVoice('voice_pull_up', true);
           }
-        } else if (ceilingObstacle) {
+        } else if (avionics.obstacleCrit) {
           this.audio.playSfx('proximity_klaxon', { pitch: 1.05, volume: 0.6 });
           if (this.proximityVoiceCooldown <= 0) {
             this.proximityVoiceCooldown = 6.5;
             this.triggerVoice('voice_obstacle', true);
           }
-        } else if (sinkRateWarn) {
+        } else if (avionics.sinkState === 'CRITICAL') {
           if (this.proximityVoiceCooldown <= 0) {
             this.proximityVoiceCooldown = 10.0;
             this.triggerVoice('voice_proximity');
           }
-        } else if (lateralDriftWarn && this.driftVoiceCooldown <= 0) {
+        } else if (avionics.driftState === 'CRITICAL' && this.driftVoiceCooldown <= 0) {
           this.driftVoiceCooldown = 10.0;
           this.triggerVoice('voice_lateral_drift');
-        } else if (bankAngleWarn && this.bankAngleVoiceCooldown <= 0) {
+        } else if (avionics.bankState === 'CRITICAL' && this.bankAngleVoiceCooldown <= 0) {
           this.bankAngleVoiceCooldown = 10.0;
           this.triggerVoice('voice_bank_angle');
         }

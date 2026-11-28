@@ -1,4 +1,9 @@
 import { PHYSICS } from '../constants';
+import {
+  evaluateLanderAvionics,
+  evaluateLandingEnvelope,
+  type LanderAvionicsSnapshot,
+} from '../physics/avionics';
 import type { CrtPreset, PhosphorTheme } from '../shell/Cartridge';
 import type {
   BezelState,
@@ -204,8 +209,8 @@ export const LANDER_CONTROLS_SPEC: Omit<ControlsCardSpec, 'hoveredButtonId'> = {
     { keys: 'R / ENT', action: 'Instant Replay (Post-Run)' },
   ],
   coreRules: [
-    'Touchdown GO limits: Descent ≤ 2.4 m/s, Drift ≤ 1.8 m/s, Attitude ≤ 8° inside the landing pad.',
-    'Align inside the green ILS Soft-Kiss window for up to +1,500 bonus and chain Drop Streaks.',
+    `Touchdown GO limits: Descent ≤ ${PHYSICS.SAFE_VS_MAX.toFixed(1)} m/s, Drift ≤ ${PHYSICS.SAFE_HS_MAX.toFixed(1)} m/s, Attitude ≤ ${PHYSICS.SAFE_ANGLE_DEG.toFixed(0)}° inside the landing pad.`,
+    `Soft Kiss (+1,500 bonus): V/S ≤ ${PHYSICS.KISS_VS_MAX.toFixed(1)}, H/S ≤ ${PHYSICS.KISS_HS_MAX.toFixed(1)}, ATT ≤ ${PHYSICS.KISS_ANGLE_DEG.toFixed(0)}° inside the green ILS centerline window.`,
     'Refill propellant on ✚ Fuel Depots and ping Radar [LMB] to map pitch-black caverns & EM blackouts.',
   ],
 };
@@ -270,56 +275,11 @@ export class HudRenderer {
 
   public static computeAvionicsWarnings(
     lander: LanderState,
-    emBlackoutActive = false
+    emBlackoutActive = false,
+    sector: SectorConfig | null = null
   ): AvionicsWarningItem[] {
-    if (!lander.alive || lander.groundedPad !== null) return [];
-    const alerts: AvionicsWarningItem[] = [];
-
-    if (lander.ceilingClearance < 9 && lander.vel.y > 1.2) {
-      alerts.push({ text: 'OBSTACLE', critical: true });
-    }
-    if (lander.agl < 16 && lander.vel.y < -4.4) {
-      alerts.push({ text: 'PULL UP', critical: true });
-    } else if (
-      ((lander.agl < 26 && lander.vel.y < -3.05) || (lander.agl < 14 && lander.vel.y < -2.4)) &&
-      lander.throttle < 0.85
-    ) {
-      alerts.push({ text: 'SINK RATE', critical: true });
-    } else if (lander.agl < 42 && lander.vel.y < -2.55 && lander.throttle < 0.78) {
-      alerts.push({ text: 'DESCENT RATE', critical: false });
-    }
-
-    const absPitchDeg = Math.abs((lander.angle * 180) / Math.PI);
-    if ((lander.agl < 52 && absPitchDeg > 20.0) || absPitchDeg > 38.0) {
-      alerts.push({
-        text: 'BANK ANGLE',
-        critical: lander.agl < 32 && absPitchDeg > 33.0,
-      });
-    }
-
-    if (lander.agl < 28 && Math.abs(lander.vel.x) > 2.15) {
-      alerts.push({
-        text: 'LATERAL DRIFT',
-        critical: lander.agl < 15 && Math.abs(lander.vel.x) > 2.85,
-      });
-    }
-
-    if (emBlackoutActive) {
-      alerts.push({ text: 'EM BLACKOUT // PING RADAR', critical: false });
-    }
-    if (lander.inWindShear) {
-      alerts.push({ text: 'WIND SHEAR', critical: false });
-    }
-    if (lander.inThermalUpdraft) {
-      alerts.push({ text: 'THERMAL UPDRAFT', critical: false });
-    }
-
-    const fuelRatio = lander.fuelKg / Math.max(1, lander.maxFuelKg);
-    if (fuelRatio <= 0.16) {
-      alerts.push({ text: 'LOW FUEL', critical: lander.fuelKg <= 12 });
-    }
-
-    return alerts;
+    const snap = evaluateLanderAvionics(lander, sector, emBlackoutActive);
+    return snap.alerts.map((a) => ({ text: a.text, critical: a.critical }));
   }
 
   public render(ctx: CanvasRenderingContext2D, state: HudRenderContext): void {
@@ -492,7 +452,6 @@ export class HudRenderer {
     const layout = HudRenderer.computeLayoutMetrics(w, h);
     const s = layout.hudScale;
 
-    const windKnots = Math.hypot(lander.currentWindVx, lander.currentWindVy) * 1.94384;
     const targetPadInfo = this.findClosestTargetPad(lander, sector.pads);
     const inFinalApproach = Boolean(
       targetPadInfo && targetPadInfo.dist <= PHYSICS.APPROACH_PROXIMITY_M
@@ -578,12 +537,16 @@ export class HudRenderer {
       s
     );
 
-    // Gauge B: SPEED Needle Dial (mid-left)
-    const speedMaxScale = 15.0;
+    // Compute single authoritative avionics state for dials, compass, and 7-lamp annunciator
+    const avionics = evaluateLanderAvionics(lander, sector, state.emBlackoutActive);
+
+    // Gauge B: SPEED Needle Dial (mid-left — 0..30 m/s scale for aggressive flying!)
+    const speedMaxScale = PHYSICS.SPEED_DIAL_MAX_MPS;
     const speedMag = Math.hypot(lander.vel.x, lander.vel.y);
     const speedNorm = Math.min(1, speedMag / speedMaxScale);
     const speedIsRed =
-      speedMag > 11.8 || (lander.agl < 36 && lander.vel.y < -PHYSICS.SURVIVAL_VS_MAX);
+      speedMag >= 26.0 || avionics.pullUpCrit || avionics.sinkState === 'CRITICAL';
+    const speedIsAmber = !speedIsRed && (speedMag >= 18.0 || avionics.sinkState === 'CAUTION');
     this.drawChunkyNeedleDial(
       ctx,
       leftColCx,
@@ -592,17 +555,22 @@ export class HudRenderer {
       speedNorm,
       PHYSICS.SAFE_VS_MAX / speedMaxScale,
       'SPEED',
-      speedIsRed ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER,
+      speedIsRed
+        ? THEME.ALERT_RED_STROKE
+        : speedIsAmber
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_PRIMARY,
       false,
       s,
       `${speedMag.toFixed(1)} M/S`
     );
 
-    // Gauge C: DRIFT Needle Dial (lower-left)
-    const hsDangerous =
-      Math.abs(lander.vel.x) > 6.8 ||
-      (lander.agl < 34 && Math.abs(lander.vel.x) > PHYSICS.SURVIVAL_HS_MAX);
-    const driftSigned = Math.max(-1, Math.min(1, lander.vel.x / 8.5));
+    // Gauge C: DRIFT Needle Dial (lower-left — ±20 m/s scale for aggressive lateral burns!)
+    const driftMaxScale = PHYSICS.DRIFT_DIAL_MAX_MPS;
+    const absVx = Math.abs(lander.vel.x);
+    const driftIsRed = absVx >= 17.5 || avionics.driftState === 'CRITICAL';
+    const driftIsAmber = !driftIsRed && (absVx >= 12.0 || avionics.driftState === 'CAUTION');
+    const driftSigned = Math.max(-1, Math.min(1, lander.vel.x / driftMaxScale));
     this.drawChunkyNeedleDial(
       ctx,
       leftColCx,
@@ -611,7 +579,11 @@ export class HudRenderer {
       driftSigned,
       undefined,
       'DRIFT',
-      hsDangerous ? THEME.ALERT_RED_STROKE : THEME.ACCENT_AMBER,
+      driftIsRed
+        ? THEME.ALERT_RED_STROKE
+        : driftIsAmber
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_PRIMARY,
       true,
       s,
       `${lander.vel.x >= 0 ? '+' : ''}${lander.vel.x.toFixed(1)}`
@@ -716,7 +688,7 @@ export class HudRenderer {
       s
     );
 
-    this.drawAttitudeAndWindPod(ctx, 0, 224, baseW, lander, sector, windKnots, s);
+    this.drawAttitudeAndWindPod(ctx, 0, 224, baseW, lander, sector, avionics, s);
 
     if (targetPadInfo && lander.alive && (state.phase === 'FLIGHT' || state.phase === 'PAUSED')) {
       this.drawProximityApproachSubWindow(
@@ -787,7 +759,7 @@ export class HudRenderer {
     // NOSTROMO 7-LAMP BACKLIT GLASS ANNUNCIATOR STRIP (DARK CALM UNTIL TRIPPED!)
     // Replaces colliding bottom Airbus warning bars!
     // ---------------------------------------------------------------------
-    this.drawNostromoAnnunciator(ctx, w, h, layout, lander, state.emBlackoutActive, state.timeSec);
+    this.drawNostromoAnnunciator(ctx, w, h, layout, avionics, state.timeSec);
 
     ctx.restore();
   }
@@ -848,80 +820,64 @@ export class HudRenderer {
     w: number,
     h: number,
     layout: HudLayoutMetrics,
-    lander: LanderState,
-    emBlackoutActive: boolean,
+    avionics: LanderAvionicsSnapshot,
     timeSec: number
   ): void {
-    const active = lander.alive && lander.groundedPad === null;
-    const absPitchDeg = Math.abs((lander.angle * 180) / Math.PI);
-    const fuelRatio = lander.fuelKg / Math.max(1, lander.maxFuelKg);
-
-    const ceilingHit = active && lander.ceilingClearance < 9 && lander.vel.y > 1.2;
-    const pullUpCrit = active && (ceilingHit || (lander.agl < 16 && lander.vel.y < -4.4));
-
-    const sinkCrit =
-      active &&
-      ((lander.agl < 26 && lander.vel.y < -3.05) || (lander.agl < 14 && lander.vel.y < -2.4)) &&
-      lander.throttle < 0.85;
-    const sinkCaut =
-      active && !sinkCrit && lander.agl < 42 && lander.vel.y < -2.55 && lander.throttle < 0.78;
-
-    const bankCrit = active && lander.agl < 32 && absPitchDeg > 33.0;
-    const bankCaut =
-      active && !bankCrit && ((lander.agl < 52 && absPitchDeg > 20.0) || absPitchDeg > 38.0);
-
-    const driftCrit = active && lander.agl < 15 && Math.abs(lander.vel.x) > 2.85;
-    const driftCaut = active && !driftCrit && lander.agl < 28 && Math.abs(lander.vel.x) > 2.15;
-
-    const fuelCrit = active && lander.fuelKg <= 12;
-    const fuelCaut = active && !fuelCrit && fuelRatio <= 0.16;
-
-    const windActive = active && (lander.inWindShear || lander.inThermalUpdraft);
-    const emActive = active && emBlackoutActive;
+    const pullUpActive = avionics.obstacleCrit || avionics.pullUpCrit;
+    const windLabel = avionics.windIsThermalOnly
+      ? 'THERMAL'
+      : avionics.windIsShear
+        ? 'SHEAR'
+        : 'WIND';
 
     const lamps: AnnunciatorLamp[] = [
       {
         id: 'pull-up',
-        label: ceilingHit ? 'OBSTACLE' : 'PULL UP',
-        state: pullUpCrit ? 'CRITICAL' : 'OFF',
-        icon: pullUpCrit ? SEMIOTIC_ICONS.TRIANGLE : undefined,
+        label: avionics.obstacleCrit ? 'OBSTACLE' : 'PULL UP',
+        state: pullUpActive ? 'CRITICAL' : 'OFF',
+        icon: pullUpActive ? SEMIOTIC_ICONS.TRIANGLE : undefined,
       },
       {
         id: 'sink',
         label: 'SINK',
-        state: sinkCrit ? 'CRITICAL' : sinkCaut ? 'CAUTION' : 'OFF',
-        icon: sinkCrit ? SEMIOTIC_ICONS.TRIANGLE : undefined,
+        state: avionics.sinkState,
+        icon: avionics.sinkState === 'CRITICAL' ? SEMIOTIC_ICONS.TRIANGLE : undefined,
       },
       {
         id: 'bank',
         label: 'BANK',
-        state: bankCrit ? 'CRITICAL' : bankCaut ? 'CAUTION' : 'OFF',
-        icon: bankCrit ? SEMIOTIC_ICONS.TRIANGLE : undefined,
+        state: avionics.bankState,
+        icon: avionics.bankState === 'CRITICAL' ? SEMIOTIC_ICONS.TRIANGLE : undefined,
       },
       {
         id: 'drift',
         label: 'DRIFT',
-        state: driftCrit ? 'CRITICAL' : driftCaut ? 'CAUTION' : 'OFF',
-        icon: driftCrit ? SEMIOTIC_ICONS.TRIANGLE : undefined,
+        state: avionics.driftState,
+        icon: avionics.driftState === 'CRITICAL' ? SEMIOTIC_ICONS.TRIANGLE : undefined,
       },
       {
         id: 'fuel',
         label: 'FUEL',
-        state: fuelCrit ? 'CRITICAL' : fuelCaut ? 'CAUTION' : 'OFF',
-        icon: fuelCrit ? SEMIOTIC_ICONS.TRIANGLE : undefined,
+        state: avionics.fuelState,
+        icon: avionics.fuelState === 'CRITICAL' ? SEMIOTIC_ICONS.TRIANGLE : undefined,
       },
       {
         id: 'wind',
-        label: lander.inThermalUpdraft && !lander.inWindShear ? 'THERMAL' : 'WIND',
-        state: windActive ? 'CAUTION' : 'OFF',
-        icon: windActive ? SEMIOTIC_ICONS.DIAMOND : undefined,
+        label: windLabel,
+        state: avionics.windState,
+        icon:
+          avionics.windState === 'CRITICAL'
+            ? SEMIOTIC_ICONS.TRIANGLE
+            : avionics.windState === 'CAUTION'
+              ? SEMIOTIC_ICONS.DIAMOND
+              : undefined,
       },
       {
         id: 'em',
         label: 'EM',
-        state: emActive ? 'INFO' : 'OFF',
-        icon: emActive ? SEMIOTIC_ICONS.HEX : undefined,
-        pulse: emActive,
+        state: avionics.emActive ? 'INFO' : 'OFF',
+        icon: avionics.emActive ? SEMIOTIC_ICONS.HEX : undefined,
+        pulse: avionics.emActive,
       },
     ];
 
@@ -1508,10 +1464,11 @@ export class HudRenderer {
     w: number,
     lander: LanderState,
     sector: SectorConfig,
-    windKnots: number,
+    avionics: LanderAvionicsSnapshot,
     scale: number
   ): void {
     const h = 152;
+    const windKnots = avionics.windKnots;
     ctx.save();
     ctx.fillStyle = 'rgba(3, 8, 5, 0.90)';
     ctx.fillRect(x, y, w, h);
@@ -1522,8 +1479,14 @@ export class HudRenderer {
     const gyroR = 34;
     const pitchDeg = (lander.angle * 180) / Math.PI;
     const attSafe = Math.abs(pitchDeg) <= PHYSICS.SAFE_ANGLE_DEG;
+    const attRingCol =
+      avionics.bankState === 'CRITICAL'
+        ? THEME.ALERT_RED_STROKE
+        : avionics.bankState === 'CAUTION' || !attSafe
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_PRIMARY;
 
-    ctx.strokeStyle = attSafe ? THEME.TEXT_PRIMARY : THEME.ACCENT_AMBER;
+    ctx.strokeStyle = attRingCol;
     ctx.lineWidth = 2.6;
     ctx.beginPath();
     ctx.arc(gyroCx, gyroCy, gyroR, 0, Math.PI * 2);
@@ -1541,7 +1504,12 @@ export class HudRenderer {
     ctx.save();
     ctx.translate(gyroCx, gyroCy);
     ctx.rotate(lander.angle);
-    ctx.strokeStyle = attSafe ? THEME.TEXT_BRIGHT : THEME.ALERT_RED_STROKE;
+    ctx.strokeStyle =
+      avionics.bankState === 'CRITICAL'
+        ? THEME.ALERT_RED_STROKE
+        : attSafe
+          ? THEME.TEXT_BRIGHT
+          : THEME.ACCENT_AMBER_HI;
     ctx.lineWidth = 2.8;
     ctx.beginPath();
     ctx.moveTo(-gyroR + 6, 0);
@@ -1554,17 +1522,23 @@ export class HudRenderer {
 
     ctx.textAlign = 'center';
     ctx.font = font('micro', 12, scale);
-    ctx.fillStyle = attSafe ? THEME.TEXT_PRIMARY : THEME.ACCENT_AMBER_HI;
+    ctx.fillStyle =
+      avionics.bankState === 'CRITICAL'
+        ? THEME.ALERT_RED_TEXT
+        : attSafe
+          ? THEME.TEXT_PRIMARY
+          : THEME.ACCENT_AMBER_HI;
     ctx.fillText(`ATT ${pitchDeg >= 0 ? '+' : ''}${pitchDeg.toFixed(0)}°`, gyroCx, gyroCy + gyroR + 18);
 
     const windCx = x + w * 0.73;
     const windCy = y + 54;
     const windR = 34;
-    const windCol = lander.inWindShear
-      ? THEME.ALERT_RED_TEXT
-      : windKnots > 9
-        ? THEME.ACCENT_AMBER
-        : THEME.TEXT_PRIMARY;
+    const windCol =
+      avionics.windState === 'CRITICAL'
+        ? THEME.ALERT_RED_TEXT
+        : avionics.windState === 'CAUTION'
+          ? THEME.ACCENT_AMBER
+          : THEME.TEXT_PRIMARY;
 
     ctx.strokeStyle = THEME.BORDER_SUBTLE;
     ctx.lineWidth = 2.4;
@@ -1799,27 +1773,26 @@ export class HudRenderer {
     const topY = layout.topHeaderY;
 
     const padHalfW = Math.max(1, (pad.x2 - pad.x1) * 0.5);
-    const safeBoundM = Math.max(1.0, padHalfW - PHYSICS.STRUT_SPAN_HALF_X + 0.85);
-    const kissBoundM = Math.min(padHalfW * 0.48, safeBoundM);
-
-    const vsGo = vs <= PHYSICS.SAFE_VS_MAX;
-    const vsKiss = vs < PHYSICS.KISS_VS_MAX;
-    const vsFatal = vs > PHYSICS.SURVIVAL_VS_MAX;
-
-    const hsGo = hs <= PHYSICS.SAFE_HS_MAX;
-    const hsKiss = hs < PHYSICS.KISS_HS_MAX;
-    const hsFatal = hs > PHYSICS.SURVIVAL_HS_MAX;
-
-    const attGo = deg <= PHYSICS.SAFE_ANGLE_DEG;
-    const attFatal = deg > PHYSICS.SURVIVAL_ANGLE_DEG;
-
-    const inSafeAlign = Math.abs(offsetM) <= safeBoundM;
-    const inKissAlign = Math.abs(offsetM) <= kissBoundM;
-
-    const allGo = vsGo && hsGo && attGo && inSafeAlign;
-    const allKiss = vsKiss && hsKiss && attGo && inKissAlign;
+    const env = evaluateLandingEnvelope(vs, hs, deg, offsetM, padHalfW);
+    const {
+      safeBoundM,
+      kissBoundM,
+      vsGo,
+      vsKiss,
+      vsFatal,
+      hsGo,
+      hsKiss,
+      hsFatal,
+      attGo,
+      attKiss,
+      attFatal,
+      inSafeAlign,
+      inKissAlign,
+      allGo,
+      allKiss,
+    } = env;
     const anyFatal =
-      vsFatal || hsFatal || attFatal || (!inSafeAlign && lockedGrade === 'CATASTROPHIC');
+      env.anyFatal || (!inSafeAlign && lockedGrade === 'CATASTROPHIC');
 
     ctx.save();
     ctx.translate(cx - basePanelW * cs * 0.5, topY);
@@ -1885,12 +1858,12 @@ export class HudRenderer {
     ctx.fillText(rightStatus, basePanelW - 14, 21);
     ctx.globalAlpha = 1;
 
-    // 3 Criteria Modules (all fonts strictly >=12px effective!)
+    // 3 Criteria Modules (100% synced to PHYSICS + evaluateLandingEnvelope!)
     const criteria = [
       {
         title: 'V/S',
         valueStr: `${vs.toFixed(1)} M/S`,
-        limitStr: `GO≤${PHYSICS.SAFE_VS_MAX.toFixed(1)}`,
+        limitStr: vsGo ? `KISS≤${PHYSICS.KISS_VS_MAX.toFixed(1)}` : `GO≤${PHYSICS.SAFE_VS_MAX.toFixed(1)}`,
         go: vsGo,
         kiss: vsKiss,
         fatal: vsFatal,
@@ -1898,7 +1871,7 @@ export class HudRenderer {
       {
         title: 'H/S',
         valueStr: `${hs.toFixed(1)} M/S`,
-        limitStr: `GO≤${PHYSICS.SAFE_HS_MAX.toFixed(1)}`,
+        limitStr: hsGo ? `KISS≤${PHYSICS.KISS_HS_MAX.toFixed(1)}` : `GO≤${PHYSICS.SAFE_HS_MAX.toFixed(1)}`,
         go: hsGo,
         kiss: hsKiss,
         fatal: hsFatal,
@@ -1906,9 +1879,11 @@ export class HudRenderer {
       {
         title: 'ATT',
         valueStr: `${deg.toFixed(1)}°`,
-        limitStr: `GO≤${PHYSICS.SAFE_ANGLE_DEG.toFixed(0)}°`,
+        limitStr: attGo
+          ? `KISS≤${PHYSICS.KISS_ANGLE_DEG.toFixed(0)}°`
+          : `GO≤${PHYSICS.SAFE_ANGLE_DEG.toFixed(0)}°`,
         go: attGo,
-        kiss: attGo && deg <= 3.0,
+        kiss: attKiss,
         fatal: attFatal,
       },
     ];

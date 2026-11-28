@@ -2561,7 +2561,7 @@ export class PerimeterCartridge implements Cartridge {
     if (this.sim.phase === 'BRIEFING') {
       if ((e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') && !e.repeat) {
         this.host.audio.playButtonLatchLock();
-        this.sim.phase = 'TACTICAL_PREP';
+        this.handleHudButton('briefing-engage');
       } else if (e.code === 'KeyT' && !e.repeat) {
         this.host.audio.playButtonLatchLock();
         this.handleHudButton('perim-drill-start');

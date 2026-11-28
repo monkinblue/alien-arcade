@@ -68,16 +68,24 @@ export const PHYSICS = {
   SPOTLIGHT_HALF_ARC: 0.17,
   LIDAR_DECAY_SECONDS: 2.35,
 
-  // Approach & Landing Thresholds
+  // Approach & Landing Thresholds (Single Source of Truth across Physics, HUD & Debrief!)
   APPROACH_PROXIMITY_M: 90,
   SAFE_VS_MAX: 2.2,
   SAFE_HS_MAX: 1.9,
   SAFE_ANGLE_DEG: 7.0,
   KISS_VS_MAX: 0.8,
   KISS_HS_MAX: 0.7,
+  KISS_ANGLE_DEG: 4.0,
+  KISS_CENTER_RATIO: 0.48,
   SURVIVAL_VS_MAX: 3.8,
   SURVIVAL_HS_MAX: 3.0,
   SURVIVAL_ANGLE_DEG: 13.5,
+
+  // Avionics Dial Full-Scale Ranges (generous headroom for aggressive high-speed pilots)
+  SPEED_DIAL_MAX_MPS: 30.0,
+  DRIFT_DIAL_MAX_MPS: 20.0,
+  WIND_CAUTION_MPS: 4.5, // ~9 KT noticeable crosswind
+  WIND_CRITICAL_MPS: 10.5, // ~20 KT severe gale / shear
 
   // Refuel Depot Rate
   DEPOT_REFUEL_RATE_KG_S: 32,

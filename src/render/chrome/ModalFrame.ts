@@ -58,6 +58,11 @@ export interface ModalFrameOptions {
   accentColor?: string;
   rightBadge?: ModalRightBadge;
   /**
+   * Optional top Y coordinate below which the modal scrim & centering live
+   * (e.g., `TOP_CHROME_BAR_HEIGHT` so the top navigation bar stays bright and clickable).
+   */
+  scrimTopY?: number;
+  /**
    * Default `true`: clears `buttons.length = 0` before drawing modal controls so
    * underlying HUD buttons can NEVER leak clicks behind an open modal.
    */
@@ -91,10 +96,12 @@ export function drawModalFrame(
     buttons.length = 0;
   }
 
+  const scrimTop = Math.max(0, Math.min(h - 200, opts.scrimTopY ?? 0));
+  const availH = h - scrimTop;
   const boxW = Math.max(300, Math.min(opts.width ?? opts.maxWidth ?? 680, w - 24));
-  const boxH = Math.max(180, Math.min(opts.height ?? opts.maxHeight ?? 480, h - 24));
+  const boxH = Math.max(180, Math.min(opts.height ?? opts.maxHeight ?? 480, availH - 24));
   const bx = Math.round((w - boxW) * 0.5);
-  const by = Math.round((h - boxH) * 0.5);
+  const by = scrimTop + Math.round((availH - boxH) * 0.5);
   const accent = opts.accentColor ?? THEME.TEXT_PRIMARY;
   const padX = 20;
 
@@ -102,7 +109,7 @@ export function drawModalFrame(
 
   // Dimmed backdrop scrim (prevents visual bleed from underlying cockpit/radar)
   ctx.fillStyle = THEME.BG_SCRIM;
-  ctx.fillRect(0, 0, w, h);
+  ctx.fillRect(0, scrimTop, w, h - scrimTop);
 
   // Main beveled CRT panel body
   ctx.fillStyle = THEME.BG_PANEL;
