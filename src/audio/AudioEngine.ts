@@ -138,7 +138,9 @@ export class AudioEngine {
   private muted = false;
   private masterVolume = 0.9;
   private unlocked = false;
+  private unlockListeners = new Set<() => void>();
   private activeVoiceSource: AudioBufferSourceNode | null = null;
+  private activeSealImpactSources = new Set<AudioScheduledSourceNode>();
   private lastVoiceTime = 0;
   private lastKlaxonTime = 0;
   private lastKeyclickTime = 0;
@@ -218,8 +220,14 @@ export class AudioEngine {
       const entries = Object.entries(data.assets).filter(
         ([id]) => id !== 'ambient_crt_buzz' && id !== 'homeade_computer_start'
       );
+      // Also prefetch Orbital Defense (Flak Net) dome breach impact + muffled distress pulse
+      // so Hadley's Perimeter core-seal breaches faithfully share the exact HD collapse foley!
+      const extraFlakAssets: Array<[string, { path: string; category: 'sfx' }]> = [
+        ['flak_dome_breach_impact', { path: '/audio/flak/dome_breach_impact.mp3', category: 'sfx' }],
+        ['flak_dome_lock_alarm', { path: '/audio/flak/dome_lock_alarm.mp3', category: 'sfx' }],
+      ];
       await Promise.all(
-        entries.map(async ([id, meta]) => {
+        [...entries, ...extraFlakAssets].map(async ([id, meta]) => {
           try {
             const assetUrl = `${prefix}${meta.path}`;
             const mp3Res = await fetch(assetUrl);
@@ -336,6 +344,9 @@ export class AudioEngine {
 
           if (id === 'sentry_rearm_belt') {
             this.normalizeAudioBufferPeak(finalBuf, 0.95);
+          } else if (id === 'flak_dome_breach_impact' || id === 'flak_dome_lock_alarm') {
+            // Match FlakAudioEngine's exact 0.94 peak normalization for Orbital Defense impact parity
+            this.normalizeAudioBufferPeak(finalBuf, 0.94);
           } else if (id === 'core_breach_alert') {
             // Keep clean headroom before low-shelf EQ, hallway reverb & sub reinforcement
             this.normalizeAudioBufferPeak(finalBuf, 0.78);
@@ -391,6 +402,26 @@ export class AudioEngine {
     return this.masterGain;
   }
 
+  public onUnlock(listener: () => void): () => void {
+    this.unlockListeners.add(listener);
+    if (this.ctx && this.ctx.state === 'running') {
+      listener();
+    }
+    return () => {
+      this.unlockListeners.delete(listener);
+    };
+  }
+
+  private notifyUnlockListeners(): void {
+    for (const listener of this.unlockListeners) {
+      try {
+        listener();
+      } catch {
+        // Isolate subscriber errors
+      }
+    }
+  }
+
   public async unlock(): Promise<void> {
     if (!this.ctx) {
       const AudioCtx =
@@ -411,6 +442,9 @@ export class AudioEngine {
       }
     }
     this.unlocked = this.ctx.state === 'running';
+    if (this.unlocked) {
+      this.notifyUnlockListeners();
+    }
 
     // Immediately decode homeade_computer_start.m4a so CRT tube ignition plays with zero lag,
     // while decoding the remaining 35 assets in the background!
@@ -1921,9 +1955,16 @@ export class AudioEngine {
   public suspendForBackground(paused: boolean): void {
     if (!this.ctx) return;
     if (paused && this.ctx.state === 'running') {
-      void this.ctx.suspend();
+      void this.ctx.suspend().catch(() => {});
     } else if (!paused && this.ctx.state === 'suspended' && this.unlocked) {
-      void this.ctx.resume();
+      void this.ctx
+        .resume()
+        .then(() => {
+          if (this.ctx?.state === 'running') {
+            this.notifyUnlockListeners();
+          }
+        })
+        .catch(() => {});
     }
   }
 
@@ -1959,6 +2000,15 @@ export class AudioEngine {
       }
       this.activeSentryTail = null;
     }
+    for (const src of Array.from(this.activeSealImpactSources)) {
+      try {
+        src.stop();
+        src.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.activeSealImpactSources.clear();
     this.fadeOutBootStartupAudio(0.45);
   }
 
@@ -3968,6 +4018,157 @@ export class AudioEngine {
         osc.stop(t0 + 1.0);
       });
     }
+  }
+
+  /**
+   * Ported Orbital Defense (Flak Net) catastrophic ground-target impact effect for
+   * Hadley's Perimeter core seal breaches — tuned ~+2.7 dB (~1.35x) louder than Flak Net
+   * while remaining cleanly controlled below the master limiter:
+   * - 60Hz -> 53Hz -> 60Hz CRT power-sag transformer blackout hum (LP 165Hz)
+   * - Full 5.5s HD ElevenLabs subterranean bunker collapse (`dome_breach_impact.mp3`)
+   * - Distant muffled bunker distress pulse at +1.05s (`dome_lock_alarm.mp3`, LP 1050Hz)
+   * - Matching subterranean brown-noise collapse fallback if MP3s are still decoding
+   */
+  public playPerimeterSealBreachImpact(pan = 0, volume = 1.0): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const safePan = Math.max(-0.85, Math.min(0.85, pan));
+    const safeVol = Math.max(0, Math.min(1.25, volume));
+
+    const trackImpactSource = (src: AudioScheduledSourceNode): void => {
+      this.activeSealImpactSources.add(src);
+      src.onended = () => {
+        this.activeSealImpactSources.delete(src);
+        try {
+          src.disconnect();
+        } catch {
+          // Ignore
+        }
+      };
+    };
+
+    // Cinema punch bus matching FlakAudioEngine (`busCompressor -> busOutput`) lifted ~+2.7 dB
+    // (Flak Net: sampleGain 1.26 -> comp -7.0dB 3.8:1 -> busOut 1.24;
+    //  Perimeter: sampleGain 1.32 -> lowShelf +2dB -> comp -5.0dB 3.2:1 -> outGain 1.56)
+    const impactInput = ctx.createGain();
+    impactInput.gain.value = 1.0;
+
+    const subShelf = ctx.createBiquadFilter();
+    subShelf.type = 'lowshelf';
+    subShelf.frequency.value = 68;
+    subShelf.gain.value = 2.0;
+
+    const impactComp = ctx.createDynamicsCompressor();
+    impactComp.threshold.value = -5.0;
+    impactComp.knee.value = 6.0;
+    impactComp.ratio.value = 3.2;
+    impactComp.attack.value = 0.005;
+    impactComp.release.value = 0.14;
+
+    const outGain = ctx.createGain();
+    outGain.gain.value = 1.56 * safeVol;
+
+    impactInput.connect(subShelf);
+    subShelf.connect(impactComp);
+    impactComp.connect(outGain);
+    outGain.connect(this.masterGain);
+
+    const panner = ctx.createStereoPanner();
+    panner.pan.setValueAtTime(safePan, now);
+    panner.connect(impactInput);
+
+    // 1. 60Hz CRT Power-Sag Transformer Hum during structural blackout shock (Flak 0.28 -> 0.36)
+    const sagOsc = ctx.createOscillator();
+    sagOsc.type = 'sawtooth';
+    sagOsc.frequency.setValueAtTime(60, now);
+    sagOsc.frequency.linearRampToValueAtTime(53, now + 0.42);
+    sagOsc.frequency.linearRampToValueAtTime(60, now + 0.92);
+
+    const sagLp = ctx.createBiquadFilter();
+    sagLp.type = 'lowpass';
+    sagLp.frequency.value = 165;
+
+    const sagGain = ctx.createGain();
+    sagGain.gain.setValueAtTime(0.001, now);
+    sagGain.gain.linearRampToValueAtTime(0.36, now + 0.04);
+    sagGain.gain.exponentialRampToValueAtTime(0.001, now + 0.96);
+
+    sagOsc.connect(sagLp);
+    sagLp.connect(sagGain);
+    sagGain.connect(impactInput);
+    trackImpactSource(sagOsc);
+    sagOsc.start(now);
+    sagOsc.stop(now + 1.0);
+
+    // 2. Grim distant muffled bunker distress pulse (~1.05s into collapse; Flak 0.24 -> 0.31)
+    const alarmBuf = this.buffers.get('flak_dome_lock_alarm');
+    if (alarmBuf) {
+      const distSrc = ctx.createBufferSource();
+      distSrc.buffer = alarmBuf;
+      distSrc.playbackRate.setValueAtTime(0.84, now + 1.05);
+
+      const distLp = ctx.createBiquadFilter();
+      distLp.type = 'lowpass';
+      distLp.frequency.value = 1050;
+
+      const distGain = ctx.createGain();
+      distGain.gain.setValueAtTime(0.001, now + 1.05);
+      distGain.gain.linearRampToValueAtTime(0.31, now + 1.18);
+      distGain.gain.exponentialRampToValueAtTime(0.001, now + 2.55);
+
+      distSrc.connect(distLp);
+      distLp.connect(distGain);
+      distGain.connect(panner);
+      trackImpactSource(distSrc);
+      distSrc.start(now + 1.05, this.bufferOnsets.get('flak_dome_lock_alarm') ?? 0);
+    }
+
+    // 3. Full 5.5s HD ElevenLabs subterranean bunker collapse (Flak 1.26 -> 1.32 into louder bus)
+    const impactBuf = this.buffers.get('flak_dome_breach_impact');
+    if (impactBuf) {
+      const src = ctx.createBufferSource();
+      src.buffer = impactBuf;
+      src.playbackRate.setValueAtTime(0.98 + Math.random() * 0.04, now);
+
+      const onset = this.bufferOnsets.get('flak_dome_breach_impact') ?? 0;
+      const sampleGain = ctx.createGain();
+      sampleGain.gain.setValueAtTime(1.32, now);
+
+      src.connect(sampleGain);
+      sampleGain.connect(panner);
+      trackImpactSource(src);
+      src.start(now, onset);
+      return;
+    }
+
+    // 4. Matching procedural subterranean rubble collapse fallback if MP3 is still decoding
+    const sr = ctx.sampleRate;
+    const len = Math.floor(sr * 2.7);
+    const brownBuf = ctx.createBuffer(1, len, sr);
+    const bd = brownBuf.getChannelData(0);
+    let brown = 0;
+    for (let i = 0; i < len; i++) {
+      const r = Math.random() * 2 - 1;
+      brown = (brown + 0.045 * r) / 1.045;
+      bd[i] = Math.max(-1, Math.min(1, brown * 2.8));
+    }
+
+    const collapse = ctx.createBufferSource();
+    collapse.buffer = brownBuf;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(520, now);
+    lp.frequency.exponentialRampToValueAtTime(68, now + 2.4);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(1.08, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 2.6);
+
+    collapse.connect(lp);
+    lp.connect(g);
+    g.connect(panner);
+    trackImpactSource(collapse);
+    collapse.start(now, 0, 2.7);
   }
 
   /**

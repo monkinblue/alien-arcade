@@ -26,6 +26,7 @@ import {
   type BuildToolId,
   type ColonyBlueprint,
   type CommandAbilityId,
+  type CoreBreachBlast,
   type CryoPlume,
   type DraftChoiceId,
   type DraftMode,
@@ -39,6 +40,7 @@ import {
   type NapalmCloud,
   type OmegaDirectiveId,
   type OverclockZone,
+  type PerimeterCrtShockwave,
   type PerimeterMode,
   type PerimeterPhase,
   type PhantomBlip,
@@ -88,6 +90,7 @@ export interface SimulationAudioCallbacks {
   onAcidSizzle(pan: number): void;
   onAirlockPurge(pan: number): void;
   onBulkheadBreach(): void;
+  onCoreSealBreach(pan: number): void;
   onFlarePop(pan: number): void;
   onOverclockSurge(pan: number): void;
   onServoStep(pan: number): void;
@@ -131,6 +134,10 @@ export class PerimeterSimulation {
   public autoReactorUnlocks = 0;
   public bulkheadSeals: number = PERIMETER_CONSTANTS.MAX_BULKHEAD_SEALS;
   public sealLostFlashTimer = 0;
+  public sealConcussionFlashTimer = 0;
+  public screenShake = 0;
+  public crtShockwaves: PerimeterCrtShockwave[] = [];
+  public coreBreachBlasts: CoreBreachBlast[] = [];
   public aegisBarrierReady = false;
   public aegisBarrierCharges = 0;
   public aegisRechargeWavesRemaining = 0;
@@ -304,6 +311,10 @@ export class PerimeterSimulation {
     this.sparks = [];
     this.callouts = [];
     this.grateTelegraphs = [];
+    this.crtShockwaves = [];
+    this.coreBreachBlasts = [];
+    this.screenShake = 0;
+    this.sealConcussionFlashTimer = 0;
     this.spawnQueue = [];
     this.cryoCoolerBuffedTurretIds.clear();
     this.relayFloodHostileIds.clear();
@@ -2409,6 +2420,10 @@ export class PerimeterSimulation {
     this.sparks = [];
     this.callouts = [];
     this.grateTelegraphs = [];
+    this.crtShockwaves = [];
+    this.coreBreachBlasts = [];
+    this.screenShake = 0;
+    this.sealConcussionFlashTimer = 0;
     this.spawnQueue = [];
     this.cryoCoolerBuffedTurretIds.clear();
     this.relayFloodHostileIds.clear();
@@ -2449,16 +2464,38 @@ export class PerimeterSimulation {
   }
 
   public step(rawDt: number): void {
+    const fxDt = Math.min(0.08, Math.max(0, rawDt));
     if (this.sealLostFlashTimer > 0) {
-      this.sealLostFlashTimer = Math.max(0, this.sealLostFlashTimer - rawDt);
+      this.sealLostFlashTimer = Math.max(0, this.sealLostFlashTimer - fxDt);
+    }
+    if (this.sealConcussionFlashTimer > 0) {
+      this.sealConcussionFlashTimer = Math.max(0, this.sealConcussionFlashTimer - fxDt);
+    }
+    if (this.screenShake > 0) {
+      this.screenShake = Math.max(0, this.screenShake - fxDt * 26);
+    }
+    for (let i = this.crtShockwaves.length - 1; i >= 0; i--) {
+      const sw = this.crtShockwaves[i];
+      sw.age += fxDt;
+      if (sw.age >= sw.duration) {
+        this.crtShockwaves.splice(i, 1);
+      }
+    }
+    for (let i = this.coreBreachBlasts.length - 1; i >= 0; i--) {
+      const b = this.coreBreachBlasts[i];
+      b.age += fxDt;
+      if (b.age >= b.duration) {
+        this.coreBreachBlasts.splice(i, 1);
+      }
     }
 
-    if (
-      this.phase === 'BRIEFING' ||
-      this.phase === 'PROTOCOL_DRAFT' ||
-      this.phase === 'CORE_BREACHED' ||
-      this.phase === 'CALLSIGN_ENTRY'
-    ) {
+    if (this.phase === 'CORE_BREACHED' || this.phase === 'CALLSIGN_ENTRY') {
+      // Keep final-seal explosion sparks & breach callout animating smoothly after Game Over triggers
+      this.stepVisualParticles(fxDt);
+      return;
+    }
+
+    if (this.phase === 'BRIEFING' || this.phase === 'PROTOCOL_DRAFT') {
       return;
     }
 
@@ -5028,9 +5065,37 @@ export class PerimeterSimulation {
     this.sealLostThisWave = true;
     this.perfectWaveStreak = 0;
     this.sealLostFlashTimer = 2.5;
-    this.audioCb.onBulkheadBreach();
+    this.sealConcussionFlashTimer = 0.85;
+    this.screenShake = Math.max(this.screenShake, 18);
+    this.pushCrtShockwave(
+      this.blueprint.coreCenter.x,
+      this.blueprint.coreCenter.y,
+      0.56,
+      1.0,
+      0.92
+    );
+    this.coreBreachBlasts.push({
+      x: this.blueprint.coreCenter.x,
+      y: this.blueprint.coreCenter.y,
+      age: 0,
+      duration: 0.78,
+      maxRadius: 290,
+      coreRadius: 72,
+    });
+    this.audioCb.onCoreSealBreach(this.panFromVirtualX(this.blueprint.coreCenter.x));
     this.audioCb.onSyncGlitch(0.95);
-    this.spawnSparks(this.blueprint.coreCenter, 28, '#FF3318');
+    this.spawnExplosiveSparks(this.blueprint.coreCenter, 38, '#FF3318', 95, 360, 0.34, 0.78);
+    this.spawnExplosiveSparks(this.blueprint.coreCenter, 24, '#FFB000', 70, 270, 0.28, 0.65);
+    this.callouts.push({
+      pos: { x: this.blueprint.coreCenter.x, y: this.blueprint.coreCenter.y - 44 },
+      text:
+        this.bulkheadSeals <= 0
+          ? '!! FINAL CORE SEAL BREACHED !!'
+          : `!! CORE SEAL BLOWN (${this.bulkheadSeals}/3 LEFT) !!`,
+      color: '#FF3318',
+      life: 2.3,
+      maxLife: 2.3,
+    });
 
     if (this.bulkheadSeals <= 0) {
       this.phase = 'CORE_BREACHED';
@@ -5333,6 +5398,49 @@ export class PerimeterSimulation {
     }
 
     return { nearestDistM, contacts };
+  }
+
+  private pushCrtShockwave(
+    x: number,
+    y: number,
+    maxRadiusNorm: number,
+    peakIntensity: number,
+    duration: number
+  ): void {
+    if (this.crtShockwaves.length >= 4) {
+      this.crtShockwaves.shift();
+    }
+    this.crtShockwaves.push({
+      x,
+      y,
+      age: 0,
+      duration,
+      maxRadiusNorm,
+      peakIntensity,
+    });
+  }
+
+  private spawnExplosiveSparks(
+    origin: Vec2,
+    count: number,
+    color: string,
+    speedMin: number,
+    speedMax: number,
+    lifeMin: number,
+    lifeMax: number
+  ): void {
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const spd = speedMin + Math.random() * Math.max(1, speedMax - speedMin);
+      const life = lifeMin + Math.random() * Math.max(0.05, lifeMax - lifeMin);
+      this.sparks.push({
+        pos: { x: origin.x, y: origin.y },
+        vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd },
+        color,
+        life,
+        maxLife: life,
+      });
+    }
   }
 
   private spawnSparks(origin: Vec2, count: number, color: string): void {

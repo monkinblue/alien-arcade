@@ -9,6 +9,7 @@ export type BootSequenceMode =
   | 'PERIMETER_LAUNCH'
   | 'FLAK_LAUNCH'
   | 'TRENCH_LAUNCH'
+  | 'APPROACH_LAUNCH'
   | 'RELAY_SNAP';
 
 export const RELAY_SNAP_DURATION_SEC = 0.45;
@@ -952,6 +953,7 @@ export class BootLogoRenderer {
   private perimeterEmblem!: DualChannelEmblem;
   private flakEmblem!: DualChannelEmblem;
   private trenchEmblem!: DualChannelEmblem;
+  private approachEmblem!: DualChannelEmblem;
 
   constructor() {
     this.handshakeEmblem = this.buildHandshakeEmblem();
@@ -959,6 +961,7 @@ export class BootLogoRenderer {
     this.perimeterEmblem = this.buildPerimeterEmblem();
     this.flakEmblem = this.buildFlakEmblem();
     this.trenchEmblem = this.buildTrenchEmblem();
+    this.approachEmblem = this.buildApproachEmblem();
   }
 
   private measurePath(pts: Array<[number, number]>): MeasuredPath {
@@ -1575,6 +1578,96 @@ export class BootLogoRenderer {
     return this.finalizeEmblem(chA, chB);
   }
 
+  /**
+   * 6) Program 05 Launch Emblem: "BOREALIS APPROACH // LV-118 RAPCON 05"
+   * Features Circular PPI Radar Scope + RWY 09/27 ILS Localizer Feather + 5 NM FAF Cross + RNAV Fix!
+   */
+  private buildApproachEmblem(): DualChannelEmblem {
+    const chA: MeasuredPath[] = [];
+    const chB: MeasuredPath[] = [];
+
+    chA.push(
+      this.measurePath([
+        [-452, -108],
+        [-180, -108],
+        [-114, -198],
+        [386, -198],
+        [386, 12],
+        [452, 12],
+        [452, 138],
+        [-452, 138],
+        [-452, -108],
+      ])
+    );
+
+    // Dorsal RAPCON Circular PPI & ILS Localizer Schematic Bay
+    chA.push(
+      this.measurePath([
+        [-162, -108],
+        [-106, -186],
+        [374, -186],
+        [374, -108],
+        [-162, -108],
+      ])
+    );
+
+    // Circular PPI Scope on Left of Dorsal Bay (center: -12, -147)
+    const pcx = -12;
+    const pcy = -147;
+    for (const rad of [16, 30]) {
+      const ringPts: Array<[number, number]> = [];
+      const steps = 16;
+      for (let i = 0; i <= steps; i++) {
+        const a = (i / steps) * Math.PI * 2;
+        ringPts.push([pcx + Math.cos(a) * rad, pcy + Math.sin(a) * rad]);
+      }
+      chA.push(this.measurePath(ringPts));
+    }
+    chA.push(this.measurePath([[pcx - 34, pcy], [pcx + 34, pcy]]));
+    chA.push(this.measurePath([[pcx, pcy - 34], [pcx, pcy + 34]]));
+    // Sweep arm
+    chA.push(this.measurePath([[pcx, pcy], [pcx + 22, pcy - 20]]));
+
+    // RWY 09/27 Threshold Bar + 10 NM ILS Localizer Feather + 5 NM FAF Maltese Cross
+    chA.push(this.measurePath([[52, -153], [128, -153], [128, -141], [52, -141], [52, -153]]));
+    chA.push(this.measurePath([[128, -147], [340, -147]]));
+    // ILS Feather Wedge
+    chA.push(this.measurePath([[128, -147], [326, -168], [326, -126], [128, -147]]));
+    // 5 NM FAF Maltese Cross at (228, -147)
+    chA.push(this.measurePath([[220, -155], [236, -139]]));
+    chA.push(this.measurePath([[220, -139], [236, -155]]));
+    // RNAV Fix Triangle (KRATO) + Inbound Vector Arrow
+    chA.push(this.measurePath([[340, -178], [352, -162], [328, -162], [340, -178]]));
+    chA.push(this.measurePath([[282, -176], [260, -161], [234, -147]]));
+
+    // Tier-1 Inner Structural Rail + "BOREALIS APPROACH"
+    chA.push(
+      this.measurePath([
+        [-440, -96],
+        [374, -96],
+        [374, 6],
+        [-440, 6],
+        [-440, -96],
+      ])
+    );
+    this.appendTextContours(chA, 'BOREALIS APPROACH', -424, 358, -82, 74, 0.16);
+
+    // Channel B: Tier-2 Structural Wall + "LV-118 // RAPCON 05"
+    chB.push(this.measurePath([[386, 12], [-452, 12]]));
+    chB.push(
+      this.measurePath([
+        [-440, 24],
+        [440, 24],
+        [440, 126],
+        [-440, 126],
+        [-440, 24],
+      ])
+    );
+    this.appendTextContours(chB, 'LV-118 // RAPCON 05', -424, 424, 40, 68, 0.17);
+
+    return this.finalizeEmblem(chA, chB);
+  }
+
   public render(ctx: CanvasRenderingContext2D, params: BootLogoRenderParams): void {
     const mode = params.sequenceMode ?? 'HARDWARE_HANDSHAKE';
     const { width: w, height: h, bootPoweredOn, bootElapsedSec } = params;
@@ -1588,7 +1681,8 @@ export class BootLogoRenderer {
       mode === 'LANDER_LAUNCH' ||
       mode === 'PERIMETER_LAUNCH' ||
       mode === 'FLAK_LAUNCH' ||
-      mode === 'TRENCH_LAUNCH'
+      mode === 'TRENCH_LAUNCH' ||
+      mode === 'APPROACH_LAUNCH'
     ) {
       this.renderCartridgeLaunchSequence(ctx, w, h, params, mode);
       return;
@@ -1679,19 +1773,22 @@ export class BootLogoRenderer {
     w: number,
     h: number,
     params: BootLogoRenderParams,
-    mode: 'LANDER_LAUNCH' | 'PERIMETER_LAUNCH' | 'FLAK_LAUNCH' | 'TRENCH_LAUNCH'
+    mode: 'LANDER_LAUNCH' | 'PERIMETER_LAUNCH' | 'FLAK_LAUNCH' | 'TRENCH_LAUNCH' | 'APPROACH_LAUNCH'
   ): void {
     const t = params.bootElapsedSec;
     const isPerimeter = mode === 'PERIMETER_LAUNCH';
     const isFlak = mode === 'FLAK_LAUNCH';
     const isTrench = mode === 'TRENCH_LAUNCH';
-    const emblem = isTrench
-      ? this.trenchEmblem
-      : isFlak
-        ? this.flakEmblem
-        : isPerimeter
-          ? this.perimeterEmblem
-          : this.landerEmblem;
+    const isApproach = mode === 'APPROACH_LAUNCH';
+    const emblem = isApproach
+      ? this.approachEmblem
+      : isTrench
+        ? this.trenchEmblem
+        : isFlak
+          ? this.flakEmblem
+          : isPerimeter
+            ? this.perimeterEmblem
+            : this.landerEmblem;
 
     if (t >= CARTRIDGE_LAUNCH_TIMING.HOLD_END_SEC) {
       const p = Math.min(
@@ -1699,12 +1796,20 @@ export class BootLogoRenderer {
         (t - CARTRIDGE_LAUNCH_TIMING.HOLD_END_SEC) /
           (CARTRIDGE_LAUNCH_TIMING.COMPLETE_SEC - CARTRIDGE_LAUNCH_TIMING.HOLD_END_SEC)
       );
-      this.drawCollapseProgress(ctx, w, h, p, isPerimeter || isFlak || isTrench);
+      this.drawCollapseProgress(ctx, w, h, p, isPerimeter || isFlak || isTrench || isApproach);
       return;
     }
 
     ctx.save();
-    ctx.fillStyle = isTrench ? '#020805' : isFlak ? '#020704' : isPerimeter ? '#040301' : '#050101';
+    ctx.fillStyle = isApproach
+      ? '#020906'
+      : isTrench
+        ? '#020805'
+        : isFlak
+          ? '#020704'
+          : isPerimeter
+            ? '#040301'
+            : '#050101';
     ctx.fillRect(0, 0, w, h);
 
     const rasterWarmup = Math.max(0, Math.min(1, t / 0.24));
@@ -1717,7 +1822,12 @@ export class BootLogoRenderer {
       const cy = h * 0.46;
       const outerR = Math.hypot(w * 0.62, h * 0.62);
       const bgGrad = ctx.createRadialGradient(cx, cy, Math.min(w, h) * 0.04, cx, cy, outerR);
-      if (isTrench) {
+      if (isApproach) {
+        bgGrad.addColorStop(0, `rgba(14, 96, 62, ${(0.88 * alpha).toFixed(3)})`);
+        bgGrad.addColorStop(0.46, `rgba(8, 52, 34, ${(0.92 * alpha).toFixed(3)})`);
+        bgGrad.addColorStop(0.8, `rgba(4, 22, 16, ${(0.96 * alpha).toFixed(3)})`);
+        bgGrad.addColorStop(1, 'rgba(2, 7, 5, 0.99)');
+      } else if (isTrench) {
         bgGrad.addColorStop(0, `rgba(18, 98, 56, ${(0.88 * alpha).toFixed(3)})`);
         bgGrad.addColorStop(0.45, `rgba(10, 48, 28, ${(0.92 * alpha).toFixed(3)})`);
         bgGrad.addColorStop(0.8, `rgba(4, 18, 12, ${(0.96 * alpha).toFixed(3)})`);
@@ -1742,6 +1852,42 @@ export class BootLogoRenderer {
       }
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, w, h);
+
+      // Live rotating 360-degree circular PPI radar scope & ILS centerline behind Borealis Approach emblem
+      if (isApproach) {
+        const scopeR = Math.min(w, h) * 0.44;
+        const sweepAng = -Math.PI * 0.5 + t * 2.1;
+        ctx.save();
+        for (let r = 1; r <= 3; r++) {
+          ctx.strokeStyle = `rgba(68, 255, 135, ${(0.14 * alpha).toFixed(3)})`;
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.arc(cx, cy, (scopeR * r) / 3, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        // Horizontal RWY 09/27 extended centerline
+        ctx.strokeStyle = `rgba(76, 238, 255, ${(0.18 * alpha).toFixed(3)})`;
+        ctx.setLineDash([8, 8]);
+        ctx.beginPath();
+        ctx.moveTo(cx - scopeR, cy);
+        ctx.lineTo(cx + scopeR, cy);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Phosphor sweep trail wedge
+        ctx.fillStyle = `rgba(68, 255, 135, ${(0.11 * alpha).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.arc(cx, cy, scopeR, sweepAng - 0.52, sweepAng);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = `rgba(158, 247, 198, ${(0.48 * alpha).toFixed(3)})`;
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(sweepAng) * scopeR, cy + Math.sin(sweepAng) * scopeR);
+        ctx.stroke();
+        ctx.restore();
+      }
 
       // Live rotating surface-to-orbit radar sweep wedge behind Flak Net emblem
       if (isFlak) {
@@ -1805,13 +1951,15 @@ export class BootLogoRenderer {
     if (t < CARTRIDGE_LAUNCH_TIMING.FLASH_END_SEC) {
       const u = t / CARTRIDGE_LAUNCH_TIMING.FLASH_END_SEC;
       const flashAlpha = Math.sin(u * Math.PI) * 0.65;
-      ctx.fillStyle = isTrench
-        ? `rgba(142, 245, 171, ${flashAlpha.toFixed(3)})`
-        : isFlak
-          ? `rgba(110, 255, 152, ${flashAlpha.toFixed(3)})`
-          : isPerimeter
-            ? `rgba(255, 196, 92, ${flashAlpha.toFixed(3)})`
-            : `rgba(255, 150, 120, ${flashAlpha.toFixed(3)})`;
+      ctx.fillStyle = isApproach
+        ? `rgba(118, 255, 196, ${flashAlpha.toFixed(3)})`
+        : isTrench
+          ? `rgba(142, 245, 171, ${flashAlpha.toFixed(3)})`
+          : isFlak
+            ? `rgba(110, 255, 152, ${flashAlpha.toFixed(3)})`
+            : isPerimeter
+              ? `rgba(255, 196, 92, ${flashAlpha.toFixed(3)})`
+              : `rgba(255, 150, 120, ${flashAlpha.toFixed(3)})`;
       ctx.fillRect(0, h * 0.5 - (4 + u * 90), w, (4 + u * 90) * 2);
     }
 
@@ -1838,7 +1986,7 @@ export class BootLogoRenderer {
       emblem.lenA * drawProgA,
       drawProgA < 0.999 && drawProgA > 0.001,
       params.timeSec,
-      isPerimeter || isFlak || isTrench
+      isPerimeter || isFlak || isTrench || isApproach
     );
 
     if (drawProgB > 0.001) {
@@ -1848,29 +1996,33 @@ export class BootLogoRenderer {
         emblem.lenB * drawProgB,
         drawProgB < 0.999,
         params.timeSec + 1.7,
-        isPerimeter || isFlak || isTrench
+        isPerimeter || isFlak || isTrench || isApproach
       );
     }
     ctx.restore();
 
     // Subtle skip prompt at bottom
     ctx.font = 'bold 14px "Share Tech Mono", monospace';
-    ctx.fillStyle = isTrench
-      ? 'rgba(142, 245, 171, 0.88)'
-      : isFlak
-        ? 'rgba(142, 245, 171, 0.85)'
-        : isPerimeter
-          ? 'rgba(255, 208, 120, 0.78)'
-          : 'rgba(235, 245, 255, 0.72)';
+    ctx.fillStyle = isApproach
+      ? 'rgba(142, 245, 200, 0.88)'
+      : isTrench
+        ? 'rgba(142, 245, 171, 0.88)'
+        : isFlak
+          ? 'rgba(142, 245, 171, 0.85)'
+          : isPerimeter
+            ? 'rgba(255, 208, 120, 0.78)'
+            : 'rgba(235, 245, 255, 0.72)';
     ctx.textAlign = 'center';
     ctx.fillText(
-      isTrench
-        ? 'ENGAGING DROP-SHIP FLIGHT VECTOR 04 // DERELICT TRENCH 3D RUNNER [SPACE / CLICK TO SKIP]'
-        : isFlak
-          ? 'CALIBRATING CARTRIDGE 03 // LV-426 SURFACE-TO-ORBIT FLAK NET RADAR [SPACE / CLICK TO SKIP]'
-          : isPerimeter
-            ? 'MOUNTING CARTRIDGE 02 // SEC-01 HADLEY MED-LAB CAD SCHEMATIC [SPACE / CLICK TO SKIP]'
-            : 'MOUNTING CARTRIDGE 01 // LV-426 ORBITAL DESCENT TELEMETRY [SPACE / CLICK TO SKIP]',
+      isApproach
+        ? 'CALIBRATING CARTRIDGE 05 // LV-118 BOREALIS APPROACH RAPCON [SPACE / CLICK TO SKIP]'
+        : isTrench
+          ? 'ENGAGING DROP-SHIP FLIGHT VECTOR 04 // DERELICT TRENCH 3D RUNNER [SPACE / CLICK TO SKIP]'
+          : isFlak
+            ? 'CALIBRATING CARTRIDGE 03 // LV-426 SURFACE-TO-ORBIT FLAK NET RADAR [SPACE / CLICK TO SKIP]'
+            : isPerimeter
+              ? 'MOUNTING CARTRIDGE 02 // SEC-01 HADLEY MED-LAB CAD SCHEMATIC [SPACE / CLICK TO SKIP]'
+              : 'MOUNTING CARTRIDGE 01 // LV-426 ORBITAL DESCENT TELEMETRY [SPACE / CLICK TO SKIP]',
       w * 0.5,
       h - 28
     );
@@ -1933,7 +2085,7 @@ export class BootLogoRenderer {
 
     ctx.font = font('data', isNarrow ? 12 : 14);
     ctx.fillStyle = 'rgba(68, 255, 119, 0.78)';
-    ctx.fillText('SYSTEM STATE: STANDBY  //  4 ARCADE SIMULATION CARTRIDGES LOADED', marginX, topY + 28);
+    ctx.fillText('SYSTEM STATE: STANDBY  //  5 ARCADE SIMULATION CARTRIDGES LOADED', marginX, topY + 28);
 
     // Centered tactile backlit Aerospace Breaker Button
     const btnW = Math.min(500, w - 48);

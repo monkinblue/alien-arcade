@@ -73,6 +73,7 @@ export interface TrenchHudRenderParams {
   /** Exact 3D->2D camera projection callback from TrenchRenderer (pixel-locked to terrain/targets) */
   projectWorld: (wx: number, wy: number, wz: number) => ProjectedHudPoint | null;
   audioMuted: boolean;
+  musicEnabled: boolean;
   isFullscreen: boolean;
   crtPreset: CrtPreset;
   crtModeLocked: boolean;
@@ -159,6 +160,7 @@ export class TrenchHudRenderer {
         crtModeLocked: params.crtModeLocked,
         controlsLabel: '[H] CONTROLS',
         audioMuted: params.audioMuted,
+        musicEnabled: params.musicEnabled,
         hoveredButtonId: params.hoveredButtonId,
         confirmExitPending: params.confirmExitPending,
       },
@@ -3086,6 +3088,7 @@ export class TrenchHudRenderer {
         phosphorTheme: params.phosphorTheme,
         masterVolume: params.masterVolume,
         audioMuted: params.audioMuted,
+        musicEnabled: params.musicEnabled,
         isFullscreen: params.isFullscreen,
         hoveredButtonId: params.hoveredButtonId,
         extraRows,

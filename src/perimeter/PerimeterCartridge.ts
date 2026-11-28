@@ -13,7 +13,12 @@ import {
   CALLSIGN_MAX_LEN,
   sanitizeCallsignDraft,
 } from '../services/callsignGuard';
-import type { Cartridge, CrtShaderFrameParams, HostEnvironment } from '../shell/Cartridge';
+import type {
+  Cartridge,
+  CrtShaderFrameParams,
+  CrtShockwaveUniform,
+  HostEnvironment,
+} from '../shell/Cartridge';
 import type { Vec2, ViewportRect } from '../types';
 import {
   PerimeterBlueprintRenderer,
@@ -297,6 +302,10 @@ export class PerimeterCartridge implements Cartridge {
         if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('bulkheadBreach');
         this.host.audio.playBulkheadBreachKlaxon();
       },
+      onCoreSealBreach: (pan) => {
+        if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('coreSealBreach');
+        this.host.audio.playPerimeterSealBreachImpact(pan);
+      },
       onFlarePop: (pan) => {
         if (import.meta.env.DEV) this.devAutoCommander?.recordAudio('flarePop');
         this.host.audio.playStrobeFlareIgnite(pan);
@@ -566,6 +575,13 @@ export class PerimeterCartridge implements Cartridge {
             flares: this.sim.flares.length,
             napalmClouds: this.sim.napalmClouds.length,
           },
+          coreBreachFx: {
+            screenShake: Number(this.sim.screenShake.toFixed(2)),
+            sealConcussionFlashTimer: Number(this.sim.sealConcussionFlashTimer.toFixed(3)),
+            sealLostFlashTimer: Number(this.sim.sealLostFlashTimer.toFixed(3)),
+            crtShockwavesCount: this.sim.crtShockwaves.length,
+            coreBreachBlastsCount: this.sim.coreBreachBlasts.length,
+          },
           hostiles: {
             total: this.sim.hostiles.length,
             pendingSpawns: this.sim.getPendingSpawnCount(),
@@ -822,6 +838,7 @@ export class PerimeterCartridge implements Cartridge {
       mobileInput.blur();
     }
     this.host.audio.stopCartridgeLoops();
+    this.host.music.stopGameplayMusic();
   }
 
   public resize(width: number, height: number, offsetX = 0, offsetY = 0): void {
@@ -1844,6 +1861,11 @@ export class PerimeterCartridge implements Cartridge {
         this.wikiOpen = false;
         this.controlsCardOpen = !this.controlsCardOpen;
         return;
+      case TOP_CHROME_IDS.MUSIC: {
+        const nextEnabled = this.host.toggleMusic();
+        this.showToast(nextEnabled ? 'MUSIC: ON' : 'MUSIC: OFF', 1.2);
+        return;
+      }
       case TOP_CHROME_IDS.AUDIO: {
         const nextMuted = !this.host.isMuted();
         this.host.setMuted(nextMuted);
@@ -2988,6 +3010,12 @@ export class PerimeterCartridge implements Cartridge {
     const layout = this.getCurrentLayout();
     const tutorialDirective = this.tutorialDirector.getSnapshot(this.sim);
 
+    const musicActive =
+      this.isInActiveGameplay() &&
+      !overlayFreezingSim &&
+      !tutorialDirective.graduated;
+    this.host.music.setGameplayMusicActive(musicActive, 'perimeter');
+
     const anyModalOpen =
       this.wikiOpen ||
       this.controlsCardOpen ||
@@ -3042,6 +3070,7 @@ export class PerimeterCartridge implements Cartridge {
         selectedDoorId: this.selectedDoorId,
         hoveredButtonId: this.hoveredButtonId,
         audioMuted: this.host.isMuted(),
+        musicEnabled: this.host.isMusicEnabled(),
         isFullscreen: this.host.getViewport().isFullscreen,
         crtPreset: this.host.getCrtPreset(),
         crtModeLocked,
@@ -3082,29 +3111,56 @@ export class PerimeterCartridge implements Cartridge {
       );
     }
 
+    // 3. Map active physical core-seal breach shockwaves into localized WebGL CRT shader distortion rings!
+    const { w: worldW, h: worldH } = this.getWorldDims();
+    const shockwaves: CrtShockwaveUniform[] = [];
+    for (const sw of this.sim.crtShockwaves) {
+      const p = Math.max(0, Math.min(1, sw.age / Math.max(0.01, sw.duration)));
+      const intensity = sw.peakIntensity * Math.pow(1 - p, 1.45);
+      if (intensity <= 0.005) continue;
+      const screenPt = this.blueprintRenderer.virtualToScreen(
+        layout.blueprintViewport,
+        this.camera,
+        { x: sw.x, y: sw.y },
+        worldW,
+        worldH
+      );
+      shockwaves.push({
+        uvX: screenPt.x / Math.max(1, this.viewportWidth),
+        uvY: screenPt.y / Math.max(1, this.viewportHeight),
+        radius: sw.maxRadiusNorm * Math.pow(p, 0.52),
+        intensity,
+      });
+    }
+
     const overdriveAmt =
-      this.sim.blackoutTimer > 0
-        ? 0.08
-        : this.sim.overloadTimer > 1.2
-          ? 0.45
-          : this.sim.activeOverclockSurgeTimer > 0
-            ? 0.36
-            : this.sim.sealLostFlashTimer > 0
-              ? 0.6
-              : 0;
+      this.sim.sealConcussionFlashTimer > 0
+        ? 0.64
+        : this.sim.sealLostFlashTimer > 0
+          ? 0.6
+          : this.sim.blackoutTimer > 0
+            ? 0.08
+            : this.sim.overloadTimer > 1.2
+              ? 0.45
+              : this.sim.activeOverclockSurgeTimer > 0
+                ? 0.36
+                : 0;
 
     return {
       interference:
-        this.sim.sealLostFlashTimer > 0
-          ? 0.28
-          : this.sim.blackoutTimer > 0
-            ? 0.14
-            : this.sim.overloadTimer > 0.6
-              ? 0.065
-              : 0.012,
+        this.sim.sealConcussionFlashTimer > 0
+          ? 0.36
+          : this.sim.sealLostFlashTimer > 0
+            ? 0.28
+            : this.sim.blackoutTimer > 0
+              ? 0.14
+              : this.sim.overloadTimer > 0.6
+                ? 0.065
+                : 0.012,
       glitch: this.glitchIntensity,
       overdrive: overdriveAmt,
       tubeTurnOn: 0,
+      shockwaves,
       modalActive: anyModalOpen,
       chromaScale: anyModalOpen ? 0.06 : 0.22,
     };

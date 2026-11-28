@@ -1,6 +1,8 @@
 import { AudioEngine } from '../audio/AudioEngine';
+import { MusicManager } from '../audio/MusicManager';
 import { PHYSICS } from '../constants';
 import { GameController } from '../game/GameController';
+import { BorealisApproachCartridge } from '../games/borealisApproach/ApproachCartridge';
 import { DerelictTrenchCartridge } from '../games/derelictTrench/DerelictTrenchCartridge';
 import { FlakNetCartridge } from '../games/flakNet/FlakNetCartridge';
 import { PerimeterCartridge } from '../perimeter/PerimeterCartridge';
@@ -33,12 +35,14 @@ const PROGRAM_LABELS: Record<CartridgeProgramId, string> = {
   perimeter: "SLOT 02 // HADLEY'S PERIMETER",
   flak: 'SLOT 03 // FLAK NET',
   trench: 'SLOT 04 // DERELICT TRENCH',
+  approach: 'SLOT 05 // BOREALIS APPROACH',
 };
 
 type HostStage = 'BOOT_HANDSHAKE' | 'CARTRIDGE_LAUNCH' | 'RELAY_SNAP' | 'ACTIVE_CARTRIDGE';
 
 export class CartridgeHost implements HostEnvironment {
   public readonly audio = new AudioEngine();
+  public readonly music = new MusicManager(this.audio);
   public readonly webglCrt: WebGLCRT;
   public readonly srLiveRegion: HTMLElement | null;
 
@@ -52,6 +56,7 @@ export class CartridgeHost implements HostEnvironment {
   private perimeterCartridge: PerimeterCartridge;
   private flakCartridge: FlakNetCartridge;
   private trenchCartridge: DerelictTrenchCartridge;
+  private approachCartridge: BorealisApproachCartridge;
   private activeCartridge: Cartridge | null = null;
   private activeProgramId: CartridgeProgramId | 'hub' = 'hub';
 
@@ -109,6 +114,7 @@ export class CartridgeHost implements HostEnvironment {
     this.perimeterCartridge = new PerimeterCartridge(this);
     this.flakCartridge = new FlakNetCartridge(this);
     this.trenchCartridge = new DerelictTrenchCartridge(this);
+    this.approachCartridge = new BorealisApproachCartridge(this);
 
     const syncFs = () => {
       const docAny = document as Document & { webkitFullscreenElement?: Element | null };
@@ -152,7 +158,8 @@ export class CartridgeHost implements HostEnvironment {
               item === 'lander' ||
               item === 'perimeter' ||
               item === 'flak' ||
-              item === 'trench'
+              item === 'trench' ||
+              item === 'approach'
             ) {
               this.launchedThisSession.add(item);
             }
@@ -323,6 +330,21 @@ export class CartridgeHost implements HostEnvironment {
     this.audio.setMuted(muted);
   }
 
+  public isMusicEnabled(): boolean {
+    return this.music.isEnabled();
+  }
+
+  public setMusicEnabled(enabled: boolean): void {
+    this.music.setEnabled(enabled);
+    this.announceLive(enabled ? 'Background music enabled.' : 'Background music disabled.');
+  }
+
+  public toggleMusic(): boolean {
+    const next = this.music.toggleEnabled();
+    this.announceLive(next ? 'Background music enabled.' : 'Background music disabled.');
+    return next;
+  }
+
   public getActiveProgramId(): CartridgeProgramId | 'hub' {
     return this.activeProgramId;
   }
@@ -375,6 +397,8 @@ export class CartridgeHost implements HostEnvironment {
   private startProgramTransition(program: CartridgeProgramId): void {
     this.unmountActiveCartridge();
     this.audio.stopCartridgeLoops();
+    this.music.stopGameplayMusic(MusicManager.FADE_OUT_SEC);
+    this.music.setVhfDuck(false);
     this.launchingProgram = program;
     this.launchElapsedSec = 0;
 
@@ -403,6 +427,8 @@ export class CartridgeHost implements HostEnvironment {
       this.mountCartridge(this.perimeterCartridge, 'perimeter');
     } else if (program === 'trench') {
       this.mountCartridge(this.trenchCartridge, 'trench');
+    } else if (program === 'approach') {
+      this.mountCartridge(this.approachCartridge, 'approach');
     } else {
       this.mountCartridge(this.flakCartridge, 'flak');
     }
@@ -411,6 +437,8 @@ export class CartridgeHost implements HostEnvironment {
   public exitToMuthurOs(reasonLog?: string): void {
     this.unmountActiveCartridge();
     this.audio.stopCartridgeLoops();
+    this.music.stopGameplayMusic(MusicManager.FADE_OUT_SEC);
+    this.music.setVhfDuck(false);
     this.hostGlitch = 0.72;
     this.syncTearTimer = 0.24;
     this.audio.playRelaySnap();
@@ -423,6 +451,8 @@ export class CartridgeHost implements HostEnvironment {
   public coldRebootMuthur(): void {
     this.unmountActiveCartridge();
     this.audio.stopCartridgeLoops();
+    this.music.stopGameplayMusic(0.35);
+    this.music.setVhfDuck(false);
     this.bootPoweredOn = true;
     this.bootElapsedSec = 0;
     this.hostGlitch = 1.0;
@@ -439,6 +469,8 @@ export class CartridgeHost implements HostEnvironment {
   private unmountActiveCartridge(): void {
     this.modalOpen = false;
     this.crtModeLocked = false;
+    this.music.stopGameplayMusic(MusicManager.FADE_OUT_SEC);
+    this.music.setVhfDuck(false);
     if (this.activeCartridge) {
       this.activeCartridge.unmount();
       this.activeCartridge = null;
@@ -452,6 +484,13 @@ export class CartridgeHost implements HostEnvironment {
     this.activeCartridge = cartridge;
     this.activeProgramId = programId;
     this.modalOpen = false;
+    if (programId === 'hub') {
+      this.music.stopGameplayMusic(MusicManager.FADE_OUT_SEC);
+      this.music.setVhfDuck(false);
+    } else {
+      // Silently preload track on briefing/mount so gameplay launch starts instantaneously
+      this.music.preloadForProgram(programId);
+    }
     cartridge.mount();
     this.announceLive(
       programId === 'hub'
@@ -631,6 +670,7 @@ export class CartridgeHost implements HostEnvironment {
   public updateAndRender(frameDt: number): void {
     const dt = Math.min(PHYSICS.MAX_FRAME_DT, Math.max(0, frameDt));
     this.totalTimeSec += dt;
+    this.music.update(dt);
 
     if (this.hostGlitch > 0) {
       this.hostGlitch = Math.max(0, this.hostGlitch - dt * 1.65);
@@ -729,13 +769,15 @@ export class CartridgeHost implements HostEnvironment {
         hoveredButtonId: null,
         buttonsOut: this.bootButtons,
         sequenceMode:
-          this.launchingProgram === 'trench'
-            ? 'TRENCH_LAUNCH'
-            : this.launchingProgram === 'flak'
-              ? 'FLAK_LAUNCH'
-              : this.launchingProgram === 'perimeter'
-                ? 'PERIMETER_LAUNCH'
-                : 'LANDER_LAUNCH',
+          this.launchingProgram === 'approach'
+            ? 'APPROACH_LAUNCH'
+            : this.launchingProgram === 'trench'
+              ? 'TRENCH_LAUNCH'
+              : this.launchingProgram === 'flak'
+                ? 'FLAK_LAUNCH'
+                : this.launchingProgram === 'perimeter'
+                  ? 'PERIMETER_LAUNCH'
+                  : 'LANDER_LAUNCH',
       });
       shaderParams.interference = 0.03;
     } else if (this.activeCartridge) {

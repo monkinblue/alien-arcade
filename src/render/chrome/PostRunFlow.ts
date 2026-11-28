@@ -174,13 +174,17 @@ export function drawGameOverDebriefModal(
     const inputW = contentW - 24;
     const inputH = 38;
     const boxHovered =
-      !opts.scoreSubmitted && !opts.submittingScore && opts.hoveredButtonId === POST_RUN_IDS.CALLSIGN_BOX;
+      !locked &&
+      !opts.scoreSubmitted &&
+      !opts.submittingScore &&
+      opts.hoveredButtonId === POST_RUN_IDS.CALLSIGN_BOX;
 
     if (!opts.scoreSubmitted && !opts.submittingScore) {
       buttons.push({
         id: POST_RUN_IDS.CALLSIGN_BOX,
         rect: { x: inputX, y: inputY, width: inputW, height: inputH },
         label: 'EDIT CALLSIGN',
+        ...(locked ? { disabled: true } : {}),
       });
     }
 

@@ -27,11 +27,14 @@ export const SYSTEM_MENU_IDS = {
   VOL_DEC: 'sys-vol-dec',
   VOL_INC: 'sys-vol-inc',
   VOL_MUTE: 'sys-vol-mute',
+  MUSIC_TOGGLE: 'sys-music-toggle',
+  ATC_TOGGLE: 'sys-atc-toggle',
   DISPLAY_TOGGLE: 'sys-display-toggle',
   SWITCH_LANDER: 'sys-switch-lander',
   SWITCH_PERIMETER: 'sys-switch-perimeter',
   SWITCH_FLAK: 'sys-switch-flak',
   SWITCH_TRENCH: 'sys-switch-trench',
+  SWITCH_APPROACH: 'sys-switch-approach',
   GAME_MENU: 'sys-game-menu',
   EXIT_HUB: 'sys-exit-hub',
 } as const;
@@ -54,6 +57,10 @@ export interface SystemMenuOptions {
   /** 0.0 .. 1.0 */
   masterVolume: number;
   audioMuted: boolean;
+  /** Whether shared in-game background music is enabled (defaults to true) */
+  musicEnabled?: boolean;
+  /** Optional ATC / VHF radio mute state (when defined, renders a matching ATC toggle alongside MUSIC & AUDIO) */
+  atcMuted?: boolean;
   isFullscreen: boolean;
   hoveredButtonId: string | null;
   /** 1-3 game-specific toggle / action rows */
@@ -73,6 +80,7 @@ export interface SystemMenuActionCallbacks {
   onReturnToGameMenu: () => void;
   onOpenLeaderboard: () => void;
   onExitToHub: () => void;
+  onToggleAtcMute?: () => void;
   onExtraAction?: (id: string) => void;
 }
 
@@ -94,10 +102,11 @@ const CARTRIDGE_SLOTS: ReadonlyArray<{
   },
   { id: SYSTEM_MENU_IDS.SWITCH_FLAK, programId: 'flak', label: '[3] FLAK', keyNum: '3' },
   { id: SYSTEM_MENU_IDS.SWITCH_TRENCH, programId: 'trench', label: '[4] TRENCH', keyNum: '4' },
+  { id: SYSTEM_MENU_IDS.SWITCH_APPROACH, programId: 'approach', label: '[5] APPROACH', keyNum: '5' },
 ];
 
 /**
- * Draws the unified `[ESC]` System & Pause Menu shared by all 4 arcade programs.
+ * Draws the unified `[ESC]` System & Pause Menu shared by all 5 arcade programs.
  * Always isolates modal hitboxes via `drawModalFrame` (`buttons.length = 0`).
  */
 export function drawSystemMenuModal(
@@ -117,7 +126,7 @@ export function drawSystemMenuModal(
     {
       title: `SYSTEM & PAUSE MENU // ${opts.programTitle}`,
       subtitle: 'SIMULATION PAUSED — SETTINGS PERSIST ACROSS ALL MU-TH-UR CARTRIDGES',
-      maxWidth: 680,
+      maxWidth: 720,
       maxHeight: Math.min(desiredH, 560),
       accentColor: THEME.ACCENT_AMBER,
       rightBadge: { text: 'SIM PAUSED', tone: 'amber' },
@@ -320,14 +329,21 @@ export function drawSystemMenuModal(
     curY += rowH + rowGap;
   }
 
-  // Row C: MASTER VOLUME (- / bar + XX% / + / MUTE)
+  // Row C: AUDIO & MUSIC (- / bar + XX% / + / MUSIC ON|OFF / [ATC ON|MUTED] / AUDIO ON|MUTED)
   {
-    const { controlX, controlW } = drawSettingRowBg(curY, 'MASTER VOLUME');
+    const hasAtc = opts.atcMuted !== undefined;
+    const { controlX, controlW } = drawSettingRowBg(
+      curY,
+      hasAtc ? 'AUDIO / MUSIC / ATC' : 'AUDIO & MUSIC'
+    );
     const segH = rowH - 6;
     const segY = curY + 3;
-    const btnStepW = 34;
-    const muteW = 86;
-    const gap = 6;
+    const tightAudioRow = hasAtc ? controlW < 425 : controlW < 330;
+    const btnStepW = tightAudioRow ? (hasAtc ? 24 : 26) : hasAtc ? 30 : 32;
+    const musicW = tightAudioRow ? 66 : hasAtc ? 84 : 86;
+    const atcW = hasAtc ? (tightAudioRow ? 66 : 94) : 0;
+    const muteW = tightAudioRow ? (hasAtc ? 62 : 64) : hasAtc ? 80 : 84;
+    const gap = tightAudioRow ? 4 : 5;
 
     drawChromeButton(
       ctx,
@@ -342,9 +358,12 @@ export function drawSystemMenuModal(
       buttons
     );
 
-    const plusX = controlX + controlW - muteW - gap - btnStepW;
+    const muteX = controlX + controlW - muteW;
+    const atcX = hasAtc ? muteX - gap - atcW : muteX;
+    const musicX = (hasAtc ? atcX : muteX) - gap - musicW;
+    const plusX = musicX - gap - btnStepW;
     const barX = controlX + btnStepW + gap;
-    const barW = Math.max(60, plusX - barX - gap);
+    const barW = Math.max(40, plusX - barX - gap);
     const pct = Math.round(Math.max(0, Math.min(1, opts.masterVolume)) * 100);
 
     // Volume level bar readout
@@ -364,10 +383,12 @@ export function drawSystemMenuModal(
     ctx.fillStyle = opts.audioMuted ? THEME.ALERT_RED_TEXT : THEME.TEXT_BRIGHT;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(
-      opts.audioMuted ? `MUTED (${pct}%)` : `${pct}%`,
+    drawEllipsizedText(
+      ctx,
+      opts.audioMuted ? (tightAudioRow ? `MUTE` : `MUTED (${pct}%)`) : `${pct}%`,
       barX + barW * 0.5,
-      segY + segH * 0.5 + 0.5
+      segY + segH * 0.5 + 0.5,
+      barW - 6
     );
     ctx.restore();
 
@@ -384,10 +405,58 @@ export function drawSystemMenuModal(
       buttons
     );
 
+    const musicOn = opts.musicEnabled ?? true;
+    const musicHovered = opts.hoveredButtonId === SYSTEM_MENU_IDS.MUSIC_TOGGLE;
+    if (opts.audioMuted) {
+      ctx.save();
+      ctx.globalAlpha = musicHovered ? 0.78 : 0.48;
+    }
     drawChromeButton(
       ctx,
-      { x: controlX + controlW - muteW, y: segY, width: muteW, height: segH },
-      opts.audioMuted ? 'MUTED' : 'AUDIO ON',
+      { x: musicX, y: segY, width: musicW, height: segH },
+      tightAudioRow ? (musicOn ? 'MUS ON' : 'MUS OFF') : musicOn ? 'MUSIC ON' : 'MUSIC OFF',
+      {
+        id: SYSTEM_MENU_IDS.MUSIC_TOGGLE,
+        accent: opts.audioMuted ? 'muted' : musicOn ? 'green' : 'amber',
+        active: !opts.audioMuted && musicOn,
+        hovered: musicHovered,
+        fontPx: 12,
+      },
+      buttons
+    );
+    if (opts.audioMuted) {
+      ctx.restore();
+    }
+
+    if (hasAtc) {
+      const atcMuted = Boolean(opts.atcMuted);
+      const atcHovered = opts.hoveredButtonId === SYSTEM_MENU_IDS.ATC_TOGGLE;
+      if (opts.audioMuted) {
+        ctx.save();
+        ctx.globalAlpha = atcHovered ? 0.78 : 0.48;
+      }
+      drawChromeButton(
+        ctx,
+        { x: atcX, y: segY, width: atcW, height: segH },
+        tightAudioRow ? (atcMuted ? 'ATC OFF' : 'ATC ON') : atcMuted ? 'ATC: MUTED' : 'ATC: ON',
+        {
+          id: SYSTEM_MENU_IDS.ATC_TOGGLE,
+          accent: opts.audioMuted ? 'muted' : atcMuted ? 'red' : 'green',
+          active: !opts.audioMuted && !atcMuted,
+          hovered: atcHovered,
+          fontPx: 12,
+        },
+        buttons
+      );
+      if (opts.audioMuted) {
+        ctx.restore();
+      }
+    }
+
+    drawChromeButton(
+      ctx,
+      { x: muteX, y: segY, width: muteW, height: segH },
+      opts.audioMuted ? 'MUTED' : tightAudioRow ? 'AUD ON' : 'AUDIO ON',
       {
         id: SYSTEM_MENU_IDS.VOL_MUTE,
         accent: opts.audioMuted ? 'red' : 'green',
@@ -504,23 +573,24 @@ export function drawSystemMenuModal(
     }
   }
 
-  // 4. Quick Cartridge Switcher Strip (+8px clean breathing room above [1-4] buttons)
+  // 4. Quick Cartridge Switcher Strip (+8px clean breathing room above [1-5] buttons)
   const switcherTop = Math.min(footerY - 72, curY + (compact ? 6 : 10));
   ctx.save();
   ctx.font = font('micro', 12);
   ctx.fillStyle = THEME.ACCENT_AMBER;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText('QUICK CARTRIDGE SWITCH [1-4] // 0.45S CRT RELAY SNAP', contentX, switcherTop + 6);
+  ctx.fillText('QUICK CARTRIDGE SWITCH [1-5] // 0.45S CRT RELAY SNAP', contentX, switcherTop + 6);
   ctx.restore();
 
   const slotY = switcherTop + 24;
   const slotH = 34;
-  const slotGap = 6;
-  const slotW = Math.floor((contentW - slotGap * 3) / 4);
+  const slotCount = CARTRIDGE_SLOTS.length;
+  const slotGap = 5;
+  const slotW = Math.floor((contentW - slotGap * (slotCount - 1)) / slotCount);
   CARTRIDGE_SLOTS.forEach((slot, idx) => {
     const sx = contentX + idx * (slotW + slotGap);
-    const sw = idx === 3 ? contentW - (slotW + slotGap) * 3 : slotW;
+    const sw = idx === slotCount - 1 ? contentW - (slotW + slotGap) * (slotCount - 1) : slotW;
     const isCurrent = opts.activeProgramId === slot.programId;
     drawChromeButton(
       ctx,
@@ -679,6 +749,21 @@ export function handleSystemMenuAction(
         host.audio.playButtonLatchLock(1.0, 0.8);
       }
       return true;
+    case SYSTEM_MENU_IDS.MUSIC_TOGGLE: {
+      const next = host.toggleMusic();
+      host.audio.playButtonLatchLock(next ? 1.04 : 0.92, 0.8);
+      return true;
+    }
+    case SYSTEM_MENU_IDS.ATC_TOGGLE:
+      if (callbacks.onToggleAtcMute) {
+        callbacks.onToggleAtcMute();
+        return true;
+      }
+      if (callbacks.onExtraAction) {
+        callbacks.onExtraAction(buttonId);
+        return true;
+      }
+      return false;
     case SYSTEM_MENU_IDS.DISPLAY_TOGGLE:
       host.audio.playButtonLatchLock(1.0, 0.85);
       host.toggleFullscreen();
@@ -703,6 +788,11 @@ export function handleSystemMenuAction(
         host.quickSwitchProgram('trench');
       }
       return true;
+    case SYSTEM_MENU_IDS.SWITCH_APPROACH:
+      if (host.getActiveProgramId() !== 'approach') {
+        host.quickSwitchProgram('approach');
+      }
+      return true;
     case SYSTEM_MENU_IDS.EXIT_HUB:
       host.audio.playButtonLatchLock(0.88, 0.9);
       callbacks.onExitToHub();
@@ -718,7 +808,7 @@ export function handleSystemMenuAction(
 
 /**
  * Optional keyboard helper while `SystemMenuModal` is open:
- * handles `[1-4]` quick-switch, `[ESC]` resume, and `[M]` mute.
+ * handles `[1-5]` quick-switch, `[ESC]` resume, and `[M]` mute.
  */
 export function handleSystemMenuKey(
   e: KeyboardEvent,
@@ -749,6 +839,10 @@ export function handleSystemMenuKey(
     if (e.key === '4') {
       e.preventDefault();
       return handleSystemMenuAction(SYSTEM_MENU_IDS.SWITCH_TRENCH, host, callbacks);
+    }
+    if (e.key === '5') {
+      e.preventDefault();
+      return handleSystemMenuAction(SYSTEM_MENU_IDS.SWITCH_APPROACH, host, callbacks);
     }
   }
   return false;

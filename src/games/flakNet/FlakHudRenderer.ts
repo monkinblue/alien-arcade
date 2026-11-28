@@ -54,6 +54,7 @@ export interface FlakHudRenderParams {
   leaderboard: FlakLeaderboardService;
   hoveredButtonId: string | null;
   audioMuted: boolean;
+  musicEnabled: boolean;
   masterVolume: number;
   crtPreset: CrtPreset;
   crtModeLocked: boolean;
@@ -180,6 +181,7 @@ export class FlakHudRenderer {
         crtModeLocked: params.crtModeLocked,
         controlsLabel: '[H] CONTROLS',
         audioMuted: params.audioMuted,
+        musicEnabled: params.musicEnabled,
         hoveredButtonId: params.hoveredButtonId,
         confirmExitPending: params.confirmExitPending,
         demoModeActive: sim.isDemoMode,
@@ -222,6 +224,7 @@ export class FlakHudRenderer {
           phosphorTheme: params.phosphorTheme,
           masterVolume: params.masterVolume,
           audioMuted: params.audioMuted,
+          musicEnabled: params.musicEnabled,
           isFullscreen: params.isFullscreen,
           hoveredButtonId: params.hoveredButtonId,
           canRestart: sim.phase !== 'TITLE',

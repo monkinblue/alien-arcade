@@ -1,8 +1,9 @@
 import type { AudioEngine } from '../audio/AudioEngine';
+import type { MusicManager } from '../audio/MusicManager';
 import type { WebGLCRT } from '../render/WebGLCRT';
 import type { SafeAreaInsets, ViewportRect } from '../types';
 
-export type CartridgeProgramId = 'lander' | 'perimeter' | 'flak' | 'trench';
+export type CartridgeProgramId = 'lander' | 'perimeter' | 'flak' | 'trench' | 'approach';
 
 export type PhosphorTheme = 'GREEN' | 'AMBER' | 'CYAN';
 
@@ -33,6 +34,7 @@ export interface CrtShaderFrameParams {
 
 export interface HostEnvironment {
   readonly audio: AudioEngine;
+  readonly music: MusicManager;
   readonly webglCrt: WebGLCRT;
   readonly srLiveRegion: HTMLElement | null;
   getViewport(): {
@@ -58,6 +60,9 @@ export interface HostEnvironment {
   setMasterVolume(vol: number): void;
   isMuted(): boolean;
   setMuted(muted: boolean): void;
+  isMusicEnabled(): boolean;
+  setMusicEnabled(enabled: boolean): void;
+  toggleMusic(): boolean;
   isTouchDevice(): boolean;
   getActiveProgramId(): CartridgeProgramId | 'hub';
   setModalOpen(open: boolean): void;

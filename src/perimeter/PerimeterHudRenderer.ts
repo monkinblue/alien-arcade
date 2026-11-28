@@ -72,6 +72,7 @@ export interface PerimeterHudRenderParams {
   selectedDoorId: string | null;
   hoveredButtonId: string | null;
   audioMuted: boolean;
+  musicEnabled: boolean;
   isFullscreen: boolean;
   crtPreset: CrtPreset;
   crtModeLocked: boolean;
@@ -350,6 +351,7 @@ export class PerimeterHudRenderer {
         crtModeLocked: params.crtModeLocked,
         controlsLabel: '[H] MANUAL',
         audioMuted: params.audioMuted,
+        musicEnabled: params.musicEnabled,
         hoveredButtonId: params.hoveredButtonId,
         confirmExitPending: params.confirmExitPending,
       },
@@ -426,7 +428,7 @@ export class PerimeterHudRenderer {
     const bankY = 38;
     const bankW = baseW - bankX - 10;
     const bankH = 104;
-    this.drawCoreSealBreakerBank(ctx, bankX, bankY, bankW, bankH, sim, s);
+    this.drawCoreSealBreakerBank(ctx, bankX, bankY, bankW, bankH, sim, s, params.timeSec);
 
     // 1B. Reactor Reserve Battery Gauge
     const batY = 148;
@@ -611,27 +613,43 @@ export class PerimeterHudRenderer {
     w: number,
     h: number,
     sim: PerimeterSimulation,
-    hudScale: number
+    hudScale: number,
+    timeSec: number
   ): void {
+    const sealFlashActive = sim.sealLostFlashTimer > 0;
+    const flashHi = sealFlashActive && Math.sin(timeSec * 22) > -0.15;
+
     ctx.save();
-    ctx.fillStyle = 'rgba(4, 12, 8, 0.94)';
+    ctx.fillStyle = flashHi ? 'rgba(42, 8, 6, 0.96)' : 'rgba(4, 12, 8, 0.94)';
     ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = sim.aegisBarrierReady
-      ? THEME.ACCENT_CYAN
-      : sim.bulkheadSeals <= 1
+    ctx.strokeStyle = flashHi
+      ? '#FFF0CC'
+      : sealFlashActive
         ? THEME.ALERT_RED_STROKE
-        : THEME.BORDER_SUBTLE;
-    ctx.lineWidth = 1.5;
+        : sim.aegisBarrierReady
+          ? THEME.ACCENT_CYAN
+          : sim.bulkheadSeals <= 1
+            ? THEME.ALERT_RED_STROKE
+            : THEME.BORDER_SUBTLE;
+    ctx.lineWidth = sealFlashActive ? 2.2 : 1.5;
     ctx.strokeRect(x, y, w, h);
 
     ctx.font = font('micro', 12, hudScale);
     ctx.textAlign = 'left';
-    ctx.fillStyle = sim.aegisBarrierReady ? THEME.ACCENT_CYAN : THEME.TEXT_BRIGHT;
+    ctx.fillStyle = flashHi
+      ? '#FFF0CC'
+      : sealFlashActive
+        ? THEME.ALERT_RED_TEXT
+        : sim.aegisBarrierReady
+          ? THEME.ACCENT_CYAN
+          : THEME.TEXT_BRIGHT;
     drawEllipsizedText(
       ctx,
-      sim.aegisBarrierReady
-        ? `${SEMIOTIC_ICONS.SHIELD} CORE + AEGIS`
-        : 'CORE SEAL BANK',
+      sealFlashActive
+        ? '!! SEAL BREACH !!'
+        : sim.aegisBarrierReady
+          ? `${SEMIOTIC_ICONS.SHIELD} CORE + AEGIS`
+          : 'CORE SEAL BANK',
       x + 7,
       y + 15,
       w - 14
@@ -645,21 +663,30 @@ export class PerimeterHudRenderer {
     for (let i = 0; i < 3; i++) {
       const cy = topY + i * (cellH + cellGap);
       const intact = i < sim.bulkheadSeals;
+      const justBlown = sealFlashActive && i === sim.bulkheadSeals;
       const criticalLast = intact && sim.bulkheadSeals === 1;
-      const borderCol = !intact
-        ? THEME.ALERT_RED_STROKE
-        : criticalLast
-          ? THEME.ACCENT_AMBER
-          : THEME.TEXT_PRIMARY;
+      const borderCol = justBlown
+        ? flashHi
+          ? '#FFF0CC'
+          : '#FF3318'
+        : !intact
+          ? THEME.ALERT_RED_STROKE
+          : criticalLast
+            ? THEME.ACCENT_AMBER
+            : THEME.TEXT_PRIMARY;
 
-      ctx.fillStyle = !intact
-        ? 'rgba(56, 12, 8, 0.72)'
-        : criticalLast
-          ? 'rgba(58, 32, 4, 0.72)'
-          : 'rgba(12, 42, 22, 0.76)';
+      ctx.fillStyle = justBlown
+        ? flashHi
+          ? 'rgba(176, 26, 14, 0.92)'
+          : 'rgba(92, 16, 10, 0.85)'
+        : !intact
+          ? 'rgba(56, 12, 8, 0.72)'
+          : criticalLast
+            ? 'rgba(58, 32, 4, 0.72)'
+            : 'rgba(12, 42, 22, 0.76)';
       ctx.fillRect(x + 6, cy, cellW, cellH);
       ctx.strokeStyle = borderCol;
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = justBlown ? 2.2 : 1.4;
       ctx.strokeRect(x + 6, cy, cellW, cellH);
 
       // Left mechanical breaker latch indicator pip
@@ -668,11 +695,13 @@ export class PerimeterHudRenderer {
 
       ctx.textAlign = 'left';
       ctx.font = font('micro', 12, hudScale);
-      ctx.fillStyle = !intact
-        ? THEME.ALERT_RED_TEXT
-        : criticalLast
-          ? THEME.ACCENT_AMBER_HI
-          : THEME.TEXT_BRIGHT;
+      ctx.fillStyle = justBlown
+        ? '#FFF0CC'
+        : !intact
+          ? THEME.ALERT_RED_TEXT
+          : criticalLast
+            ? THEME.ACCENT_AMBER_HI
+            : THEME.TEXT_BRIGHT;
       drawEllipsizedText(
         ctx,
         intact ? `S0${i + 1} LOCK` : `S0${i + 1} BLOWN`,
@@ -2598,6 +2627,7 @@ export class PerimeterHudRenderer {
         phosphorTheme: params.phosphorTheme,
         masterVolume: params.masterVolume,
         audioMuted: params.audioMuted,
+        musicEnabled: params.musicEnabled,
         isFullscreen: params.isFullscreen,
         hoveredButtonId: params.hoveredButtonId,
         extraRows,

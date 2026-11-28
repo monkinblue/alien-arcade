@@ -121,8 +121,19 @@ export class PerimeterBlueprintRenderer {
     ctx.fillStyle = '#020604';
     ctx.fillRect(viewport.x, viewport.y, viewport.width, viewport.height);
 
+    // Flak-ported dual-frequency seismic screen shake when a Core Seal is blown
+    const shakeMag = sim.screenShake;
+    const shakeX =
+      shakeMag > 0.05
+        ? (Math.sin(timeSec * 82) + Math.cos(timeSec * 129)) * shakeMag * 0.6
+        : 0;
+    const shakeY =
+      shakeMag > 0.05
+        ? (Math.cos(timeSec * 94) - Math.sin(timeSec * 111)) * shakeMag * 0.5
+        : 0;
+
     ctx.save();
-    ctx.translate(tf.originX, tf.originY);
+    ctx.translate(tf.originX + shakeX * tf.scale, tf.originY + shakeY * tf.scale);
     ctx.scale(tf.scale, tf.scale);
 
     // 1. Structural CAD Blueprint Grid, Bulkheads, Shafts, Grates & Rooms
@@ -162,7 +173,12 @@ export class PerimeterBlueprintRenderer {
     // 9. Hostiles: Fuzzy Range-Gated Radar Blips vs. Sharp Illuminated Vector Bio-Silhouettes!
     this.drawHostilesAndBlips(ctx, sim, timeSec, tf.scale);
 
-    // 10. Caseless Vector Tracer Bursts, Ricochet Sparks & Floating Callouts
+    // 10A. Flak-ported Expanding Concussion Shockwave Blasts on Core Seal Breach
+    if (sim.coreBreachBlasts.length > 0) {
+      this.drawCoreBreachBlasts(ctx, sim, timeSec);
+    }
+
+    // 10B. Caseless Vector Tracer Bursts, Ricochet Sparks & Floating Callouts
     this.drawProjectilesAndCallouts(ctx, sim, tf.scale);
 
     // 11. Screen-Legible Diegetic Turret Telemetry Tags (Compact `A1 320` in Wave Calm-Mode, Expanded on Hover/Alert!)
@@ -192,9 +208,21 @@ export class PerimeterBlueprintRenderer {
       ctx.fillRect(viewport.x, viewport.y, viewport.width, viewport.height);
     }
 
+    // Flak-ported Red-Amber Hull Concussion Flash when a Core Seal is blown
+    if (sim.sealConcussionFlashTimer > 0) {
+      const a = Math.min(0.32, sim.sealConcussionFlashTimer * 0.36);
+      ctx.fillStyle = `rgba(255, 51, 24, ${a.toFixed(3)})`;
+      ctx.fillRect(viewport.x, viewport.y, viewport.width, viewport.height);
+    }
+
+    const sealBorderAlert =
+      sim.sealConcussionFlashTimer > 0 ||
+      (sim.sealLostFlashTimer > 0 && Math.sin(timeSec * 20) > -0.2);
+
     // Outer CAD Schematic Viewport Border
-    ctx.strokeStyle =
-      sim.blackoutTimer > 0
+    ctx.strokeStyle = sealBorderAlert
+      ? THEME.ALERT_RED_STROKE
+      : sim.blackoutTimer > 0
         ? THEME.ALERT_RED_STROKE
         : sim.overloadTimer > 0.25
           ? THEME.ACCENT_AMBER
@@ -202,12 +230,30 @@ export class PerimeterBlueprintRenderer {
             ? '#B6FFF2'
             : THEME.BORDER_SUBTLE;
     ctx.lineWidth =
-      sim.blackoutTimer > 0 || sim.overloadTimer > 0.25 || sim.floodlightTimer > 0 ? 2.6 : 2.0;
+      sealBorderAlert || sim.blackoutTimer > 0 || sim.overloadTimer > 0.25 || sim.floodlightTimer > 0
+        ? 2.8
+        : 2.0;
     ctx.strokeRect(viewport.x + 1, viewport.y + 1, viewport.width - 2, viewport.height - 2);
 
     // Priority-Exclusive Single-Line Top CAD Banner (ZERO overlap at any screen width!)
     const bannerH = 26;
-    if (sim.blackoutTimer > 0) {
+    if (sim.sealLostFlashTimer > 0) {
+      const blink = Math.sin(timeSec * 22) > -0.2;
+      ctx.fillStyle = blink ? 'rgba(150, 20, 12, 0.94)' : 'rgba(54, 10, 8, 0.92)';
+      ctx.fillRect(viewport.x + 2, viewport.y + 2, viewport.width - 4, bannerH);
+      ctx.font = font('head', 14);
+      ctx.fillStyle = '#FFF0CC';
+      ctx.textAlign = 'center';
+      drawEllipsizedText(
+        ctx,
+        sim.bulkheadSeals <= 0
+          ? '⚠ CRITICAL // ALL 3 REACTOR CORE SEALS BREACHED — COLONY SECTOR LOST ⚠'
+          : `⚠ CORE BULKHEAD SEAL BLOWN — ${sim.bulkheadSeals}/3 SEALS REMAINING ⚠`,
+        viewport.x + viewport.width * 0.5,
+        viewport.y + 19,
+        viewport.width - 20
+      );
+    } else if (sim.blackoutTimer > 0) {
       const blink = Math.sin(timeSec * 18) > -0.25;
       ctx.fillStyle = blink ? 'rgba(130, 18, 12, 0.92)' : 'rgba(42, 8, 6, 0.92)';
       ctx.fillRect(viewport.x + 2, viewport.y + 2, viewport.width - 4, bannerH);
@@ -1674,14 +1720,24 @@ export class PerimeterBlueprintRenderer {
     const c = sim.blueprint.coreCenter;
     ctx.save();
 
-    // Inner sterile Med-Lab illumination halo (halved during GRID_BROWNOUT mutator!)
+    const coreBreachFlash = sim.sealLostFlashTimer > 0;
+    const coreFlashHi = coreBreachFlash && Math.sin(timeSec * 24) > -0.15;
+
+    // Inner sterile Med-Lab illumination halo (flashes red-amber on Core Seal Breach!)
     const coreLitR =
       sim.activeMutator === 'GRID_BROWNOUT'
         ? PERIMETER_CONSTANTS.CORE_LIT_RADIUS * 0.5
         : PERIMETER_CONSTANTS.CORE_LIT_RADIUS;
     const grad = ctx.createRadialGradient(c.x, c.y, 12, c.x, c.y, coreLitR);
-    grad.addColorStop(0, 'rgba(68, 255, 119, 0.22)');
-    grad.addColorStop(1, 'rgba(68, 255, 119, 0)');
+    grad.addColorStop(
+      0,
+      coreBreachFlash
+        ? coreFlashHi
+          ? 'rgba(255, 51, 24, 0.42)'
+          : 'rgba(255, 176, 0, 0.26)'
+        : 'rgba(68, 255, 119, 0.22)'
+    );
+    grad.addColorStop(1, coreBreachFlash ? 'rgba(255, 51, 24, 0)' : 'rgba(68, 255, 119, 0)');
     ctx.fillStyle = grad;
     ctx.beginPath();
     ctx.arc(c.x, c.y, coreLitR, 0, Math.PI * 2);
@@ -1689,17 +1745,21 @@ export class PerimeterBlueprintRenderer {
 
     // Opaque Reactor Core Armored Bulkhead Ring (clearly signals solid LOS obstruction!)
     ctx.save();
-    ctx.fillStyle = 'rgba(4, 22, 12, 0.92)';
+    ctx.fillStyle = coreFlashHi ? 'rgba(56, 10, 8, 0.94)' : 'rgba(4, 22, 12, 0.92)';
     ctx.beginPath();
     ctx.arc(c.x, c.y, 55, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#2FD668';
-    ctx.lineWidth = 3.2;
+    ctx.strokeStyle = coreBreachFlash
+      ? coreFlashHi
+        ? '#FFF0CC'
+        : '#FF3318'
+      : '#2FD668';
+    ctx.lineWidth = coreBreachFlash ? 4.2 : 3.2;
     ctx.beginPath();
     ctx.arc(c.x, c.y, 55, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.strokeStyle = 'rgba(255, 176, 0, 0.62)';
-    ctx.lineWidth = 2.0;
+    ctx.strokeStyle = coreBreachFlash ? 'rgba(255, 51, 24, 0.88)' : 'rgba(255, 176, 0, 0.62)';
+    ctx.lineWidth = coreBreachFlash ? 2.8 : 2.0;
     for (let k = 0; k < 4; k++) {
       const ba = k * (Math.PI * 0.5) + Math.PI * 0.25;
       ctx.beginPath();
@@ -1745,13 +1805,19 @@ export class PerimeterBlueprintRenderer {
     for (let s = 0; s < PERIMETER_CONSTANTS.MAX_BULKHEAD_SEALS; s++) {
       const r = 28 + s * 11;
       const intact = s < sim.bulkheadSeals;
-      ctx.strokeStyle = intact
-        ? sim.bulkheadSeals === 1
-          ? '#FFB000'
-          : '#44FF77'
-        : 'rgba(255, 51, 24, 0.28)';
-      ctx.lineWidth = intact ? 2.6 : 1.2;
-      if (!intact) ctx.setLineDash([4, 5]);
+      const justBlown = coreBreachFlash && s === sim.bulkheadSeals;
+      ctx.strokeStyle = justBlown
+        ? coreFlashHi
+          ? '#FFF0CC'
+          : '#FF3318'
+        : intact
+          ? sim.bulkheadSeals === 1
+            ? '#FFB000'
+            : '#44FF77'
+          : 'rgba(255, 51, 24, 0.28)';
+      ctx.lineWidth = justBlown ? 4.0 : intact ? 2.6 : 1.2;
+      if (!intact && !justBlown) ctx.setLineDash([4, 5]);
+      else if (justBlown) ctx.setLineDash([10, 5]);
       ctx.beginPath();
       ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
       ctx.stroke();
@@ -2566,6 +2632,80 @@ export class PerimeterBlueprintRenderer {
       ctx.fillText(c.text, c.pos.x, c.pos.y);
       ctx.restore();
     }
+  }
+
+  /**
+   * Flak-ported expanding 2D shockwave blast rings centered on the Reactor Core
+   * whenever a Core Seal is blown (dramatic in both 1979 CRT ON and CLEAN CRT OFF modes).
+   */
+  private drawCoreBreachBlasts(
+    ctx: CanvasRenderingContext2D,
+    sim: PerimeterSimulation,
+    timeSec: number
+  ): void {
+    ctx.save();
+    for (const b of sim.coreBreachBlasts) {
+      const p = Math.max(0, Math.min(1, b.age / Math.max(0.01, b.duration)));
+      const fade = Math.max(0, 1 - Math.pow(p, 1.35));
+      const currentRadius = Math.max(12, b.maxRadius * Math.pow(p, 0.52));
+
+      const grad = ctx.createRadialGradient(
+        b.x,
+        b.y,
+        currentRadius * 0.08,
+        b.x,
+        b.y,
+        currentRadius
+      );
+      grad.addColorStop(0, `rgba(255, 245, 220, ${(0.72 * fade).toFixed(2)})`);
+      grad.addColorStop(0.38, `rgba(255, 51, 24, ${(0.46 * fade).toFixed(2)})`);
+      grad.addColorStop(0.76, `rgba(255, 176, 0, ${(0.26 * fade).toFixed(2)})`);
+      grad.addColorStop(1, 'rgba(255, 51, 24, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, currentRadius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Primary expanding concussion wave front
+      ctx.strokeStyle = `rgba(255, 224, 150, ${(0.95 * fade).toFixed(2)})`;
+      ctx.lineWidth = 4.4 * fade + 1.4;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, currentRadius, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Outer crimson breach halo
+      ctx.strokeStyle = `rgba(255, 51, 24, ${(0.88 * fade).toFixed(2)})`;
+      ctx.lineWidth = 3.0 * fade + 1.1;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, currentRadius * 1.07, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Jagged seismic fracture shock ring (matching Flak Scope shockwave signature)
+      ctx.strokeStyle = `rgba(255, 176, 0, ${(0.82 * fade).toFixed(2)})`;
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      const segs = 40;
+      for (let k = 0; k <= segs; k++) {
+        const a = (k / segs) * Math.PI * 2;
+        const jitter = Math.sin(a * 12 + timeSec * 42) * 8 * fade;
+        const r = currentRadius * 0.78 + jitter;
+        const px = b.x + Math.cos(a) * r;
+        const py = b.y + Math.sin(a) * r;
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+
+      // Early white-hot inner detonation ring
+      if (p < 0.45) {
+        ctx.strokeStyle = `rgba(255, 255, 255, ${((1 - p / 0.45) * 0.9).toFixed(2)})`;
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, Math.min(currentRadius, b.coreRadius), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
   }
 
   /**

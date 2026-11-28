@@ -389,6 +389,18 @@ export class DerelictTrenchCartridge implements Cartridge {
     );
   }
 
+  private toggleMusicWithToast(): void {
+    this.confirmExitPending = false;
+    this.confirmExitTimer = 0;
+    const nextEnabled = this.host.toggleMusic();
+    this.host.audio.playButtonLatchLock(nextEnabled ? 1.04 : 0.92, 0.8);
+    this.showStatusToast(
+      nextEnabled ? 'MUSIC: ON' : 'MUSIC: OFF',
+      nextEnabled ? 'green' : 'amber',
+      1.2
+    );
+  }
+
   private cycleStickSensitivity(): void {
     const idx = STICK_SENS_ORDER.indexOf(this.stickSensitivity);
     this.stickSensitivity = STICK_SENS_ORDER[(idx + 1) % STICK_SENS_ORDER.length];
@@ -599,6 +611,7 @@ export class DerelictTrenchCartridge implements Cartridge {
     this.stickY = 0;
     this.trenchAudio.unmount();
     this.host.audio.stopCartridgeLoops();
+    this.host.music.stopGameplayMusic();
     this.osdMenuOpen = false;
     this.manifestOpen = false;
     this.controlsCardOpen = false;
@@ -1276,6 +1289,9 @@ export class DerelictTrenchCartridge implements Cartridge {
           this.openOverlayModal('controls');
         }
         return;
+      case TOP_CHROME_IDS.MUSIC:
+        this.toggleMusicWithToast();
+        return;
       case TOP_CHROME_IDS.AUDIO:
         this.toggleAudioMuteWithToast();
         return;
@@ -1566,6 +1582,7 @@ export class DerelictTrenchCartridge implements Cartridge {
       this.sim.lockProgress
     );
     this.trenchAudio.updateRwrMissileWarble(flyingActive && this.sim.samIncomingActive);
+    this.host.music.setGameplayMusicActive(flyingActive, 'trench');
 
     // Notify host for crisp modal chromatic aberration reduction (0.06 modals / 0.22 play)
     const modalActive =
@@ -1596,6 +1613,7 @@ export class DerelictTrenchCartridge implements Cartridge {
       pointerLocked: this.pointerLocked,
       projectWorld: (wx, wy, wz) => this.renderer.projectWorld(this.sim, wx, wy, wz),
       audioMuted: this.host.isMuted(),
+      musicEnabled: this.host.isMusicEnabled(),
       isFullscreen: this.host.getViewport().isFullscreen,
       crtPreset: this.host.getCrtPreset(),
       crtModeLocked: crtLocked,

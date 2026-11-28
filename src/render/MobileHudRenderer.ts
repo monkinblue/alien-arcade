@@ -262,10 +262,11 @@ export class MobileHudRenderer {
     const cx = w * 0.5;
     const leftX = cx - contentW * 0.5;
 
-    // Top Quick Utility Bar (>=44px touch targets: ◄ OS top-left + DESKTOP MODE 1-click return!)
+    // Top Quick Utility Bar (>=44px touch targets: ◄ OS top-left + DESKTOP + MUSIC + AUDIO + RANKS + MENU)
     const utilH = 44;
-    const utilGap = 5;
-    const utilW = Math.floor((contentW - utilGap * 4) / 5);
+    const utilGap = 4;
+    const utilW = Math.floor((contentW - utilGap * 5) / 6);
+    const musicActive = !state.bezel.audioMuted && state.musicEnabled;
     const utils = [
       {
         id: TOP_CHROME_IDS.HUB,
@@ -275,19 +276,35 @@ export class MobileHudRenderer {
       },
       {
         id: 'menu-toggle-mobile',
-        label: 'DESKTOP',
+        label: utilW >= 68 ? 'DESKTOP' : 'DESK',
         accent: THEME.ACCENT_CYAN,
         active: true,
       },
       {
+        id: TOP_CHROME_IDS.MUSIC,
+        label: state.musicEnabled
+          ? utilW >= 80
+            ? 'MUSIC: ON'
+            : 'MUS:ON'
+          : utilW >= 80
+            ? 'MUSIC: OFF'
+            : 'MUS:OFF',
+        accent: state.bezel.audioMuted
+          ? THEME.TEXT_MUTED
+          : state.musicEnabled
+            ? THEME.TEXT_BRIGHT
+            : THEME.ACCENT_AMBER,
+        active: musicActive,
+      },
+      {
         id: TOP_CHROME_IDS.AUDIO,
-        label: state.bezel.audioMuted ? 'MUTED' : 'AUDIO',
+        label: state.bezel.audioMuted ? 'MUTED' : utilW >= 64 ? 'AUDIO' : 'AUD',
         accent: state.bezel.audioMuted ? THEME.ALERT_RED_TEXT : THEME.TEXT_BRIGHT,
         active: !state.bezel.audioMuted,
       },
       {
         id: 'hud-logs-toggle',
-        label: utilW >= 92 ? 'LEADERBOARD' : 'RANKS',
+        label: utilW >= 96 ? 'LEADERBOARD' : 'RANKS',
         accent: THEME.ACCENT_AMBER,
         active: state.bezel.flightLogsOpen,
       },
@@ -299,20 +316,21 @@ export class MobileHudRenderer {
       },
     ];
     utils.forEach((u, idx) => {
+      const btnW = idx === utils.length - 1 ? contentW - (utilW + utilGap) * idx : utilW;
       this.addTouchButton(
         ctx,
         buttonsOut,
         u.id,
         leftX + idx * (utilW + utilGap),
         topY,
-        utilW,
+        btnW,
         utilH,
         u.label,
         u.active,
         state.hoveredButtonId,
         u.accent,
         false,
-        13
+        12
       );
     });
 
@@ -1735,18 +1753,19 @@ export class MobileHudRenderer {
     );
     cy += bh + gap;
 
-    // Audio Mute + Fullscreen Row
+    // Audio Mute + Music + Fullscreen Row
+    const audioThirdW = Math.floor((bw - gap * 2) / 3);
     this.addTouchButton(
       ctx,
       buttonsOut,
       SYSTEM_MENU_IDS.VOL_MUTE,
       m.contentX,
       cy,
-      halfW,
+      audioThirdW,
       bh,
       state.bezel.audioMuted
-        ? 'AUDIO: MUTED'
-        : `AUDIO: ${Math.round(state.masterVolume * 100)}%`,
+        ? 'AUD: MUTED'
+        : `AUD: ${Math.round(state.masterVolume * 100)}%`,
       !state.bezel.audioMuted,
       state.hoveredButtonId,
       state.bezel.audioMuted ? THEME.ALERT_RED_TEXT : THEME.TEXT_BRIGHT,
@@ -1756,10 +1775,29 @@ export class MobileHudRenderer {
     this.addTouchButton(
       ctx,
       buttonsOut,
-      SYSTEM_MENU_IDS.DISPLAY_TOGGLE,
-      m.contentX + halfW + gap,
+      SYSTEM_MENU_IDS.MUSIC_TOGGLE,
+      m.contentX + audioThirdW + gap,
       cy,
-      bw - halfW - gap,
+      audioThirdW,
+      bh,
+      state.musicEnabled ? 'MUSIC: ON' : 'MUSIC: OFF',
+      !state.bezel.audioMuted && state.musicEnabled,
+      state.hoveredButtonId,
+      state.bezel.audioMuted
+        ? THEME.TEXT_MUTED
+        : state.musicEnabled
+          ? THEME.TEXT_BRIGHT
+          : THEME.ACCENT_AMBER,
+      false,
+      12
+    );
+    this.addTouchButton(
+      ctx,
+      buttonsOut,
+      SYSTEM_MENU_IDS.DISPLAY_TOGGLE,
+      m.contentX + (audioThirdW + gap) * 2,
+      cy,
+      bw - (audioThirdW + gap) * 2,
       bh,
       state.isFullscreen ? 'EXIT FS' : 'FULLSCREEN',
       state.isFullscreen,

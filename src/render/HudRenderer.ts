@@ -99,6 +99,7 @@ export interface HudRenderContext {
   ranked1979BonusActive: boolean;
   phosphorTheme: PhosphorTheme;
   masterVolume: number;
+  musicEnabled: boolean;
   controlsCardOpen: boolean;
   confirmExitPending: boolean;
   confirmGameMenuPending: boolean;
@@ -426,6 +427,7 @@ export class HudRenderer {
         crtModeLocked: state.crtModeLocked,
         controlsLabel: '[H] CONTROLS',
         audioMuted: state.bezel.audioMuted,
+        musicEnabled: state.musicEnabled,
         hoveredButtonId: state.hoveredButtonId,
         confirmExitPending: state.confirmExitPending,
       },
@@ -2833,6 +2835,7 @@ export class HudRenderer {
         phosphorTheme: state.phosphorTheme,
         masterVolume: state.masterVolume,
         audioMuted: state.bezel.audioMuted,
+        musicEnabled: state.musicEnabled,
         isFullscreen: state.isFullscreen,
         hoveredButtonId: state.hoveredButtonId,
         extraRows,

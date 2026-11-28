@@ -316,6 +316,7 @@ export class FlakNetCartridge implements Cartridge {
     }
     this.flakAudio.unmount();
     this.host.audio.stopCartridgeLoops();
+    this.host.music.stopGameplayMusic();
     this.host.setModalOpen(false);
     this.osdMenuOpen = false;
     this.manifestOpen = false;
@@ -386,6 +387,16 @@ export class FlakNetCartridge implements Cartridge {
     this.showToast(
       nextMuted ? 'AUDIO BUS: MUTED [M]' : 'AUDIO BUS: ONLINE [M]',
       nextMuted ? 'red' : 'green',
+      1.2
+    );
+  }
+
+  private toggleMusicWithToast(): void {
+    const nextEnabled = this.host.toggleMusic();
+    this.host.audio.playButtonLatchLock(nextEnabled ? 1.04 : 0.92, 0.85);
+    this.showToast(
+      nextEnabled ? 'MUSIC: ON' : 'MUSIC: OFF',
+      nextEnabled ? 'green' : 'amber',
       1.2
     );
   }
@@ -714,6 +725,10 @@ export class FlakNetCartridge implements Cartridge {
                 next === 'CLASSIC_1979' ? 'amber' : 'green',
                 1.4
               );
+              return;
+            }
+            if (hitId === TOP_CHROME_IDS.MUSIC) {
+              this.toggleMusicWithToast();
               return;
             }
             if (hitId === TOP_CHROME_IDS.AUDIO) {
@@ -1065,6 +1080,10 @@ export class FlakNetCartridge implements Cartridge {
         this.toggleMuteWithToast();
         return;
       }
+      if (id === SYSTEM_MENU_IDS.MUSIC_TOGGLE) {
+        this.toggleMusicWithToast();
+        return;
+      }
       if (handleSystemMenuAction(id, this.host, this.getSystemMenuCallbacks())) {
         return;
       }
@@ -1102,6 +1121,12 @@ export class FlakNetCartridge implements Cartridge {
         next === 'CLASSIC_1979' ? 'amber' : 'green',
         1.6
       );
+      return;
+    }
+
+    if (id === TOP_CHROME_IDS.MUSIC) {
+      this.confirmExitPending = false;
+      this.toggleMusicWithToast();
       return;
     }
 
@@ -1310,6 +1335,8 @@ export class FlakNetCartridge implements Cartridge {
       simActive && this.sim.phase === 'ACTIVE_WAVE' && !this.sim.paused,
       clampedDt
     );
+    const musicActive = this.isInActiveGameplay() && simActive && !this.sim.paused;
+    this.host.music.setGameplayMusicActive(musicActive, 'flak');
 
     const layout = this.getCurrentLayout();
 
@@ -1346,6 +1373,7 @@ export class FlakNetCartridge implements Cartridge {
         leaderboard: this.leaderboard,
         hoveredButtonId: this.hoveredButtonId,
         audioMuted: this.host.isMuted(),
+        musicEnabled: this.host.isMusicEnabled(),
         masterVolume: this.host.getMasterVolume(),
         crtPreset: this.host.getCrtPreset(),
         crtModeLocked,

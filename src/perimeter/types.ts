@@ -1058,6 +1058,24 @@ export interface VectorSpark {
   maxLife: number;
 }
 
+export interface PerimeterCrtShockwave {
+  x: number;
+  y: number;
+  age: number;
+  duration: number;
+  maxRadiusNorm: number;
+  peakIntensity: number;
+}
+
+export interface CoreBreachBlast {
+  x: number;
+  y: number;
+  age: number;
+  duration: number;
+  maxRadius: number;
+  coreRadius: number;
+}
+
 export interface FloatingCallout {
   pos: Vec2;
   text: string;

@@ -12,6 +12,8 @@ export const TOP_CHROME_BAR_HEIGHT = 46;
 export const TOP_CHROME_IDS = {
   CRT: 'chrome-crt',
   CONTROLS: 'chrome-controls',
+  MUSIC: 'chrome-music',
+  ATC: 'chrome-atc',
   AUDIO: 'chrome-audio',
   MENU: 'chrome-menu',
   HUB: 'chrome-hub',
@@ -34,6 +36,10 @@ export interface TopChromeBarOptions {
   /** Left-most right-rail button label: '[H] CONTROLS' (default) or '[H] MANUAL' (Perimeter) */
   controlsLabel?: string;
   audioMuted: boolean;
+  /** Whether shared in-game background music is enabled (defaults to true) */
+  musicEnabled?: boolean;
+  /** Optional ATC / VHF radio mute state (when defined, renders a matching ATC toggle next to MUSIC & AUDIO) */
+  atcMuted?: boolean;
   hoveredButtonId: string | null;
   /** When true, MU-TH-UR OS switches into a 1-click '[CONFIRM EXIT?]' breaker latch */
   confirmExitPending?: boolean;
@@ -80,13 +86,38 @@ export function drawTopChromeBar(
   ctx.lineTo(w, y0 + barH - 0.5);
   ctx.stroke();
 
+  const hasAtc = opts.atcMuted !== undefined;
+  const tightDesktop6 = hasAtc && !compact && w < 1340;
   const pillH = 32;
   const pillY = y0 + Math.round((barH - pillH) * 0.5);
-  const pillGap = compact ? 6 : 8;
-  const padSide = compact ? 8 : 12;
-  const pillFontPx = ultraCompact ? 12 : 13;
+  const pillGap = ultraCompact
+    ? hasAtc
+      ? 3
+      : 4
+    : compact
+      ? hasAtc
+        ? 4
+        : 5
+      : tightDesktop6
+        ? 5
+        : hasAtc
+          ? 6
+          : 7;
+  const padSide = compact ? 8 : tightDesktop6 ? 10 : 12;
+  const pillFontPx = ultraCompact || (hasAtc && compact) ? 12 : 13;
+  const pillPadX = ultraCompact
+    ? hasAtc
+      ? 16
+      : 18
+    : compact
+      ? 18
+      : tightDesktop6
+        ? 18
+        : hasAtc
+          ? 20
+          : 22;
 
-  // 1. Far TOP-LEFT standardized `◄ MU-TH-UR OS` anchor button (all 4 programs!)
+  // 1. Far TOP-LEFT standardized `◄ MU-TH-UR OS` anchor button (all 5 programs!)
   const hubId = opts.demoModeActive ? ids.DEMO_EXIT : ids.HUB;
   const hubText = opts.demoModeActive
     ? '[ESC] EXIT DEMO'
@@ -102,8 +133,8 @@ export function drawTopChromeBar(
       : 'green';
 
   ctx.font = pillFontPx >= 13 ? font('button', pillFontPx) : font('micro', 12);
-  const hubMinW = opts.confirmExitPending ? 128 : ultraCompact ? 54 : 118;
-  const hubW = Math.max(hubMinW, Math.ceil(ctx.measureText(hubText).width) + 24);
+  const hubMinW = opts.confirmExitPending ? 124 : ultraCompact ? 52 : hasAtc && compact ? 106 : 114;
+  const hubW = Math.max(hubMinW, Math.ceil(ctx.measureText(hubText).width) + pillPadX);
   drawChromeButton(
     ctx,
     { x: padSide, y: pillY, width: hubW, height: pillH },
@@ -118,7 +149,7 @@ export function drawTopChromeBar(
     buttons
   );
 
-  // 2. Right Rail: Clean 4-pill utility bar (1979 CRT: ON/OFF/LOCK | [H] CONTROLS | AUDIO | [ESC] MENU)
+  // 2. Right Rail: Clean utility bar (1979 CRT | [H] CONTROLS | MUSIC | [ATC] | AUDIO | [ESC] MENU)
   const crtOn = opts.crt1979Enabled ?? isCrt1979Typography();
   const crtLocked = Boolean(opts.crtModeLocked);
   const crtText = crtLocked
@@ -154,13 +185,27 @@ export function drawTopChromeBar(
       ? controlsBaseLabel.replace('CONTROLS', 'KEYS')
       : controlsBaseLabel;
 
+  const musicOn = opts.musicEnabled ?? true;
+  const musicText =
+    compact || ultraCompact
+      ? musicOn
+        ? 'MUS: ON'
+        : 'MUS: OFF'
+      : musicOn
+        ? 'MUSIC: ON'
+        : 'MUSIC: OFF';
+
   const audioText = opts.audioMuted
     ? ultraCompact
       ? 'MUTED'
-      : 'AUDIO: MUTED'
+      : compact
+        ? 'AUD: MUTE'
+        : 'AUDIO: MUTED'
     : ultraCompact
       ? 'AUD: ON'
-      : 'AUDIO: ON';
+      : compact
+        ? 'AUD: ON'
+        : 'AUDIO: ON';
 
   const menuText = ultraCompact ? '[ESC]' : '[ESC] MENU';
 
@@ -169,6 +214,7 @@ export function drawTopChromeBar(
     label: string;
     accent: ChromeButtonAccent;
     active?: boolean;
+    dimmed?: boolean;
     minW: number;
   }> = [
     {
@@ -176,26 +222,70 @@ export function drawTopChromeBar(
       label: crtText,
       accent: crtOn ? 'amber' : 'muted',
       active: crtOn,
-      minW: ultraCompact ? 68 : 108,
+      minW: ultraCompact ? (hasAtc ? 58 : 62) : compact ? (hasAtc ? 74 : 84) : tightDesktop6 ? 98 : 104,
     },
-    { id: ids.CONTROLS, label: controlsText, accent: 'cyan', minW: ultraCompact ? 76 : 102 },
+    {
+      id: ids.CONTROLS,
+      label: controlsText,
+      accent: 'cyan',
+      minW: ultraCompact ? (hasAtc ? 60 : 66) : compact ? (hasAtc ? 68 : 78) : tightDesktop6 ? 92 : 98,
+    },
+    {
+      id: ids.MUSIC,
+      label: musicText,
+      accent: opts.audioMuted ? 'muted' : musicOn ? 'green' : 'amber',
+      dimmed: opts.audioMuted,
+      minW: ultraCompact ? (hasAtc ? 56 : 60) : compact ? (hasAtc ? 64 : 72) : tightDesktop6 ? 82 : 90,
+    },
+  ];
+
+  if (hasAtc) {
+    const atcMuted = Boolean(opts.atcMuted);
+    const atcText =
+      compact || ultraCompact
+        ? atcMuted
+          ? 'ATC: OFF'
+          : 'ATC: ON'
+        : atcMuted
+          ? 'ATC: MUTED'
+          : 'ATC: ON';
+    pillDefs.push({
+      id: ids.ATC,
+      label: atcText,
+      accent: opts.audioMuted ? 'muted' : atcMuted ? 'red' : 'green',
+      dimmed: opts.audioMuted,
+      minW: ultraCompact ? 56 : compact ? 64 : tightDesktop6 ? 72 : 78,
+    });
+  }
+
+  pillDefs.push(
     {
       id: ids.AUDIO,
       label: audioText,
       accent: opts.audioMuted ? 'red' : 'green',
-      minW: ultraCompact ? 68 : 96,
+      minW: ultraCompact ? (hasAtc ? 54 : 58) : compact ? (hasAtc ? 64 : 72) : tightDesktop6 ? 84 : 92,
     },
-    { id: ids.MENU, label: menuText, accent: 'amber', minW: ultraCompact ? 56 : 94 },
-  ];
+    {
+      id: ids.MENU,
+      label: menuText,
+      accent: 'amber',
+      minW: ultraCompact ? (hasAtc ? 44 : 48) : compact ? (hasAtc ? 74 : 80) : tightDesktop6 ? 84 : 90,
+    }
+  );
 
   let cursorX = w - padSide;
   for (let i = pillDefs.length - 1; i >= 0; i--) {
     const def = pillDefs[i];
     ctx.font = pillFontPx >= 13 ? font('button', pillFontPx) : font('micro', 12);
-    const measured = Math.ceil(ctx.measureText(def.label).width) + 24;
+    const measured = Math.ceil(ctx.measureText(def.label).width) + pillPadX;
     const pw = Math.max(def.minW, measured);
     cursorX -= pw;
 
+    const isHovered = opts.hoveredButtonId === def.id;
+    if (def.dimmed) {
+      ctx.save();
+      ctx.globalAlpha = isHovered ? 0.78 : 0.48;
+    }
     drawChromeButton(
       ctx,
       { x: cursorX, y: pillY, width: pw, height: pillH },
@@ -204,11 +294,14 @@ export function drawTopChromeBar(
         id: def.id,
         accent: def.accent,
         active: def.active,
-        hovered: opts.hoveredButtonId === def.id,
+        hovered: isHovered,
         fontPx: pillFontPx,
       },
       buttons
     );
+    if (def.dimmed) {
+      ctx.restore();
+    }
 
     cursorX -= pillGap;
   }

@@ -1,0 +1,1000 @@
+{
+  "version": 2,
+  "generatedAt": "2026-11-28T04:09:18.121Z",
+  "voiceId": "onwK4e9ZLuTAKqWW03F9",
+  "voiceCast": {
+    "pilot_viper": "IKne3meq5aSn9XLyUdCD",
+    "pilot_heavy": "nPczCjzI2devNBz1zQrb",
+    "pilot_female": "EXAVITQu4vr4xnSDxMaL",
+    "atc_controller": "onwK4e9ZLuTAKqWW03F9",
+    "pilot_aus_scott": "nrJUVBFMXWTXwnrZS469",
+    "pilot_aus_bushfire": "N7NFVAFf0wbs2119L2Ai",
+    "pilot_aus_baxter": "jSuBIjxMKhqIfb0wCK1F",
+    "pilot_aus_lisa": "bG3bxTbEPR7EZE4M0kcC",
+    "pilot_aus_campbell": "hDDVQ367GcLJqyWXSicj"
+  },
+  "assets": {
+    "checkin_viper_21_n": {
+      "path": "/audio/approach/checkin_viper_21_n.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Viper Two-One, north, inbound, Pad Alpha.",
+      "bytes": 79037
+    },
+    "checkin_atlas_7_e": {
+      "path": "/audio/approach/checkin_atlas_7_e.mp3",
+      "category": "voice",
+      "role": "pilot_heavy",
+      "voiceId": "nPczCjzI2devNBz1zQrb",
+      "text": "Atlas Seven, east, inbound, ILS Two-Seven.",
+      "bytes": 58975
+    },
+    "checkin_pad_n": {
+      "path": "/audio/approach/checkin_pad_n.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Dropship, north, inbound, Pad Alpha.",
+      "bytes": 49362
+    },
+    "checkin_pad_ne": {
+      "path": "/audio/approach/checkin_pad_ne.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Dropship, northeast, inbound, Pad Alpha.",
+      "bytes": 35151
+    },
+    "checkin_pad_e": {
+      "path": "/audio/approach/checkin_pad_e.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Dropship, east, inbound, Pad Alpha.",
+      "bytes": 50198
+    },
+    "checkin_pad_se": {
+      "path": "/audio/approach/checkin_pad_se.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Dropship, southeast, inbound, Pad Alpha.",
+      "bytes": 44346
+    },
+    "checkin_pad_s": {
+      "path": "/audio/approach/checkin_pad_s.mp3",
+      "category": "voice",
+      "role": "pilot_female",
+      "voiceId": "EXAVITQu4vr4xnSDxMaL",
+      "text": "Dropship, south, inbound, Pad Alpha.",
+      "bytes": 38077
+    },
+    "checkin_pad_sw": {
+      "path": "/audio/approach/checkin_pad_sw.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Dropship, southwest, inbound, Pad Alpha.",
+      "bytes": 44764
+    },
+    "checkin_pad_w": {
+      "path": "/audio/approach/checkin_pad_w.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Dropship, west, inbound, Pad Alpha.",
+      "bytes": 32225
+    },
+    "checkin_pad_nw": {
+      "path": "/audio/approach/checkin_pad_nw.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Dropship, northwest, inbound, Pad Alpha.",
+      "bytes": 76111
+    },
+    "checkin_rwy27_n": {
+      "path": "/audio/approach/checkin_rwy27_n.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Heavy, north, inbound, ILS Two-Seven.",
+      "bytes": 44764
+    },
+    "checkin_rwy27_ne": {
+      "path": "/audio/approach/checkin_rwy27_ne.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Heavy, northeast, inbound, ILS Two-Seven.",
+      "bytes": 42674
+    },
+    "checkin_rwy27_e": {
+      "path": "/audio/approach/checkin_rwy27_e.mp3",
+      "category": "voice",
+      "role": "pilot_heavy",
+      "voiceId": "nPczCjzI2devNBz1zQrb",
+      "text": "Heavy, east, inbound, ILS Two-Seven.",
+      "bytes": 53123
+    },
+    "checkin_rwy27_se": {
+      "path": "/audio/approach/checkin_rwy27_se.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Heavy, southeast, inbound, ILS Two-Seven.",
+      "bytes": 35151
+    },
+    "checkin_rwy27_s": {
+      "path": "/audio/approach/checkin_rwy27_s.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Heavy, south, inbound, ILS Two-Seven.",
+      "bytes": 48526
+    },
+    "checkin_rwy27_sw": {
+      "path": "/audio/approach/checkin_rwy27_sw.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Heavy, southwest, inbound, ILS Two-Seven.",
+      "bytes": 52287
+    },
+    "checkin_rwy27_w": {
+      "path": "/audio/approach/checkin_rwy27_w.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Heavy, west, inbound, ILS Two-Seven.",
+      "bytes": 43510
+    },
+    "checkin_rwy27_nw": {
+      "path": "/audio/approach/checkin_rwy27_nw.mp3",
+      "category": "voice",
+      "role": "pilot_female",
+      "voiceId": "EXAVITQu4vr4xnSDxMaL",
+      "text": "Heavy, northwest, inbound, ILS Two-Seven.",
+      "bytes": 45600
+    },
+    "checkin_rwy09_n": {
+      "path": "/audio/approach/checkin_rwy09_n.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Heavy, north, inbound, ILS Zero-Niner.",
+      "bytes": 64826
+    },
+    "checkin_rwy09_ne": {
+      "path": "/audio/approach/checkin_rwy09_ne.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Heavy, northeast, inbound, ILS Zero-Niner.",
+      "bytes": 39749
+    },
+    "checkin_rwy09_e": {
+      "path": "/audio/approach/checkin_rwy09_e.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Heavy, east, inbound, ILS Zero-Niner.",
+      "bytes": 57721
+    },
+    "checkin_rwy09_se": {
+      "path": "/audio/approach/checkin_rwy09_se.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Heavy, southeast, inbound, ILS Zero-Niner.",
+      "bytes": 47272
+    },
+    "checkin_rwy09_s": {
+      "path": "/audio/approach/checkin_rwy09_s.mp3",
+      "category": "voice",
+      "role": "pilot_heavy",
+      "voiceId": "nPczCjzI2devNBz1zQrb",
+      "text": "Heavy, south, inbound, ILS Zero-Niner.",
+      "bytes": 60647
+    },
+    "checkin_rwy09_sw": {
+      "path": "/audio/approach/checkin_rwy09_sw.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Heavy, southwest, inbound, ILS Zero-Niner.",
+      "bytes": 52287
+    },
+    "checkin_rwy09_w": {
+      "path": "/audio/approach/checkin_rwy09_w.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Heavy, west, inbound, ILS Zero-Niner.",
+      "bytes": 47272
+    },
+    "checkin_rwy09_nw": {
+      "path": "/audio/approach/checkin_rwy09_nw.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Heavy, northwest, inbound, ILS Zero-Niner.",
+      "bytes": 46436
+    },
+    "checkin_rwy36_n": {
+      "path": "/audio/approach/checkin_rwy36_n.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Heavy, north, inbound, ILS Three-Six.",
+      "bytes": 51034
+    },
+    "checkin_rwy36_ne": {
+      "path": "/audio/approach/checkin_rwy36_ne.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Heavy, northeast, inbound, ILS Three-Six.",
+      "bytes": 41838
+    },
+    "checkin_rwy36_e": {
+      "path": "/audio/approach/checkin_rwy36_e.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Heavy, east, inbound, ILS Three-Six.",
+      "bytes": 31390
+    },
+    "checkin_rwy36_se": {
+      "path": "/audio/approach/checkin_rwy36_se.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Heavy, southeast, inbound, ILS Three-Six.",
+      "bytes": 44346
+    },
+    "checkin_rwy36_s": {
+      "path": "/audio/approach/checkin_rwy36_s.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Heavy, south, inbound, ILS Three-Six.",
+      "bytes": 47272
+    },
+    "checkin_rwy36_sw": {
+      "path": "/audio/approach/checkin_rwy36_sw.mp3",
+      "category": "voice",
+      "role": "pilot_heavy",
+      "voiceId": "nPczCjzI2devNBz1zQrb",
+      "text": "Heavy, southwest, inbound, ILS Three-Six.",
+      "bytes": 74021
+    },
+    "checkin_rwy36_w": {
+      "path": "/audio/approach/checkin_rwy36_w.mp3",
+      "category": "voice",
+      "role": "pilot_female",
+      "voiceId": "EXAVITQu4vr4xnSDxMaL",
+      "text": "Heavy, west, inbound, ILS Three-Six.",
+      "bytes": 47690
+    },
+    "checkin_rwy36_nw": {
+      "path": "/audio/approach/checkin_rwy36_nw.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Heavy, northwest, inbound, ILS Three-Six.",
+      "bytes": 61065
+    },
+    "checkin_rwy18_n": {
+      "path": "/audio/approach/checkin_rwy18_n.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Heavy, north, inbound, ILS One-Eight.",
+      "bytes": 35151
+    },
+    "checkin_rwy18_ne": {
+      "path": "/audio/approach/checkin_rwy18_ne.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Heavy, northeast, inbound, ILS One-Eight.",
+      "bytes": 41003
+    },
+    "checkin_rwy18_e": {
+      "path": "/audio/approach/checkin_rwy18_e.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Heavy, east, inbound, ILS One-Eight.",
+      "bytes": 34315
+    },
+    "checkin_rwy18_se": {
+      "path": "/audio/approach/checkin_rwy18_se.mp3",
+      "category": "voice",
+      "role": "pilot_heavy",
+      "voiceId": "nPczCjzI2devNBz1zQrb",
+      "text": "Heavy, southeast, inbound, ILS One-Eight.",
+      "bytes": 53123
+    },
+    "checkin_rwy18_s": {
+      "path": "/audio/approach/checkin_rwy18_s.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Heavy, south, inbound, ILS One-Eight.",
+      "bytes": 43510
+    },
+    "checkin_rwy18_sw": {
+      "path": "/audio/approach/checkin_rwy18_sw.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Heavy, southwest, inbound, ILS One-Eight.",
+      "bytes": 51034
+    },
+    "checkin_rwy18_w": {
+      "path": "/audio/approach/checkin_rwy18_w.mp3",
+      "category": "voice",
+      "role": "pilot_female",
+      "voiceId": "EXAVITQu4vr4xnSDxMaL",
+      "text": "Heavy, west, inbound, ILS One-Eight.",
+      "bytes": 38913
+    },
+    "checkin_rwy18_nw": {
+      "path": "/audio/approach/checkin_rwy18_nw.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Heavy, northwest, inbound, ILS One-Eight.",
+      "bytes": 49362
+    },
+    "checkin_cradle_n": {
+      "path": "/audio/approach/checkin_cradle_n.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Salvage tug, north, inbound, Salvage Cradle.",
+      "bytes": 44346
+    },
+    "checkin_cradle_ne": {
+      "path": "/audio/approach/checkin_cradle_ne.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Salvage tug, northeast, inbound, Salvage Cradle.",
+      "bytes": 41003
+    },
+    "checkin_cradle_e": {
+      "path": "/audio/approach/checkin_cradle_e.mp3",
+      "category": "voice",
+      "role": "pilot_heavy",
+      "voiceId": "nPczCjzI2devNBz1zQrb",
+      "text": "Salvage tug, east, inbound, Salvage Cradle.",
+      "bytes": 56885
+    },
+    "checkin_cradle_se": {
+      "path": "/audio/approach/checkin_cradle_se.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Salvage tug, southeast, inbound, Salvage Cradle.",
+      "bytes": 55213
+    },
+    "checkin_cradle_s": {
+      "path": "/audio/approach/checkin_cradle_s.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Salvage tug, south, inbound, Salvage Cradle.",
+      "bytes": 47272
+    },
+    "checkin_cradle_sw": {
+      "path": "/audio/approach/checkin_cradle_sw.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Salvage tug, southwest, inbound, Salvage Cradle.",
+      "bytes": 52287
+    },
+    "checkin_cradle_w": {
+      "path": "/audio/approach/checkin_cradle_w.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Salvage tug, west, inbound, Salvage Cradle.",
+      "bytes": 34315
+    },
+    "checkin_cradle_nw": {
+      "path": "/audio/approach/checkin_cradle_nw.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Salvage tug, northwest, inbound, Salvage Cradle.",
+      "bytes": 64408
+    },
+    "checkin_medevac_n": {
+      "path": "/audio/approach/checkin_medevac_n.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Medevac, north, priority inbound.",
+      "bytes": 35987
+    },
+    "checkin_medevac_ne": {
+      "path": "/audio/approach/checkin_medevac_ne.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Medevac, northeast, priority inbound.",
+      "bytes": 50198
+    },
+    "checkin_medevac_e": {
+      "path": "/audio/approach/checkin_medevac_e.mp3",
+      "category": "voice",
+      "role": "pilot_female",
+      "voiceId": "EXAVITQu4vr4xnSDxMaL",
+      "text": "Medevac, east, priority inbound.",
+      "bytes": 40585
+    },
+    "checkin_medevac_se": {
+      "path": "/audio/approach/checkin_medevac_se.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Medevac, southeast, priority inbound.",
+      "bytes": 44346
+    },
+    "checkin_medevac_s": {
+      "path": "/audio/approach/checkin_medevac_s.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Medevac, south, priority inbound.",
+      "bytes": 41003
+    },
+    "checkin_medevac_sw": {
+      "path": "/audio/approach/checkin_medevac_sw.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Medevac, southwest, priority inbound.",
+      "bytes": 43510
+    },
+    "checkin_medevac_w": {
+      "path": "/audio/approach/checkin_medevac_w.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Medevac, west, priority inbound.",
+      "bytes": 46436
+    },
+    "checkin_medevac_nw": {
+      "path": "/audio/approach/checkin_medevac_nw.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Medevac, northwest, priority inbound.",
+      "bytes": 41838
+    },
+    "checkin_twoship_n": {
+      "path": "/audio/approach/checkin_twoship_n.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Two-ship, north, inbound, Pad Alpha.",
+      "bytes": 44346
+    },
+    "checkin_twoship_ne": {
+      "path": "/audio/approach/checkin_twoship_ne.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Two-ship, northeast, inbound, Pad Alpha.",
+      "bytes": 75275
+    },
+    "checkin_twoship_e": {
+      "path": "/audio/approach/checkin_twoship_e.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Two-ship, east, inbound, Pad Alpha.",
+      "bytes": 33061
+    },
+    "checkin_twoship_se": {
+      "path": "/audio/approach/checkin_twoship_se.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Two-ship, southeast, inbound, Pad Alpha.",
+      "bytes": 44764
+    },
+    "checkin_twoship_s": {
+      "path": "/audio/approach/checkin_twoship_s.mp3",
+      "category": "voice",
+      "role": "pilot_female",
+      "voiceId": "EXAVITQu4vr4xnSDxMaL",
+      "text": "Two-ship, south, inbound, Pad Alpha.",
+      "bytes": 43510
+    },
+    "checkin_twoship_sw": {
+      "path": "/audio/approach/checkin_twoship_sw.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Two-ship, southwest, inbound, Pad Alpha.",
+      "bytes": 41003
+    },
+    "checkin_twoship_w": {
+      "path": "/audio/approach/checkin_twoship_w.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Two-ship, west, inbound, Pad Alpha.",
+      "bytes": 38077
+    },
+    "checkin_twoship_nw": {
+      "path": "/audio/approach/checkin_twoship_nw.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Two-ship, northwest, inbound, Pad Alpha.",
+      "bytes": 77783
+    },
+    "vector_ack_viper": {
+      "path": "/audio/approach/vector_ack_viper.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Roger, turning.",
+      "bytes": 18851
+    },
+    "vector_ack_scott": {
+      "path": "/audio/approach/vector_ack_scott.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Wilco, new heading.",
+      "bytes": 17597
+    },
+    "vector_ack_bushfire": {
+      "path": "/audio/approach/vector_ack_bushfire.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Copy, on the vector.",
+      "bytes": 24702
+    },
+    "vector_ack_baxter": {
+      "path": "/audio/approach/vector_ack_baxter.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Roger, tracking vector.",
+      "bytes": 27628
+    },
+    "vector_ack_lisa": {
+      "path": "/audio/approach/vector_ack_lisa.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Copy, turning inbound.",
+      "bytes": 30136
+    },
+    "vector_ack_campbell": {
+      "path": "/audio/approach/vector_ack_campbell.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Wilco, coming around.",
+      "bytes": 27628
+    },
+    "loc_rwy_27": {
+      "path": "/audio/approach/loc_rwy_27.mp3",
+      "category": "voice",
+      "role": "pilot_heavy",
+      "voiceId": "nPczCjzI2devNBz1zQrb",
+      "text": "Established, Two-Seven.",
+      "bytes": 24702
+    },
+    "loc_rwy_27_aus": {
+      "path": "/audio/approach/loc_rwy_27_aus.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Established, Two-Seven.",
+      "bytes": 27210
+    },
+    "loc_rwy_09": {
+      "path": "/audio/approach/loc_rwy_09.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Established, Zero-Niner.",
+      "bytes": 33897
+    },
+    "loc_rwy_09_aus": {
+      "path": "/audio/approach/loc_rwy_09_aus.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Established, Zero-Niner.",
+      "bytes": 34315
+    },
+    "loc_rwy_36": {
+      "path": "/audio/approach/loc_rwy_36.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Established, Three-Six.",
+      "bytes": 30136
+    },
+    "loc_rwy_18": {
+      "path": "/audio/approach/loc_rwy_18.mp3",
+      "category": "voice",
+      "role": "pilot_heavy",
+      "voiceId": "nPczCjzI2devNBz1zQrb",
+      "text": "Established, One-Eight.",
+      "bytes": 22612
+    },
+    "loc_pad_alpha": {
+      "path": "/audio/approach/loc_pad_alpha.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Inbound final, Pad Alpha.",
+      "bytes": 36823
+    },
+    "loc_pad_alpha_aus": {
+      "path": "/audio/approach/loc_pad_alpha_aus.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Locked on, Pad Alpha.",
+      "bytes": 25538
+    },
+    "loc_cradle": {
+      "path": "/audio/approach/loc_cradle.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Locked on, Salvage Cradle.",
+      "bytes": 21776
+    },
+    "hold_krato": {
+      "path": "/audio/approach/hold_krato.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Holding Krato, right turns.",
+      "bytes": 30136
+    },
+    "hold_borea": {
+      "path": "/audio/approach/hold_borea.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Holding Borea, right turns.",
+      "bytes": 32225
+    },
+    "hold_vexis": {
+      "path": "/audio/approach/hold_vexis.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Holding Vexis, right turns.",
+      "bytes": 24702
+    },
+    "dep_rolling_27": {
+      "path": "/audio/approach/dep_rolling_27.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Cleared takeoff, Two-Seven, rolling.",
+      "bytes": 40585
+    },
+    "dep_rolling_09": {
+      "path": "/audio/approach/dep_rolling_09.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Cleared takeoff, Zero-Niner, rolling.",
+      "bytes": 32225
+    },
+    "dep_rolling_36": {
+      "path": "/audio/approach/dep_rolling_36.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Cleared takeoff, Three-Six, rolling.",
+      "bytes": 41838
+    },
+    "dep_rolling_18": {
+      "path": "/audio/approach/dep_rolling_18.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Cleared takeoff, One-Eight, rolling.",
+      "bytes": 41838
+    },
+    "dep_airborne": {
+      "path": "/audio/approach/dep_airborne.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Airborne, switching departure.",
+      "bytes": 29300
+    },
+    "go_around_unstable": {
+      "path": "/audio/approach/go_around_unstable.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Going around, unstable!",
+      "bytes": 23448
+    },
+    "go_around_missed": {
+      "path": "/audio/approach/go_around_missed.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Missed approach, going around!",
+      "bytes": 28464
+    },
+    "go_around_waveoff": {
+      "path": "/audio/approach/go_around_waveoff.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Copy wave-off, climbing out.",
+      "bytes": 31390
+    },
+    "wx_ion_storm": {
+      "path": "/audio/approach/wx_ion_storm.mp3",
+      "category": "voice",
+      "role": "atc_controller",
+      "voiceId": "onwK4e9ZLuTAKqWW03F9",
+      "text": "All aircraft, ion static on scope, expect comms jam.",
+      "bytes": 70260
+    },
+    "warn_moa_r118": {
+      "path": "/audio/approach/warn_moa_r118.mp3",
+      "category": "voice",
+      "role": "atc_controller",
+      "voiceId": "onwK4e9ZLuTAKqWW03F9",
+      "text": "Warning! Restricted zone Romeo One-Eighteen, turn out immediately!",
+      "bytes": 92412
+    },
+    "warn_bogey": {
+      "path": "/audio/approach/warn_bogey.mp3",
+      "category": "voice",
+      "role": "atc_controller",
+      "voiceId": "onwK4e9ZLuTAKqWW03F9",
+      "text": "All aircraft, primary target, no transponder, watch separation.",
+      "bytes": 83634
+    },
+    "atis_flip_27": {
+      "path": "/audio/approach/atis_flip_27.mp3",
+      "category": "voice",
+      "role": "atc_controller",
+      "voiceId": "onwK4e9ZLuTAKqWW03F9",
+      "text": "Borealis ATIS, wind two-seven-zero, Runway Two-Seven active.",
+      "bytes": 84888
+    },
+    "atis_flip_09": {
+      "path": "/audio/approach/atis_flip_09.mp3",
+      "category": "voice",
+      "role": "atc_controller",
+      "voiceId": "onwK4e9ZLuTAKqWW03F9",
+      "text": "Borealis ATIS, wind zero-niner-zero, Runway Zero-Niner active.",
+      "bytes": 93247
+    },
+    "atis_flip_36": {
+      "path": "/audio/approach/atis_flip_36.mp3",
+      "category": "voice",
+      "role": "atc_controller",
+      "voiceId": "onwK4e9ZLuTAKqWW03F9",
+      "text": "Borealis ATIS, crosswind ops, Runway Three-Six now active.",
+      "bytes": 61901
+    },
+    "atis_flip_18": {
+      "path": "/audio/approach/atis_flip_18.mp3",
+      "category": "voice",
+      "role": "atc_controller",
+      "voiceId": "onwK4e9ZLuTAKqWW03F9",
+      "text": "Borealis ATIS, crosswind ops, Runway One-Eight now active.",
+      "bytes": 76111
+    },
+    "atis_flip_27_36": {
+      "path": "/audio/approach/atis_flip_27_36.mp3",
+      "category": "voice",
+      "role": "atc_controller",
+      "voiceId": "onwK4e9ZLuTAKqWW03F9",
+      "text": "Borealis ATIS, wind three-zero-five, Runways Two-Seven and Three-Six active.",
+      "bytes": 99099
+    },
+    "atis_flip_09_18": {
+      "path": "/audio/approach/atis_flip_09_18.mp3",
+      "category": "voice",
+      "role": "atc_controller",
+      "voiceId": "onwK4e9ZLuTAKqWW03F9",
+      "text": "Borealis ATIS, wind one-two-five, Runways Zero-Niner and One-Eight active.",
+      "bytes": 94083
+    },
+    "atis_flip_27_18": {
+      "path": "/audio/approach/atis_flip_27_18.mp3",
+      "category": "voice",
+      "role": "atc_controller",
+      "voiceId": "onwK4e9ZLuTAKqWW03F9",
+      "text": "Borealis ATIS, wind two-three-five, Runways Two-Seven and One-Eight active.",
+      "bytes": 98263
+    },
+    "atis_flip_09_36": {
+      "path": "/audio/approach/atis_flip_09_36.mp3",
+      "category": "voice",
+      "role": "atc_controller",
+      "voiceId": "onwK4e9ZLuTAKqWW03F9",
+      "text": "Borealis ATIS, wind zero-five-five, Runways Zero-Niner and Three-Six active.",
+      "bytes": 96173
+    },
+    "joker_fuel_1": {
+      "path": "/audio/approach/joker_fuel_1.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Borealis, Joker fuel, need vectors.",
+      "bytes": 41003
+    },
+    "joker_fuel_2": {
+      "path": "/audio/approach/joker_fuel_2.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Advise Joker fuel, requesting priority.",
+      "bytes": 44764
+    },
+    "mayday_bingo_1": {
+      "path": "/audio/approach/mayday_bingo_1.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Mayday, Mayday! Bingo fuel, priority landing!",
+      "bytes": 41838
+    },
+    "mayday_bingo_2": {
+      "path": "/audio/approach/mayday_bingo_2.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Mayday! Bingo fuel, need nearest open pad!",
+      "bytes": 41838
+    },
+    "clear_viper": {
+      "path": "/audio/approach/clear_viper.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Viper, clear of the active.",
+      "bytes": 25538
+    },
+    "clear_hawk": {
+      "path": "/audio/approach/clear_hawk.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Hawk, clear of the active.",
+      "bytes": 20941
+    },
+    "clear_atlas": {
+      "path": "/audio/approach/clear_atlas.mp3",
+      "category": "voice",
+      "role": "pilot_heavy",
+      "voiceId": "nPczCjzI2devNBz1zQrb",
+      "text": "Atlas, clear of the active.",
+      "bytes": 32225
+    },
+    "clear_mule": {
+      "path": "/audio/approach/clear_mule.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Mule, clear of the active.",
+      "bytes": 29300
+    },
+    "clear_tug": {
+      "path": "/audio/approach/clear_tug.mp3",
+      "category": "voice",
+      "role": "pilot_aus_bushfire",
+      "voiceId": "N7NFVAFf0wbs2119L2Ai",
+      "text": "Tug, clear of the active.",
+      "bytes": 29300
+    },
+    "clear_rig": {
+      "path": "/audio/approach/clear_rig.mp3",
+      "category": "voice",
+      "role": "pilot_aus_scott",
+      "voiceId": "nrJUVBFMXWTXwnrZS469",
+      "text": "Rig, clear of the active.",
+      "bytes": 18851
+    },
+    "clear_dustoff": {
+      "path": "/audio/approach/clear_dustoff.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Dustoff, clear of the active.",
+      "bytes": 30136
+    },
+    "clear_medevac": {
+      "path": "/audio/approach/clear_medevac.mp3",
+      "category": "voice",
+      "role": "pilot_aus_campbell",
+      "voiceId": "hDDVQ367GcLJqyWXSicj",
+      "text": "Medevac, clear of the active.",
+      "bytes": 32225
+    },
+    "clear_lifeguard": {
+      "path": "/audio/approach/clear_lifeguard.mp3",
+      "category": "voice",
+      "role": "pilot_female",
+      "voiceId": "EXAVITQu4vr4xnSDxMaL",
+      "text": "Lifeguard, clear of the active.",
+      "bytes": 31390
+    },
+    "clear_casevac": {
+      "path": "/audio/approach/clear_casevac.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Casevac, clear of the active.",
+      "bytes": 30136
+    },
+    "clear_talon": {
+      "path": "/audio/approach/clear_talon.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Talon, clear of the active.",
+      "bytes": 29300
+    },
+    "clear_saber": {
+      "path": "/audio/approach/clear_saber.mp3",
+      "category": "voice",
+      "role": "pilot_female",
+      "voiceId": "EXAVITQu4vr4xnSDxMaL",
+      "text": "Saber, clear of the active.",
+      "bytes": 31390
+    },
+    "clear_raven": {
+      "path": "/audio/approach/clear_raven.mp3",
+      "category": "voice",
+      "role": "pilot_aus_lisa",
+      "voiceId": "bG3bxTbEPR7EZE4M0kcC",
+      "text": "Raven, clear of the active.",
+      "bytes": 28464
+    },
+    "clear_falcon": {
+      "path": "/audio/approach/clear_falcon.mp3",
+      "category": "voice",
+      "role": "pilot_viper",
+      "voiceId": "IKne3meq5aSn9XLyUdCD",
+      "text": "Falcon, clear of the active.",
+      "bytes": 30136
+    },
+    "clear_mayday": {
+      "path": "/audio/approach/clear_mayday.mp3",
+      "category": "voice",
+      "role": "pilot_aus_baxter",
+      "voiceId": "jSuBIjxMKhqIfb0wCK1F",
+      "text": "Mayday, clear of the active.",
+      "bytes": 29300
+    },
+    "mishap_explosion": {
+      "path": "/audio/approach/mishap_explosion.mp3",
+      "category": "sfx",
+      "prompt": "Deep heavy distant concussive explosion heard from inside a concrete military radar bunker, low sub-bass shockwave thud, muffled structural rumble, brief metallic bulkhead rattle, realistic 1979 military audio, no music",
+      "bytes": 36405
+    }
+  }
+}

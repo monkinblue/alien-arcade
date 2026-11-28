@@ -38,7 +38,7 @@ interface TerminalHitBox {
 
 interface CartridgeBaySpec {
   slotCode: string;
-  keyNum: '1' | '2' | '3' | '4';
+  keyNum: '1' | '2' | '3' | '4' | '5';
   programId: CartridgeProgramId;
   title: string;
   ruleset: string;
@@ -88,6 +88,16 @@ const CARTRIDGE_BAYS: readonly CartridgeBaySpec[] = [
     accent: THEME.ACCENT_CYAN,
     accentKind: 'cyan',
   },
+  {
+    slotCode: 'SLOT 05',
+    keyNum: '5',
+    programId: 'approach',
+    title: 'BOREALIS APPROACH',
+    ruleset: 'LV-118 RAPCON // ATC SIM',
+    icon: SEMIOTIC_ICONS.DOT_LIVE,
+    accent: THEME.TEXT_PRIMARY,
+    accentKind: 'green',
+  },
 ];
 
 const INITIAL_HEADER_LINES: readonly TerminalLine[] = [
@@ -100,7 +110,7 @@ const INITIAL_HEADER_LINES: readonly TerminalLine[] = [
     tone: 'green',
   },
   {
-    text: 'PRESS [1-4] OR CLICK ANY SYSTEM PROGRAM TO LAUNCH INSTANTLY.',
+    text: 'PRESS [1-5] OR CLICK ANY SYSTEM PROGRAM TO LAUNCH INSTANTLY.',
     tone: 'bright',
   },
   {
@@ -119,10 +129,14 @@ const AUTOCOMPLETE_COMMANDS = [
   'RUN 2',
   'RUN 3',
   'RUN 4',
+  'RUN 5',
   'LANDER',
   'PERIMETER',
   'FLAK',
   'TRENCH',
+  'APPROACH',
+  'BOREALIS',
+  'RAPCON',
   'QUERY ',
   'ASK ',
   'CREW',
@@ -145,6 +159,7 @@ const AUTOCOMPLETE_COMMANDS = [
   'DIR',
   'CLS',
   'MUTE',
+  'MUSIC',
 ];
 
 const MAX_SCROLLBACK_LINES = 140;
@@ -213,6 +228,9 @@ export class MuthurTerminalCartridge implements Cartridge {
 
   public mount(): void {
     this.unmount();
+    // Hub terminal is strictly silent of gameplay music; fade out any lingering track cleanly
+    this.host.music.stopGameplayMusic();
+    this.host.music.setVhfDuck(false);
     this.listenerAbort = new AbortController();
     const signal = this.listenerAbort.signal;
 
@@ -915,6 +933,23 @@ export class MuthurTerminalCartridge implements Cartridge {
       return;
     }
 
+    if (
+      trimmed === '5' ||
+      trimmed === '05' ||
+      trimmed === 'RUN 5' ||
+      trimmed === 'RUN 05' ||
+      trimmed === 'LOAD 5' ||
+      trimmed === 'LOAD 05' ||
+      trimmed === 'APPROACH' ||
+      trimmed === 'BOREALIS' ||
+      trimmed === 'BOREALIS APPROACH' ||
+      trimmed === 'RAPCON' ||
+      trimmed === 'ATC'
+    ) {
+      this.launchCartridgeInstant('approach');
+      return;
+    }
+
     // 5. Clear / CLS
     if (trimmed === 'CLS' || trimmed === 'CLEAR') {
       this.glitchPulse = 0.22;
@@ -928,7 +963,10 @@ export class MuthurTerminalCartridge implements Cartridge {
       this.appendLines(
         [
           echoLine,
-          { text: 'PROGRAMS    : [1] LANDER | [2] PERIMETER | [3] FLAK | [4] TRENCH', tone: 'bright' },
+          {
+            text: 'PROGRAMS    : [1] LANDER | [2] PERIMETER | [3] FLAK | [4] TRENCH | [5] APPROACH',
+            tone: 'bright',
+          },
           { text: 'TELEMETRY   : LEADERBOARD | DIAG | DIR | CLS | WHEEL / PGUP / PGDN SCROLL', tone: 'green' },
           { text: 'SHIP OPS    : CREW | BIOSCAN | SIGNAL | QUERY <TEXT> | ORDER 937 | DESTRUCT', tone: 'amber' },
           { text: 'MONITOR     : CRT <ON|OFF> | PHOSPHOR <GREEN|AMBER|CYAN> | MUTE', tone: 'cyan' },
@@ -1140,7 +1178,7 @@ export class MuthurTerminalCartridge implements Cartridge {
       this.host.audio.playAlienComputerActivity(0.45);
       const out: TerminalLine[] = [
         echoLine,
-        { text: 'ORBITAL RELAY // LEADERBOARD ACROSS ALL 4 PROGRAMS (SCROLL FOR FULL LIST):', tone: 'amber' },
+        { text: 'ORBITAL RELAY // LEADERBOARD ACROSS ALL 5 PROGRAMS (SCROLL FOR FULL LIST):', tone: 'amber' },
       ];
 
       for (const bay of CARTRIDGE_BAYS) {
@@ -1185,6 +1223,7 @@ export class MuthurTerminalCartridge implements Cartridge {
           { text: '  02  HADLEYS_PERIMETER.SIM   34,816 B   [ENDLESS SIEGE CAD]', tone: 'green' },
           { text: '  03  FLAK_NET.SIM            31,744 B   [ORBITAL INTERCEPT]', tone: 'green' },
           { text: '  04  DERELICT_TRENCH.SIM     36,864 B   [3D VECTOR SORTIE]', tone: 'green' },
+          { text: '  05  BOREALIS_APPROACH.SIM   38,912 B   [LV-118 RAPCON ATC]', tone: 'green' },
           { text: '  99  SPECIAL_ORDER_937.ENC    1,024 B   [EYES ONLY // RESTRICTED]', tone: 'amber' },
         ],
         true
@@ -1198,6 +1237,7 @@ export class MuthurTerminalCartridge implements Cartridge {
       const audState = this.host.isMuted()
         ? 'MUTED'
         : `ACTIVE (${Math.round(this.host.getMasterVolume() * 100)}%)`;
+      const musicState = this.host.isMusicEnabled() ? 'ON (IN-GAME)' : 'OFF';
       const theme = this.host.getPhosphorTheme();
       const preset = CRT_PRESET_CONFIG[this.host.getCrtPreset()].label;
       const uplink = this.hubLeaders.getUplinkSummary();
@@ -1211,7 +1251,7 @@ export class MuthurTerminalCartridge implements Cartridge {
           { text: 'USCSS NOSTROMO // HARDWARE & TELEMETRY DIAGNOSTIC:', tone: 'amber' },
           { text: '  HYPERSLEEP PODS : 7/7 STANDBY  |  COOLING UNITS 1-4: NOMINAL', tone: 'green' },
           { text: `  DISPLAY PROFILE : ${preset}  |  PHOSPHOR: ${theme}`, tone: 'green' },
-          { text: `  ACOUSTIC BUS    : ${audState}`, tone: 'green' },
+          { text: `  ACOUSTIC BUS    : ${audState}  |  MUSIC: ${musicState}`, tone: 'green' },
           {
             text: `  ORBITAL RELAY   : ${relayTxt}`,
             tone: uplink.liveCount > 0 ? 'bright' : 'amber',
@@ -1254,13 +1294,35 @@ export class MuthurTerminalCartridge implements Cartridge {
       return;
     }
 
+    if (trimmed === 'MUSIC' || trimmed === 'MUSIC ON' || trimmed === 'MUSIC OFF') {
+      const nextEnabled =
+        trimmed === 'MUSIC ON'
+          ? true
+          : trimmed === 'MUSIC OFF'
+            ? false
+            : !this.host.isMusicEnabled();
+      this.host.setMusicEnabled(nextEnabled);
+      this.host.audio.playButtonLatchLock(nextEnabled ? 1.04 : 0.92, 0.8);
+      this.appendLines(
+        [
+          echoLine,
+          {
+            text: `CARTRIDGE BACKGROUND MUSIC: ${nextEnabled ? 'ON (PLAYS DURING ACTIVE GAMEPLAY)' : 'OFF'}.`,
+            tone: 'amber',
+          },
+        ],
+        true
+      );
+      return;
+    }
+
     // Unrecognized directive
     this.host.audio.playMutedAvionicsIndicatorBeep(false);
     this.appendLines(
       [
         echoLine,
         {
-          text: "DOES NOT COMPUTE // PRESS [1-4] FOR CARTRIDGES, TYPE 'HELP', OR PRESS [TAB].",
+          text: "DOES NOT COMPUTE // PRESS [1-5] FOR CARTRIDGES, TYPE 'HELP', OR PRESS [TAB].",
           tone: 'amber',
         },
       ],
@@ -1588,8 +1650,8 @@ export class MuthurTerminalCartridge implements Cartridge {
       this.renderCliZone(ctx, pad, bodyTop, cliPanelW, bodyH, timeSec);
       this.renderCartridgeBayZone(ctx, pad + cliPanelW + gap, bodyTop, bayPanelW, bodyH, timeSec, false);
     } else {
-      // Compact vertical 2-zone stack for narrow / mobile screens (Top: 2x2 Cartridge Bays, Bottom: CLI)
-      const bayH = Math.min(220, Math.max(176, Math.round(bodyH * 0.42)));
+      // Compact vertical 2-zone stack for narrow / mobile screens (Top: 5 Cartridge Bays, Bottom: CLI)
+      const bayH = Math.min(256, Math.max(198, Math.round(bodyH * 0.45)));
       const cliY = bodyTop + bayH + 10;
       const cliH = Math.max(160, bodyTop + bodyH - cliY);
 
@@ -1991,7 +2053,7 @@ export class MuthurTerminalCartridge implements Cartridge {
     ctx.textBaseline = 'middle';
     ctx.font = font('micro', 12);
     ctx.fillStyle = THEME.ACCENT_AMBER;
-    drawEllipsizedText(ctx, 'SYSTEM PROGRAM DIRECTORY // ROM [1-4]', x + 12, y + hdrH * 0.5 + 0.5, w - 24);
+    drawEllipsizedText(ctx, 'SYSTEM PROGRAM DIRECTORY // ROM [1-5]', x + 12, y + hdrH * 0.5 + 0.5, w - 24);
 
     const padInner = 12;
     const availW = w - padInner * 2;
@@ -2012,18 +2074,20 @@ export class MuthurTerminalCartridge implements Cartridge {
     };
 
     if (compactGrid) {
-      // Compact 2x2 Mainframe ROM Selector for narrow viewports
-      const availH = Math.max(110, y + h - listTop - 10);
-      const gap = 8;
+      // Compact 2-column (3-row) Mainframe ROM Selector for narrow viewports (5th slot spans full width)
+      const availH = Math.max(132, y + h - listTop - 10);
+      const gap = 6;
+      const rowCount = Math.ceil(CARTRIDGE_BAYS.length / 2);
       const cellW = Math.floor((availW - gap) * 0.5);
-      const cellH = Math.floor((availH - gap) * 0.5);
+      const cellH = Math.floor((availH - gap * (rowCount - 1)) / rowCount);
 
       CARTRIDGE_BAYS.forEach((bay, idx) => {
-        const col = idx % 2;
+        const isLastOdd = idx === CARTRIDGE_BAYS.length - 1 && CARTRIDGE_BAYS.length % 2 === 1;
+        const col = isLastOdd ? 0 : idx % 2;
         const row = Math.floor(idx / 2);
         const bx = x + padInner + col * (cellW + gap);
         const by = listTop + row * (cellH + gap);
-        const bw = col === 1 ? availW - cellW - gap : cellW;
+        const bw = isLastOdd ? availW : col === 1 ? availW - cellW - gap : cellW;
         const rect: ViewportRect = { x: bx, y: by, width: bw, height: cellH };
         const id = `bay-slot-${bay.keyNum}`;
         const hov = this.hoveredHitId === id;
@@ -2052,7 +2116,7 @@ export class MuthurTerminalCartridge implements Cartridge {
         drawEllipsizedText(ctx, champ.text, bx + 10, by + cellH * 0.72, bw - 18);
       });
     } else {
-      // Authentic 1979 CRT Program Directory: fixed crisp rows (NEVER stretched into hollow boxes!)
+      // Authentic 1979 CRT Program Directory: 5 crisp rows sized cleanly for 1440x900 & 1280x720
       // + Super-Obvious 1979 1.5X Ranked Score Challenge Toggle + Live Selected Program Dossier
       const is1979Dir = isCrt1979Typography();
       const crtOn = this.host.getCrtPreset() === 'CLASSIC_1979';
@@ -2077,12 +2141,19 @@ export class MuthurTerminalCartridge implements Cartridge {
       });
 
       const dirTop = listTop + bannerH + 8;
-      const availH = Math.max(160, y + h - dirTop - 12);
-      const rowGap = 6;
-      const minRowH = is1979Dir ? 62 : 56;
-      const maxRowH = is1979Dir ? 74 : 68;
-      const rowH = Math.max(minRowH, Math.min(maxRowH, Math.floor((availH - 160 - rowGap * 3) / 4)));
-      const effectiveRowH = availH < 380 ? Math.max(52, Math.floor((availH - rowGap * 3) / 4)) : rowH;
+      const colHdrH = 22;
+      const rowsStartY = dirTop + colHdrH;
+      const availBelowHdr = Math.max(180, y + h - rowsStartY - 10);
+      const bayCount = CARTRIDGE_BAYS.length;
+      const rowGap = 5;
+      const reserveDossier = availBelowHdr >= 470 ? (is1979Dir ? 216 : 196) : 0;
+      const minRowH = is1979Dir ? 52 : 48;
+      const maxRowH = is1979Dir ? 68 : 62;
+      const budgetForRows = availBelowHdr - reserveDossier - (reserveDossier > 0 ? 8 : 0);
+      const effectiveRowH = Math.max(
+        minRowH,
+        Math.min(maxRowH, Math.floor((budgetForRows - rowGap * (bayCount - 1)) / bayCount))
+      );
 
       let focusedBay: CartridgeBaySpec = CARTRIDGE_BAYS[0];
       for (const b of CARTRIDGE_BAYS) {
@@ -2105,11 +2176,9 @@ export class MuthurTerminalCartridge implements Cartridge {
       ctx.strokeStyle = THEME.BORDER_SUBTLE;
       ctx.lineWidth = 1.0;
       ctx.beginPath();
-      ctx.moveTo(x + padInner, dirTop + 18);
-      ctx.lineTo(x + padInner + availW, dirTop + 18);
+      ctx.moveTo(x + padInner, dirTop + 16);
+      ctx.lineTo(x + padInner + availW, dirTop + 16);
       ctx.stroke();
-
-      const rowsStartY = dirTop + 26;
 
       CARTRIDGE_BAYS.forEach((bay, idx) => {
         const bx = x + padInner;
@@ -2139,7 +2208,7 @@ export class MuthurTerminalCartridge implements Cartridge {
 
         // Row 1: Left-aligned Program Title + Right-aligned Execute Tag
         const line1Y = by + Math.round(effectiveRowH * 0.30);
-        const line2Y = by + Math.round(effectiveRowH * 0.72);
+        const line2Y = by + Math.round(effectiveRowH * 0.73);
         const textX = bx + 12;
         const execRight = bx + availW - 10;
 
@@ -2153,7 +2222,7 @@ export class MuthurTerminalCartridge implements Cartridge {
 
         const titleMaxW = Math.max(120, availW - 24 - execReserve);
         ctx.textAlign = 'left';
-        ctx.font = font('head', 15);
+        ctx.font = font('head', effectiveRowH < 58 ? 14 : 15);
         ctx.fillStyle = hov ? THEME.ACCENT_AMBER_HI : THEME.TEXT_PRIMARY;
         drawEllipsizedText(ctx, `0${bay.keyNum}  ${bay.title}`, textX, line1Y, titleMaxW);
 
@@ -2172,9 +2241,9 @@ export class MuthurTerminalCartridge implements Cartridge {
         drawEllipsizedText(ctx, bay.ruleset, textX, line2Y, modeMaxW);
       });
 
-      // Lower Right Mainframe Telemetry Panel: Selected Program Brief + Live Top-3 Leaderboard
-      const dossierTop = rowsStartY + 4 * (effectiveRowH + rowGap) + 8;
-      const dossierH = y + h - 12 - dossierTop;
+      // Lower Right Mainframe Telemetry Panel: Selected Program Brief + Live Top-3/Top-5 Leaderboard
+      const dossierTop = rowsStartY + bayCount * effectiveRowH + (bayCount - 1) * rowGap + 8;
+      const dossierH = y + h - 10 - dossierTop;
       if (dossierH >= 116) {
         const dx = x + padInner;
         const dw = availW;
@@ -2185,8 +2254,9 @@ export class MuthurTerminalCartridge implements Cartridge {
         ctx.strokeRect(dx + 0.5, dossierTop + 0.5, dw - 1, dossierH - 1);
 
         // Header line
+        const dossierHdrH = 24;
         ctx.fillStyle = 'rgba(10, 26, 16, 0.72)';
-        ctx.fillRect(dx + 1, dossierTop + 1, dw - 2, 26);
+        ctx.fillRect(dx + 1, dossierTop + 1, dw - 2, dossierHdrH);
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         ctx.font = font('micro', 12);
@@ -2195,7 +2265,7 @@ export class MuthurTerminalCartridge implements Cartridge {
           ctx,
           `ROM 0${focusedBay.keyNum} TELEMETRY // ${focusedBay.title}`,
           dx + 10,
-          dossierTop + 14,
+          dossierTop + dossierHdrH * 0.5 + 1,
           dw - 20
         );
 
@@ -2216,14 +2286,22 @@ export class MuthurTerminalCartridge implements Cartridge {
             brief: 'Low-altitude canyon strike jet run ahead of the Purge Wave.',
             keys: 'Mouse Stick · W/S Thr · LMB Gun · RMB/SPC Missile',
           },
+          approach: {
+            brief: 'LV-118 RAPCON radar approach — vector dropships, heavies & tugs.',
+            keys: 'Drag Vector · Snap Gate/Fix · RMB/DblClk Go-Around · Strip Ping',
+          },
         };
         const info = BRIEF_BY_ID[focusedBay.programId];
 
-        let curY = dossierTop + (is1979Dir ? 44 : 42);
-        const briefStep = is1979Dir ? 21 : 17;
+        const hasFooter = dossierH >= 150;
+        const footTop = hasFooter ? dossierTop + dossierH - 26 : dossierTop + dossierH - 6;
+
+        let curY = dossierTop + dossierHdrH + (is1979Dir ? 15 : 14);
+        const briefStep = is1979Dir ? 19 : 16;
+        const maxBriefLines = dossierH >= 240 ? 2 : 1;
         ctx.font = font('prose', 12);
         ctx.fillStyle = THEME.TEXT_BRIGHT;
-        const briefLines = wrapTextLines(ctx, info.brief, dw - 20, 2);
+        const briefLines = wrapTextLines(ctx, info.brief, dw - 20, maxBriefLines);
         for (const bl of briefLines) {
           ctx.fillText(bl, dx + 10, curY);
           curY += briefStep;
@@ -2231,11 +2309,11 @@ export class MuthurTerminalCartridge implements Cartridge {
 
         ctx.font = font('micro', 12);
         ctx.fillStyle = THEME.TEXT_SECONDARY;
-        drawEllipsizedText(ctx, `KEYS: ${info.keys}`, dx + 10, curY + 3, dw - 20);
-        curY += is1979Dir ? 25 : 22;
+        drawEllipsizedText(ctx, `KEYS: ${info.keys}`, dx + 10, curY + 2, dw - 20);
+        curY += is1979Dir ? 21 : 19;
 
-        // Live Leaderboard Preview (fills vertical space cleanly on fullscreen desktops!)
-        if (dossierTop + dossierH - curY >= 46) {
+        // Live Leaderboard Preview (strictly bounded above footTop so ZERO clipping in Clean or 1979 Mode!)
+        if (footTop - curY >= 42) {
           ctx.strokeStyle = THEME.BORDER_SUBTLE;
           ctx.lineWidth = 1.0;
           ctx.beginPath();
@@ -2243,35 +2321,37 @@ export class MuthurTerminalCartridge implements Cartridge {
           ctx.lineTo(dx + dw - 10, curY - 4);
           ctx.stroke();
 
-          const boardRowStep = is1979Dir ? 24 : 21;
+          const boardRowStep = is1979Dir ? 22 : 19;
           const maxBoardRows = dossierH >= (is1979Dir ? 290 : 260) ? 5 : 3;
           ctx.font = font('micro', 12);
           ctx.fillStyle = THEME.ACCENT_AMBER;
-          ctx.fillText(`LIVE LEADERBOARD // TOP ${maxBoardRows}`, dx + 10, curY + 10);
-          curY += is1979Dir ? 27 : 24;
+          ctx.fillText(`LIVE LEADERBOARD // TOP ${maxBoardRows}`, dx + 10, curY + 9);
+          curY += is1979Dir ? 25 : 22;
 
           const top = this.hubLeaders.getTopScores(focusedBay.programId).slice(0, maxBoardRows);
           if (top.length === 0) {
-            ctx.font = font('data', 12);
-            ctx.fillStyle = THEME.TEXT_SECONDARY;
-            ctx.fillText('AWAITING ORBITAL TELEMETRY...', dx + 10, curY + 4);
+            if (curY + 8 <= footTop - 4) {
+              ctx.font = font('data', 12);
+              ctx.fillStyle = THEME.TEXT_SECONDARY;
+              ctx.fillText('AWAITING ORBITAL TELEMETRY...', dx + 10, curY + 2);
+            }
           } else {
             top.forEach((entry, idx) => {
-              if (curY + 30 > dossierTop + dossierH - 6) return;
+              if (curY + 10 > footTop - 4) return;
               ctx.font = font('data', 12);
               ctx.textAlign = 'left';
               ctx.fillStyle = idx === 0 ? THEME.ACCENT_AMBER_HI : THEME.TEXT_PRIMARY;
-              ctx.fillText(`#0${idx + 1}  ${entry.callsign}`, dx + 10, curY + 4);
+              ctx.fillText(`#0${idx + 1}  ${entry.callsign}`, dx + 10, curY + 2);
               ctx.textAlign = 'right';
               ctx.fillStyle = idx === 0 ? THEME.ACCENT_AMBER_HI : THEME.TEXT_BRIGHT;
-              ctx.fillText(`${entry.score.toLocaleString()} PTS`, dx + dw - 10, curY + 4);
+              ctx.fillText(`${entry.score.toLocaleString()} PTS`, dx + dw - 10, curY + 2);
               curY += boardRowStep;
             });
           }
         }
 
         // Bottom mainframe status bar inside telemetry dossier
-        if (dossierH >= 150) {
+        if (hasFooter) {
           const footY = dossierTop + dossierH - 22;
           ctx.strokeStyle = THEME.BORDER_SUBTLE;
           ctx.lineWidth = 1.0;
@@ -2286,7 +2366,7 @@ export class MuthurTerminalCartridge implements Cartridge {
           ctx.fillStyle = THEME.TEXT_SECONDARY;
           drawEllipsizedText(
             ctx,
-            `PRESS [1-4] OR CLICK ROW TO EXECUTE ROM 0${focusedBay.keyNum}`,
+            `PRESS [1-5] OR CLICK ROW TO EXECUTE ROM 0${focusedBay.keyNum}`,
             dx + 10,
             footY + 9,
             dw - 20

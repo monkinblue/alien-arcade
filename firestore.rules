@@ -152,6 +152,41 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // Program #5: Borealis Approach // LV-118 RAPCON (`approach_scores`)
+    match /approach_scores/{docId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasOnly([
+          'callsign',
+          'score',
+          'landed',
+          'maxMult',
+          'phase',
+          'createdAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'callsign',
+          'score',
+          'landed',
+          'maxMult',
+          'phase',
+          'createdAt'
+        ])
+        && isValidCallsign(request.resource.data.callsign)
+        && request.resource.data.score is int
+        && request.resource.data.score >= 1
+        && request.resource.data.score <= 10000000
+        && request.resource.data.landed is int
+        && request.resource.data.landed >= 0
+        && request.resource.data.landed <= 999
+        && request.resource.data.maxMult is number
+        && request.resource.data.maxMult >= 1
+        && request.resource.data.maxMult <= 5
+        && request.resource.data.phase is string
+        && request.resource.data.phase in ['ALPHA', 'BRAVO', 'CHARLIE', 'DELTA', 'ECHO']
+        && isServerTimestamp(request.resource.data.createdAt);
+      allow update, delete: if false;
+    }
+
     // Default deny for all other paths & collections
     match /{document=**} {
       allow read, write: if false;

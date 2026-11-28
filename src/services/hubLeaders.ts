@@ -27,13 +27,14 @@ const COLLECTION_BY_PROGRAM: Record<CartridgeProgramId, string> = {
   perimeter: 'perimeter_scores',
   flak: 'flak_scores',
   trench: 'trench_scores',
+  approach: 'approach_scores',
 };
 
 /**
  * Real-time Firestore global leader watcher for the MU-TH-UR 6000 OS Hub.
- * Reuses the shared Firestore db and maintains 4 lightweight `limit(5)` onSnapshot
- * subscriptions across `scores`, `perimeter_scores`, `flak_scores`, and `trench_scores`
- * to power both `#01` program badges and the CLI unified `SCORES` board.
+ * Reuses the shared Firestore db and maintains 5 lightweight `limit(5)` onSnapshot
+ * subscriptions across `scores`, `perimeter_scores`, `flak_scores`, `trench_scores`,
+ * and `approach_scores` to power both `#01` program badges and the CLI unified `SCORES` board.
  */
 export class HubLeadersService {
   private unsubscribers: Unsubscribe[] = [];
@@ -42,6 +43,7 @@ export class HubLeadersService {
     perimeter: { status: 'LOADING', leader: null, topScores: [], latencyMs: null },
     flak: { status: 'LOADING', leader: null, topScores: [], latencyMs: null },
     trench: { status: 'LOADING', leader: null, topScores: [], latencyMs: null },
+    approach: { status: 'LOADING', leader: null, topScores: [], latencyMs: null },
   };
 
   constructor() {

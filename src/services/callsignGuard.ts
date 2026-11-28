@@ -1,10 +1,11 @@
-export type ArcadeGameId = 'lander' | 'perimeter' | 'flak' | 'trench';
+export type ArcadeGameId = 'lander' | 'perimeter' | 'flak' | 'trench' | 'approach';
 
 export const CALLSIGN_MAX_LEN = 12;
 export const CALLSIGN_REGEX = /^[A-Z0-9_-]{1,12}$/;
 export const CALLSIGN_CHAR_REGEX = /^[A-Za-z0-9_-]$/;
 
 export const SUBMIT_COOLDOWN_MS = 15_000;
+export const APPROACH_SUBMIT_COOLDOWN_MS = 30_000;
 export const MIN_RUN_PLAYTIME_SEC = 5;
 
 /**
@@ -15,6 +16,7 @@ export const SCORE_CAPS = {
   perimeter: { score: 50_000_000, waves: 200, kills: 100_000 },
   flak: { score: 25_000_000, wave: 99, maxChain: 32, accuracy: 100 },
   trench: { score: 5_000_000, distance: 500_000, maxMach: 5, grazes: 10_000 },
+  approach: { score: 10_000_000, landed: 999, maxMult: 5 },
 } as const;
 
 const COOLDOWN_KEY_PREFIX = 'alienarcade_submit_cd_v1_';
@@ -236,11 +238,13 @@ export function maskCallsignForDisplay(raw: string, fallback = 'PILOT-01'): stri
 }
 
 /**
- * Enforces minimum run playtime (>=5s) and per-game 15-second submission cooldown via localStorage.
+ * Enforces minimum run playtime (>=5s) and per-game submission cooldown via localStorage.
+ * Defaults to 15s (`SUBMIT_COOLDOWN_MS`), or 30s (`APPROACH_SUBMIT_COOLDOWN_MS`) for `'approach'`.
  */
 export function checkSubmissionGate(
   gameId: ArcadeGameId,
-  playtimeSec: number
+  playtimeSec: number,
+  cooldownMs: number = gameId === 'approach' ? APPROACH_SUBMIT_COOLDOWN_MS : SUBMIT_COOLDOWN_MS
 ): { allowed: boolean; reason?: string } {
   if (!Number.isFinite(playtimeSec) || playtimeSec < MIN_RUN_PLAYTIME_SEC) {
     return {
@@ -249,6 +253,8 @@ export function checkSubmissionGate(
     };
   }
 
+  const effectiveCooldownMs =
+    Number.isFinite(cooldownMs) && cooldownMs >= 0 ? cooldownMs : SUBMIT_COOLDOWN_MS;
   const now = Date.now();
   let lastMs = memoryCooldowns.get(gameId) ?? 0;
   try {
@@ -264,8 +270,8 @@ export function checkSubmissionGate(
   }
 
   const elapsed = now - lastMs;
-  if (lastMs > 0 && elapsed >= 0 && elapsed < SUBMIT_COOLDOWN_MS) {
-    const waitSec = Math.max(1, Math.ceil((SUBMIT_COOLDOWN_MS - elapsed) / 1000));
+  if (lastMs > 0 && elapsed >= 0 && elapsed < effectiveCooldownMs) {
+    const waitSec = Math.max(1, Math.ceil((effectiveCooldownMs - elapsed) / 1000));
     return {
       allowed: false,
       reason: `UPLINK COOLDOWN ACTIVE — WAIT ${waitSec}S`,

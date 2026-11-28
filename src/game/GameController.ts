@@ -85,6 +85,7 @@ export class GameController implements Cartridge {
   private confirmGameMenuPending = false;
   private confirmGameMenuTimer = 0;
   private hasSeenInitialBriefing = false;
+  private runMusicStarted = false;
   private inlineTeletypeHold = false;
   private pulseSafetyLockSec = 0;
   private debriefKeylockSec = 0;
@@ -216,7 +217,9 @@ export class GameController implements Cartridge {
     this.callsignEditing = false;
     this.debriefKeylockSec = 0;
     this.pulseSafetyLockSec = 0;
+    this.runMusicStarted = false;
     this.inlineTeletypeHold = false;
+    this.host.music.resetTrackPosition('lander');
     this.manifestOpenedPostRun = false;
     this.bootPoweredOn = true;
     this.crtWarmupProgress = 1;
@@ -254,6 +257,8 @@ export class GameController implements Cartridge {
       mobileInput.blur();
     }
     this.audio.stopCartridgeLoops();
+    this.runMusicStarted = false;
+    this.host.music.stopGameplayMusic();
   }
 
   public resize(widthCss: number, heightCss: number, offsetX = 0, offsetY = 0): void {
@@ -450,6 +455,11 @@ export class GameController implements Cartridge {
     this.showStatusToast(next ? 'AUDIO BUS: MUTED' : 'AUDIO BUS: ACTIVE', 1.2, next ? 'red' : 'green');
   }
 
+  private toggleMusic(): void {
+    const next = this.host.toggleMusic();
+    this.showStatusToast(next ? 'MUSIC: ON' : 'MUSIC: OFF', 1.2, next ? 'green' : 'amber');
+  }
+
   private isInActiveGameplay(): boolean {
     return (
       this.phase !== 'TITLE_MENU' &&
@@ -511,6 +521,7 @@ export class GameController implements Cartridge {
         this.confirmGameMenuPending = false;
         this.confirmGameMenuTimer = 0;
         this.ranked1979BonusActive = false;
+        this.runMusicStarted = false;
         this.host.setCrtModeLocked(false);
         this.audio.stopCartridgeLoops();
         this.activeTouchPointers.clear();
@@ -898,6 +909,9 @@ export class GameController implements Cartridge {
       case CONTROLS_CARD_IDS.CLOSE:
         this.controlsCardOpen = false;
         break;
+      case TOP_CHROME_IDS.MUSIC:
+        this.toggleMusic();
+        break;
       case TOP_CHROME_IDS.AUDIO:
         this.toggleAudioMute();
         break;
@@ -951,6 +965,7 @@ export class GameController implements Cartridge {
           this.confirmGameMenuPending = false;
           this.confirmGameMenuTimer = 0;
           this.ranked1979BonusActive = false;
+          this.runMusicStarted = false;
           this.host.setCrtModeLocked(false);
           this.audio.stopCartridgeLoops();
           this.activeTouchPointers.clear();
@@ -1373,6 +1388,8 @@ export class GameController implements Cartridge {
   ): void {
     this.endlessMode = false;
     this.isPracticeRun = practiceMode;
+    this.runMusicStarted = false;
+    this.host.music.resetTrackPosition('lander');
     this.ranked1979BonusActive = !practiceMode && this.host.getCrtPreset() === 'CLASSIC_1979';
     this.host.setCrtModeLocked(true);
     this.manifestTab = 'CAMPAIGN';
@@ -1397,6 +1414,8 @@ export class GameController implements Cartridge {
   private startEndlessDeepSurvey(isReplay = false): void {
     this.endlessMode = true;
     this.isPracticeRun = false;
+    this.runMusicStarted = false;
+    this.host.music.resetTrackPosition('lander');
     this.ranked1979BonusActive = this.host.getCrtPreset() === 'CLASSIC_1979';
     this.host.setCrtModeLocked(true);
     this.manifestTab = 'ENDLESS';
@@ -1452,6 +1471,7 @@ export class GameController implements Cartridge {
   private beginSectorFlight(): void {
     this.audio.fadeOutBootStartupAudio(1.1);
     this.hasSeenInitialBriefing = true;
+    this.runMusicStarted = true;
     this.inlineTeletypeHold = false;
     // 0.6s flip-cover safety interlock prevents briefing-skip [SPACE] taps from burning 1X Pulse!
     this.pulseSafetyLockSec = 0.6;
@@ -1509,6 +1529,7 @@ export class GameController implements Cartridge {
     this.touchdownSnapshot = null;
     this.glitchIntensity = 0.25;
     this.pulseSafetyLockSec = 0.6;
+    this.runMusicStarted = true;
     this.inlineTeletypeHold = false;
     this.phase = 'FLIGHT';
     this.audio.playScaryComputerTransition('engage');
@@ -1645,6 +1666,7 @@ export class GameController implements Cartridge {
 
   private advanceAfterTally(): void {
     if (this.isPracticeRun) {
+      this.runMusicStarted = false;
       this.phase = 'TITLE_MENU';
       return;
     }
@@ -1676,6 +1698,7 @@ export class GameController implements Cartridge {
    * Enters the Unified Post-Run Debrief + Inline Callsign Modal (`GameOverDebriefModal`).
    */
   private enterUnifiedDebrief(outcome: 'BREACH' | 'VICTORY' | 'ABORT'): void {
+    this.runMusicStarted = false;
     this.debriefOutcome = outcome;
     this.debriefKeylockSec = outcome === 'ABORT' ? 0.35 : 1.0;
     this.callsignEditing = false;
@@ -2188,6 +2211,15 @@ export class GameController implements Cartridge {
     const crtModeLocked = this.isInActiveGameplay();
     this.host.setCrtModeLocked(crtModeLocked);
 
+    const inContinuousRunPhase =
+      (this.phase === 'FLIGHT' && (this.lander.alive || this.lives > 0)) ||
+      (this.runMusicStarted &&
+        (this.phase === 'SECTOR_BRIEFING' ||
+          (this.phase === 'SECTOR_TALLY' && !this.isPracticeRun) ||
+          (this.phase === 'HULL_BREACH' && this.lives > 0)));
+    const musicActive = inContinuousRunPhase && !modalPaused;
+    this.host.music.setGameplayMusicActive(musicActive, 'lander');
+
     this.hudRenderer.render(oCtx, {
       phase: this.phase,
       width: this.crtRect.width,
@@ -2201,6 +2233,7 @@ export class GameController implements Cartridge {
       ranked1979BonusActive: this.ranked1979BonusActive && !this.isPracticeRun,
       phosphorTheme: this.host.getPhosphorTheme(),
       masterVolume: this.host.getMasterVolume(),
+      musicEnabled: this.host.isMusicEnabled(),
       controlsCardOpen: this.controlsCardOpen,
       confirmExitPending: this.confirmExitPending,
       confirmGameMenuPending: this.confirmGameMenuPending,
